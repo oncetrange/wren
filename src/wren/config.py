@@ -101,7 +101,7 @@ BUILTIN_MODELS: dict[str, dict[str, Any]] = {
 
 @dataclass
 class Config:
-    default_model: str = "qwen"
+    default_model: str = "kimi"
     models: dict[str, ModelConfig] = field(default_factory=dict)
 
     def model(self, name: str | None = None) -> ModelConfig:

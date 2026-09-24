@@ -7,7 +7,7 @@ from wren.llm.types import Usage
 
 def test_builtins_without_config_file(tmp_path):
     config = load_config(tmp_path / "missing.toml")
-    assert config.default_model == "qwen"
+    assert config.default_model == "kimi"
     kimi = config.model("kimi")
     assert kimi.model == "kimi-k2.7-code" and kimi.auth == "bearer"
     assert _thinking_param(kimi.thinking) == {"type": "enabled", "budget_tokens": 16000}

@@ -11,7 +11,7 @@ uv tool install -e .     # installs the `wren` command
 ## Usage
 
 ```bash
-export DASHSCOPE_API_KEY=sk-...   # for the default `qwen` model
+export MOONSHOT_API_KEY=sk-...   # for the default `kimi` model
 wren                              # interactive session
 wren -m claude                    # pick a model
 wren -p "fix the failing test"    # one-shot, non-interactive
@@ -26,8 +26,8 @@ Project-specific instructions are read from `WREN.md` or `AGENTS.md` in the work
 
 | name | model | endpoint | key |
 |---|---|---|---|
-| `qwen` (default) | qwen3-coder-plus | DashScope, Anthropic-compatible | `$DASHSCOPE_API_KEY` |
-| `kimi` | kimi-k2.7-code (thinking always on) | Moonshot, Anthropic-compatible | `$MOONSHOT_API_KEY` |
+| `qwen` | qwen3-coder-plus | DashScope, Anthropic-compatible | `$DASHSCOPE_API_KEY` |
+| `kimi` (default) | kimi-k2.7-code (thinking always on) | Moonshot, Anthropic-compatible | `$MOONSHOT_API_KEY` |
 | `claude` | claude-opus-5 | Anthropic | `$ANTHROPIC_API_KEY` |
 
 Override builtins or add any Anthropic-compatible model in `~/.wren/config.toml`:
