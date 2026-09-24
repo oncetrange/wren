@@ -1,0 +1,28 @@
+[project]
+name = "wren"
+version = "0.1.0"
+description = "A coding agent for the terminal"
+authors = [
+    { name = "oncetrange", email = "oncetrange@outlook.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.8.0",
+    "prompt-toolkit>=3.0.53",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+wren = "wren.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
