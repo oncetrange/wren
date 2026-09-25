@@ -20,10 +20,13 @@ wren -r                           # pick a session to resume (or: wren -r <id>)
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/model [name]`, `/clear`, `/cost`, `/help`. Esc-Enter inserts a newline; Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
+- **Newlines**: Esc Enter or Ctrl-J. For Shift+Enter, run `/keys` for a snippet for your terminal (WezTerm, iTerm2, VS Code).
 - **Checkpoints**: the workspace is snapshotted before every prompt into a shadow git repository under `~/.wren/checkpoints` (your project's own git is never touched). `/undo` reverts the last turn's file changes, including those made by shell commands, and rewinds the conversation; `/rewind` goes back further.
-- **Compaction**: when the conversation nears the model's context window it is replaced by a structured summary, automatically or with `/compact`.
+- **Compaction**: when the conversation nears the model's context window it is replaced by a structured summary, automatically or with `/compact`. Compactions are restore points too: `/undo` or `/rewind` brings the full history back.
+- **Sessions**: `/clear` starts a new session; `/resume` (or `wren -c` / `wren -r`) switches back and replays the transcript.
+- **Theme**: syntax colors follow the terminal background (detected via OSC 11); override with `/theme`.
 
 Project-specific instructions are read from `WREN.md` or `AGENTS.md` in the working directory, and global ones from `~/.wren/WREN.md`.
 
@@ -61,7 +64,8 @@ Models are only read from the user config, never from the project directory, so 
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
 ├── tools/    read_file, write_file, edit_file, bash, grep, glob
-├── agent/    the loop, compaction, permissions, system prompt, JSONL session log/replay
+├── agent/    the loop, conversation state + restore points, compaction, permissions,
+│             system prompt, JSONL session log/replay
 ├── checkpoint.py  workspace snapshots in a shadow git repo
 └── cli/      REPL and rich rendering
 ```

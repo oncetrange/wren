@@ -14,26 +14,33 @@ from wren import __version__
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
-from wren.checkpoint import Checkpoint, CheckpointError, Checkpoints
+from wren.checkpoint import CheckpointError, Checkpoints
+from wren.cli.pickers import confirm, pick
+from wren.cli.terminal import detect_background, register_shift_enter, shift_enter_help
 from wren.cli.ui import RichUI, fmt_tokens
 from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, load_config
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
+from wren.settings import Settings
 from wren.tools import ToolContext
 
 HELP = """\
 [bold]Commands[/]
-  /model [name]   show or switch the model
-  /undo           revert the last turn: files and conversation
-  /rewind         pick an earlier turn to go back to
+  /undo           undo the last turn (files + conversation) or the last compaction
+  /rewind         pick an earlier point to go back to
   /compact        summarize the conversation to free up context
-  /clear          start a fresh conversation
+  /resume         switch to another session in this directory
+  /clear          start a new session
+  /model [name]   show or switch the model
+  /theme          dark / light / auto-detected colors
+  /keys           how to make Shift+Enter insert a newline in your terminal
   /cost           token usage and cost so far
   /help           this help
   /exit           quit (or Ctrl-D)
 
 [bold]Keys[/]
-  Enter submits · Esc Enter or Ctrl-J inserts a newline · Ctrl-C interrupts the agent"""
+  Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
+  Ctrl-C interrupts the agent · ↑/↓ and Enter in pickers, Esc cancels"""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,11 +56,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"wren {__version__}")
     args = parser.parse_args(argv)
 
-    ui = RichUI()
+    settings = Settings.load()
+    ui = RichUI(background=_background(settings))
     cwd = Path.cwd().resolve()
     try:
         config = load_config()
-        state = _session_to_resume(args, cwd, ui)
+        state = _session_to_resume(args, cwd)
         name = args.model
         if name is None and state and state.model in config.models:
             name = state.model
@@ -74,16 +82,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     if state:
         agent.restore(state)
-        ui.console.print(f"[dim]resumed session {agent.log.id} · {len(state.messages)} messages · "
-                         f"first prompt: {escape(_one_line(state.first_prompt))}[/]")
+        ui.render_history(agent.messages, agent.tools, agent.ctx)
 
     if args.prompt:
         agent.run(args.prompt)
         return 0
-    return Repl(agent, ui, config).loop()
+    return Repl(agent, ui, config, settings).loop()
 
 
-def _session_to_resume(args: argparse.Namespace, cwd: Path, ui: RichUI) -> SessionState | None:
+def _background(settings: Settings) -> str:
+    if settings.theme != "auto":
+        return settings.theme
+    return detect_background() or "dark"
+
+
+def _session_to_resume(args: argparse.Namespace, cwd: Path) -> SessionState | None:
     if args.resume:
         matches = list(SESSIONS_DIR.glob(f"*-{args.resume}.jsonl"))
         if not matches:
@@ -96,14 +109,19 @@ def _session_to_resume(args: argparse.Namespace, cwd: Path, ui: RichUI) -> Sessi
         raise ConfigError(f"no previous sessions in {cwd}")
     if args.continue_:
         return sessions[0]
-    for i, s in enumerate(sessions, 1):
+    state = pick("Resume which session?", _session_options(sessions))
+    if state is None:
+        raise ConfigError("no session selected")
+    return state
+
+
+def _session_options(sessions: list[SessionState], current: Path | None = None):
+    options = []
+    for s in sessions:
         when = datetime.fromtimestamp(s.updated).strftime("%m-%d %H:%M")
-        ui.console.print(f" [bold]{i:>2}[/]  {when}  {escape(_one_line(s.first_prompt))} "
-                         f"[dim]({len(s.messages)} messages)[/]")
-    choice = ui.console.input("resume which session? [1] ").strip() or "1"
-    if not choice.isdigit() or not 1 <= int(choice) <= len(sessions):
-        raise ConfigError(f"invalid choice {choice!r}")
-    return sessions[int(choice) - 1]
+        mark = " (current)" if s.path == current else ""
+        options.append((s, f"{when}  {_one_line(s.first_prompt, 50)}  · {len(s.messages)} messages{mark}"))
+    return options
 
 
 def _one_line(text: str, width: int = 60) -> str:
@@ -112,8 +130,8 @@ def _one_line(text: str, width: int = 60) -> str:
 
 
 class Repl:
-    def __init__(self, agent: Agent, ui: RichUI, config: Config):
-        self.agent, self.ui, self.config = agent, ui, config
+    def __init__(self, agent: Agent, ui: RichUI, config: Config, settings: Settings):
+        self.agent, self.ui, self.config, self.settings = agent, ui, config, settings
         self.console = ui.console
         self._prefill = ""  # text to pre-fill the next prompt with (e.g. after /undo)
 
@@ -123,13 +141,15 @@ class Repl:
             f"({self.agent.model.model}) · {self.agent.ctx.cwd}\n"
             "[dim]/help for commands · Ctrl-D to quit[/]"
         )
+        cps = self.agent.checkpoints
+        if cps is not None and not cps.enabled:
+            self.console.print(f"[yellow]file checkpoints disabled ({cps.disabled_reason}); "
+                               "/undo only rewinds the conversation[/]")
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        register_shift_enter()
         session: PromptSession[str] = PromptSession(
             history=FileHistory(str(CONFIG_DIR / "history")), key_bindings=_key_bindings()
         )
-        if not self.agent.checkpoints or not self.agent.checkpoints.enabled:
-            reason = self.agent.checkpoints.disabled_reason if self.agent.checkpoints else "off"
-            self.console.print(f"[yellow]checkpoints disabled ({reason}); /undo is unavailable[/]")
         while True:
             prefill, self._prefill = self._prefill, ""
             try:
@@ -160,8 +180,12 @@ class Repl:
             case "/help":
                 self.console.print(HELP)
             case "/clear":
-                self.agent.clear()
-                self.console.print("[dim]conversation cleared[/]")
+                old = self.agent.log.id
+                self.agent.new_session(SessionLog())
+                self.console.print(f"[dim]new session started · the previous one can be resumed "
+                                   f"with /resume or wren -r {old}[/]")
+            case "/resume":
+                self.resume()
             case "/cost":
                 u = self.agent.usage
                 cost = f"${self.agent.cost:.4f}" if self.agent.cost is not None else "unknown (no price configured)"
@@ -173,9 +197,11 @@ class Repl:
             case "/model":
                 self.switch_model(arg)
             case "/undo":
-                cps = self._checkpoints()
-                if cps:
-                    self.rewind(cps[-1])
+                timeline = self.agent.conv.timeline
+                if not timeline:
+                    self.console.print("[dim]nothing to undo[/]")
+                else:
+                    self.rewind(len(timeline) - 1)
             case "/rewind":
                 self.pick_rewind()
             case "/compact":
@@ -185,40 +211,64 @@ class Repl:
                     self.ui.error(str(e))
                 except KeyboardInterrupt:
                     self.ui.notice("compaction cancelled")
+            case "/theme":
+                self.pick_theme()
+            case "/keys":
+                self.console.print(escape(shift_enter_help()))
             case _:
                 self.ui.error(f"unknown command {name}; see /help")
         return None
 
-    def _checkpoints(self) -> list[Checkpoint]:
-        cps = self.agent.checkpoints
-        if cps is None or not cps.enabled:
-            self.ui.error(f"checkpoints are disabled ({cps.disabled_reason if cps else 'off'})")
-            return []
-        if not cps.history:
-            self.console.print("[dim]nothing to undo[/]")
-        return cps.history
+    # --- sessions ------------------------------------------------------------
+
+    def resume(self) -> None:
+        sessions = list_sessions(self.agent.ctx.cwd)
+        if not sessions:
+            self.console.print("[dim]no sessions in this directory yet[/]")
+            return
+        state = pick("Switch to which session?", _session_options(sessions, self.agent.log.path))
+        if state is None or state.path == self.agent.log.path:
+            return
+        self.agent.log = SessionLog(path=state.path)
+        self.agent.restore(state)
+        self.console.clear()
+        self.ui.render_history(self.agent.messages, self.agent.tools, self.agent.ctx)
+
+    # --- undo / rewind ---------------------------------------------------------
 
     def pick_rewind(self) -> None:
-        cps = self._checkpoints()
-        if not cps:
+        timeline = self.agent.conv.timeline
+        if not timeline:
+            self.console.print("[dim]nothing to rewind to[/]")
             return
-        for i, cp in enumerate(cps, 1):
-            self.console.print(f" [bold]{i:>2}[/]  {escape(_one_line(cp.prompt))}")
-        choice = self.console.input(f"go back to before which turn? [{len(cps)}] ").strip() or str(len(cps))
-        if not choice.isdigit() or not 1 <= int(choice) <= len(cps):
-            self.console.print("[dim]cancelled[/]")
-            return
-        self.rewind(cps[int(choice) - 1])
+        options = []
+        for i, point in enumerate(timeline):
+            if point.kind == "turn":
+                options.append((i, f"before: {_one_line(point.label)}"))
+            else:
+                options.append((i, "⟲ undo compaction (bring back the full history)"))
+        index = pick("Go back to which point?", options, default=len(timeline) - 1)
+        if index is not None:
+            self.rewind(index)
 
-    def rewind(self, cp: Checkpoint) -> None:
-        assert self.agent.checkpoints is not None
+    def rewind(self, index: int) -> None:
+        point = self.agent.conv.timeline[index]
+        if point.kind == "compaction":
+            if not confirm("Undo the compaction and restore the full conversation?", default=True):
+                return
+            self.agent.rewind(index)
+            self.console.print("[dim]full conversation restored; files unchanged[/]")
+            return
+
         try:
-            changed = self.agent.checkpoints.changed_files(cp)
+            changed = self.agent.changed_files(point)
         except CheckpointError as e:
             self.ui.error(str(e))
             return
-        self.console.print(f"going back to before: [bold]{escape(_one_line(cp.prompt))}[/]")
-        if changed:
+        self.console.print(f"going back to before: [bold]{escape(_one_line(point.label))}[/]")
+        if point.commit is None:
+            self.console.print("[yellow]no file snapshot for this turn; only the conversation is rewound[/]")
+        elif changed:
             self.console.print("files to restore:")
             for line in changed[:20]:
                 status, _, path = line.partition(" ")
@@ -228,33 +278,46 @@ class Repl:
                 self.console.print(f"  [dim]… and {len(changed) - 20} more[/]")
         else:
             self.console.print("[dim]no file changes to restore[/]")
-        if cp.message_index is None:
-            self.console.print("[yellow]the conversation was compacted or cleared since; only files are restored[/]")
-        if self.console.input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
-            self.console.print("[dim]cancelled[/]")
+        if not confirm("Proceed?"):
             return
         try:
-            self.agent.rewind(cp)
+            self.agent.rewind(index)
         except CheckpointError as e:
             self.ui.error(str(e))
             return
         self.console.print("[dim]restored; the prompt is back in the input box[/]")
-        self._prefill = cp.prompt
+        self._prefill = point.label
+
+    # --- settings ------------------------------------------------------------
+
+    def pick_theme(self) -> None:
+        detected = detect_background()
+        theme = pick("Color theme", [
+            ("auto", f"auto (detected: {detected or 'unknown, using dark'})"),
+            ("dark", "dark terminal background"),
+            ("light", "light terminal background"),
+        ], default=self.settings.theme)
+        if theme is None:
+            return
+        self.settings.theme = theme
+        self.settings.save()
+        self.ui.background = theme if theme != "auto" else (detected or "dark")
+        self.console.print(f"[dim]theme: {theme} ({self.ui.background})[/]")
 
     def switch_model(self, name: str) -> None:
         if not name:
-            for m in self.config.models.values():
-                mark = "●" if m.name == self.agent.model.name else " "
-                self.console.print(f" {mark} [bold]{m.name}[/]  {escape(m.model)}  [dim]{m.base_url or ''}[/]")
-            self.console.print(f"[dim]models are configured in {CONFIG_FILE}[/]")
-            return
+            name = pick("Model", [(m.name, f"{m.name}  {m.model}") for m in self.config.models.values()],
+                        default=self.agent.model.name)
+            if name is None:
+                return
         try:
             model = self.config.model(name)
             self.agent.set_model(create_provider(model), model)
         except ConfigError as e:
             self.ui.error(str(e))
             return
-        self.console.print(f"switched to [cyan]{model.name}[/] ({model.model})")
+        self.console.print(f"switched to [cyan]{model.name}[/] ({model.model}) "
+                           f"[dim]· models are configured in {CONFIG_FILE}[/]")
 
 
 def _key_bindings() -> KeyBindings:

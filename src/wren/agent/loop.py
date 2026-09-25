@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from wren.agent.compact import COMPACT_AT, compacted_history, estimate_tokens, summarize
+from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
-from wren.checkpoint import Checkpoint, CheckpointError, Checkpoints
+from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
@@ -19,7 +20,6 @@ from wren.llm.types import (
     Response,
     TextBlock,
     TextDelta,
-    ThinkingBlock,
     ThinkingDelta,
     ToolCallStarted,
     ToolResultBlock,
@@ -66,7 +66,7 @@ class Agent:
         self.checkpoints = checkpoints
         self.max_turns = max_turns
         self.system = build_system_prompt(ctx.cwd)
-        self.messages: list[Message] = []
+        self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
         # Prompt size as of the last response, and how many messages it covered.
@@ -78,6 +78,10 @@ class Agent:
         self._results: list[ToolResultBlock] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
 
+    @property
+    def messages(self) -> list[Message]:
+        return self.conv.messages
+
     # --- public API --------------------------------------------------------
 
     def run(self, prompt: str) -> str:
@@ -87,7 +91,7 @@ class Agent:
             # Compact before adding the prompt so it stays verbatim, not summarized.
             if self._context_full(extra=len(prompt) // 4):
                 self.compact()
-            self._checkpoint(prompt)
+            self._start_turn(prompt)
             self._add_user([TextBlock(prompt)])
             for _ in range(self.max_turns):
                 if self._context_full():
@@ -139,70 +143,74 @@ class Agent:
                                 [t.spec() for t in self.tools.values()])
         finally:
             self.ui.model_finished()
-        self.messages = compacted_history(summary)
+        replacement = compacted_history(summary)[0]
+        self.conv.compacted(summary, replacement)
         self.ctx.read_files.clear()
         self.context_tokens, self._billed_upto = 0, 0
-        if self.checkpoints:
-            self.checkpoints.forget_conversation()
-        self.log.record("compact", summary=summary, message=self.messages[0].to_dict())
-        self.ui.notice(f"compacted to ~{self.estimated_context() // 1000}k tokens")
+        self.log.record("compact", summary=summary, message=replacement.to_dict())
+        self.ui.notice(f"compacted to ~{self.estimated_context() // 1000}k tokens "
+                       "(undo with /rewind)")
 
-    def rewind(self, cp: Checkpoint) -> None:
-        """Restore files, and the conversation when possible, to before `cp`'s turn.
-        Raises CheckpointError."""
-        assert self.checkpoints is not None
-        index = self.checkpoints.history.index(cp)
-        self.checkpoints.restore(cp)
-        if cp.message_index is not None:
-            self.messages = self.messages[: cp.message_index]
-            self.context_tokens, self._billed_upto = 0, 0
+    def changed_files(self, point: RestorePoint) -> list[str]:
+        """Files a rewind to `point` would restore. Raises CheckpointError."""
+        if point.commit is None or not (self.checkpoints and self.checkpoints.enabled):
+            return []
+        return self.checkpoints.changed_files(point.commit)
+
+    def rewind(self, index: int) -> RestorePoint:
+        """Go back to `self.conv.timeline[index]`: files and conversation as
+        before that turn, or the history as before that compaction.
+        Raises CheckpointError (and changes nothing) if files can't be restored."""
+        point = self.conv.timeline[index]
+        if point.commit is not None and self.checkpoints and self.checkpoints.enabled:
+            self.checkpoints.restore(point.commit)
+        self.conv.rewind(index)
         self.ctx.read_files.clear()
-        self.log.record("rewind", commit=cp.commit, message_index=cp.message_index,
-                        checkpoint_index=index)
+        self.context_tokens, self._billed_upto = 0, 0
+        self.log.record("rewind", index=index)
+        return point
 
     def restore(self, state: SessionState) -> None:
-        """Continue a logged session."""
-        self.messages = state.messages
+        """Continue a logged session (its log must be `self.log`)."""
+        self.conv = state.conversation
         self.usage = state.usage
-        if state.cost is not None:
-            self.cost = state.cost
-        if self.checkpoints and self.checkpoints.enabled:
-            self.checkpoints.history = state.checkpoints
+        self.cost = state.cost if state.cost is not None else (0.0 if self.model.price else None)
+        self.context_tokens, self._billed_upto = 0, 0
+        self.ctx.read_files.clear()
         # A session that crashed mid-turn can end with unanswered tool calls.
         if self.messages and self.messages[-1].role == "assistant":
             self._abandon_pending(self.messages[-1].tool_uses(), "Interrupted: the session ended.")
         self.log.record("resume", model=self.model.name)
 
+    def new_session(self, log: SessionLog) -> None:
+        """Start over with an empty conversation in a new log."""
+        self.log = log
+        self.conv = Conversation()
+        self.usage = Usage()
+        self.cost = 0.0 if self.model.price else None
+        self.context_tokens, self._billed_upto = 0, 0
+        self.ctx.read_files.clear()
+        self.log.record("session_start", model=self.model.name, cwd=str(self.ctx.cwd),
+                        system=self.system)
+
     def set_model(self, provider: Provider, model: ModelConfig) -> None:
         # Thinking blocks are signed by the model that produced them and other
         # providers may reject them, so drop them when switching models.
-        for m in self.messages:
-            m.content = [b for b in m.content if not isinstance(b, ThinkingBlock)]
-        self.messages = [m for m in self.messages if m.content]
+        self.conv.strip_thinking()
         self.provider, self.model = provider, model
         if model.price and self.cost is None:
             self.cost = 0.0
         self.log.record("model_switch", model=model.name)
 
-    def clear(self) -> None:
-        self.messages.clear()
-        self.ctx.read_files.clear()
-        self.context_tokens, self._billed_upto = 0, 0
-        if self.checkpoints:
-            self.checkpoints.forget_conversation()
-        self.log.record("clear")
-
-    def _checkpoint(self, prompt: str) -> None:
-        if not (self.checkpoints and self.checkpoints.enabled):
-            return
-        try:
-            cp = self.checkpoints.snapshot(len(self.messages), prompt)
-        except CheckpointError as e:
-            self.ui.notice(f"checkpoint skipped: {e}")
-            return
-        if cp:
-            self.log.record("checkpoint", commit=cp.commit, message_index=cp.message_index,
-                            prompt=prompt)
+    def _start_turn(self, prompt: str) -> None:
+        commit = None
+        if self.checkpoints and self.checkpoints.enabled:
+            try:
+                commit = self.checkpoints.snapshot(f"before: {prompt}")
+            except CheckpointError as e:
+                self.ui.notice(f"checkpoint skipped, files can't be restored to this point: {e}")
+        self.conv.start_turn(prompt, commit)
+        self.log.record("checkpoint", commit=commit, prompt=prompt)
 
     # --- model -------------------------------------------------------------
 
@@ -322,14 +330,9 @@ class Agent:
     # --- history -----------------------------------------------------------
 
     def _append(self, message: Message) -> None:
-        self.messages.append(message)
+        self.conv.append(message)
         self.log.record("message", **message.to_dict())
 
     def _add_user(self, blocks: list[ContentBlock]) -> None:
-        # Consecutive user content (e.g. tool results followed by a new prompt
-        # after an interrupt) is merged into one message.
-        if self.messages and self.messages[-1].role == "user":
-            self.messages[-1].content.extend(blocks)
-            self.log.record("message", **Message("user", blocks).to_dict())
-        else:
-            self._append(Message("user", list(blocks)))
+        self.conv.add_user(blocks)
+        self.log.record("message", **Message("user", list(blocks)).to_dict())

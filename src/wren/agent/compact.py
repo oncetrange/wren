@@ -45,6 +45,10 @@ Continue from where the conversation left off. File contents are not in context 
 anymore: re-read files before editing them."""
 
 
+def is_summary_note(text: str) -> bool:
+    return text.startswith(RESUME_NOTE.split("\n", 1)[0])
+
+
 def estimate_tokens(messages: list[Message]) -> int:
     """Rough token count (~4 characters per token) for not-yet-billed content."""
     chars = sum(len(json.dumps(block_to_dict(b), ensure_ascii=False)) for m in messages for b in m.content)

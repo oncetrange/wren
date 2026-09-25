@@ -13,7 +13,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from wren.config import CONFIG_DIR
@@ -43,62 +42,47 @@ class CheckpointError(Exception):
     pass
 
 
-@dataclass
-class Checkpoint:
-    commit: str
-    # Number of conversation messages before the turn started; None once the
-    # history has been compacted and can no longer be rewound to this point.
-    message_index: int | None
-    prompt: str
-
-
 class Checkpoints:
     def __init__(self, work_tree: Path, root: Path = CHECKPOINTS_DIR):
         self.work_tree = work_tree
         key = hashlib.sha256(str(work_tree).encode()).hexdigest()[:16]
         self.git_dir = root / key
-        self.history: list[Checkpoint] = []
+        self._head: str | None = None
         self.disabled_reason = self._check_usable()
 
     @property
     def enabled(self) -> bool:
         return self.disabled_reason is None
 
-    def snapshot(self, message_index: int | None, prompt: str) -> Checkpoint | None:
-        """Record the current workspace state before a turn."""
-        if not self.enabled:
-            return None
-        commit = self._commit(f"before: {prompt[:200]}")
-        cp = Checkpoint(commit, message_index, prompt)
-        self.history.append(cp)
-        return cp
+    def snapshot(self, label: str) -> str:
+        """Record the current workspace state; returns the snapshot id."""
+        tree = self._write_tree()
+        args = ["commit-tree", tree, "-m", label[:200]] + (["-p", self._head] if self._head else [])
+        self._head = self._git(*args).strip()
+        # Keep snapshots reachable so git never garbage-collects them.
+        self._git("update-ref", "refs/heads/wren", self._head)
+        return self._head
 
-    def changed_files(self, cp: Checkpoint) -> list[str]:
-        """Files that differ between `cp` and the workspace right now."""
+    def changed_files(self, commit: str) -> list[str]:
+        """Files that differ between a snapshot and the workspace right now,
+        as "<A|D|M> <path>" relative to the snapshot."""
         current = self._write_tree()
-        out = self._git("diff", "--name-status", "--no-renames", cp.commit, current)
+        out = self._git("diff", "--name-status", "--no-renames", commit, current)
         return [line.replace("\t", " ", 1) for line in out.splitlines()]
 
-    def restore(self, cp: Checkpoint) -> None:
-        """Make the workspace match `cp`: modified files are reverted, files
-        created since are deleted, deleted files come back."""
+    def restore(self, commit: str) -> None:
+        """Make the workspace match a snapshot: modified files are reverted,
+        files created since are deleted, deleted files come back."""
         current = self._write_tree()
         created = self._git("diff", "--name-only", "-z", "--no-renames", "--diff-filter=A",
-                            cp.commit, current).split("\0")
-        # Point the index at the checkpoint and write every file in it back out.
-        self._git("read-tree", cp.commit)
+                            commit, current).split("\0")
+        # Point the index at the snapshot and write every file in it back out.
+        self._git("read-tree", commit)
         self._git("checkout-index", "--all", "--force")
         for rel in filter(None, created):
             path = self.work_tree / rel
             path.unlink(missing_ok=True)
             _remove_empty_parents(path.parent, self.work_tree)
-        idx = self.history.index(cp)
-        del self.history[idx:]
-
-    def forget_conversation(self) -> None:
-        """History was compacted: checkpoints can restore files only."""
-        for cp in self.history:
-            cp.message_index = None
 
     # --- internals ---------------------------------------------------------
 
@@ -134,15 +118,6 @@ class Checkpoints:
     def _write_tree(self) -> str:
         self._git("add", "-A", ".")
         return self._git("write-tree").strip()
-
-    def _commit(self, message: str) -> str:
-        tree = self._write_tree()
-        parent = self.history[-1].commit if self.history else None
-        args = ["commit-tree", tree, "-m", message] + (["-p", parent] if parent else [])
-        commit = self._git(*args).strip()
-        # Keep commits reachable so git never garbage-collects them.
-        self._git("update-ref", "refs/heads/wren", commit)
-        return commit
 
     def _git(self, *args: str) -> str:
         env = {**os.environ, **_IDENTITY, "GIT_DIR": str(self.git_dir),

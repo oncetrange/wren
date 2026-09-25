@@ -1,6 +1,4 @@
-"""Compaction, checkpoints/rewind and session resume, end to end through Agent."""
-
-from pathlib import Path
+"""Compaction, rewind and session resume, end to end through Agent."""
 
 import pytest
 
@@ -10,6 +8,7 @@ from wren.agent.session import SessionLog, list_sessions, load_session
 from wren.checkpoint import Checkpoints
 from wren.config import ModelConfig
 from wren.llm.types import Message, Response, TextBlock, ToolResultBlock, Usage
+from wren.tools import ToolContext
 
 from conftest import RecordingUI, ScriptedProvider, call, reply
 
@@ -18,7 +17,6 @@ from conftest import RecordingUI, ScriptedProvider, call, reply
 def ctx(tmp_path):
     # The project lives in its own directory so that the session logs and
     # shadow repo under tmp_path are outside the snapshotted work tree.
-    from wren.tools import ToolContext
     project = tmp_path / "project"
     project.mkdir()
     return ToolContext(cwd=project.resolve())
@@ -33,23 +31,27 @@ def make_agent(ctx, provider, tmp_path, model=None, log=True):
     )
 
 
-def test_auto_compaction_replaces_history_and_continues(ctx, tmp_path):
-    big = Response(Message("assistant", [TextBlock("x")]), "end_turn", Usage(input_tokens=900))
-    provider = ScriptedProvider([big, reply("SUMMARY: user wants y"), reply("done")])
+def big_reply(text="x"):
+    return Response(Message("assistant", [TextBlock(text)]), "end_turn", Usage(input_tokens=900))
+
+
+def texts(agent):
+    return [m.text() for m in agent.messages]
+
+
+def test_auto_compaction_keeps_new_prompt_verbatim(ctx, tmp_path):
+    provider = ScriptedProvider([big_reply(), reply("SUMMARY: user wants y"), reply("done")])
     model = ModelConfig(name="fake", model="fake-1", context_window=1000)
     agent = make_agent(ctx, provider, tmp_path, model)
 
     agent.run("first")          # leaves the context at ~900 tokens
     assert agent.run("second") == "done"
 
-    summary_request = provider.requests[1]
-    assert "about to be compacted" in summary_request[-1].content[-1].text
-    # The model then continued from the summary plus the new prompt only.
+    assert "about to be compacted" in provider.requests[1][-1].content[-1].text
     final_request = provider.requests[2]
     assert len(final_request) == 1
     assert "SUMMARY: user wants y" in final_request[0].content[0].text
     assert final_request[0].content[-1].text == "second"
-    assert any("compacted" in e[1] for e in agent.ui.events if e[0] == "notice")
 
 
 def test_undo_restores_files_and_conversation(ctx, tmp_path):
@@ -66,28 +68,63 @@ def test_undo_restores_files_and_conversation(ctx, tmp_path):
     agent.run("say hi")
     agent.run("change things")
     assert f.read_text() == "x = 2\n" and (ctx.cwd / "made.txt").exists()
+    assert agent.changed_files(agent.conv.timeline[-1]) == ["M a.py", "A made.txt"]
 
-    agent.rewind(agent.checkpoints.history[-1])
+    point = agent.rewind(len(agent.conv.timeline) - 1)
+    assert point.label == "change things"
     assert f.read_text() == "x = 1\n"
     assert not (ctx.cwd / "made.txt").exists()   # bash side effects are undone too
-    assert [m.text() for m in agent.messages] == ["say hi", "hello"]
-    assert len(agent.checkpoints.history) == 1
+    assert texts(agent) == ["say hi", "hello"]
+    assert len(agent.conv.timeline) == 1
     assert agent.ctx.read_files == {}
 
 
-def test_resume_rebuilds_the_same_conversation(ctx, tmp_path):
+def test_rewind_past_a_compaction_restores_full_history(ctx, tmp_path):
+    provider = ScriptedProvider([big_reply("one"), reply("SUMMARY"), reply("two"), reply("three")])
+    model = ModelConfig(name="fake", model="fake-1", context_window=1000)
+    agent = make_agent(ctx, provider, tmp_path, model)
+    agent.run("a")
+    agent.run("b")               # compacts, then answers "two"
+    agent.run("c")
+    kinds = [p.kind for p in agent.conv.timeline]
+    assert kinds == ["turn", "compaction", "turn", "turn"]
+
+    # "b" started right after the compaction, so going back to it gives the
+    # compacted conversation...
+    agent.rewind(2)
+    assert len(agent.messages) == 1 and "SUMMARY" in agent.messages[0].text()
+    # ...while undoing the compaction brings back the full history.
+    agent.rewind(1)
+    assert texts(agent) == ["a", "one"]
+
+
+def test_undo_compaction_keeps_what_came_after(ctx, tmp_path):
+    provider = ScriptedProvider([big_reply("one"), reply("SUMMARY"), reply("two")])
+    model = ModelConfig(name="fake", model="fake-1", context_window=1000)
+    agent = make_agent(ctx, provider, tmp_path, model)
+    agent.run("a")
+    agent.run("b")
+    index = next(i for i, p in enumerate(agent.conv.timeline) if p.kind == "compaction")
+
+    agent.rewind(index)
+    assert texts(agent) == ["a", "one", "b", "two"]
+    assert [p.kind for p in agent.conv.timeline] == ["turn", "turn"]
+
+
+def test_resume_rebuilds_the_same_state(ctx, tmp_path):
     provider = ScriptedProvider([
-        reply("one"), call("glob", "t1", pattern="*"), reply("two"), reply("three"),
+        big_reply("one"), call("glob", "t1", pattern="*"), reply("two"), reply("three"),
     ])
     agent = make_agent(ctx, provider, tmp_path)
     agent.run("a")
     agent.run("b")
     agent.run("c")
-    agent.rewind(agent.checkpoints.history[-1])   # drops "c"
+    agent.rewind(len(agent.conv.timeline) - 1)   # drops "c"
 
     state = load_session(agent.log.path)
     assert [m.to_dict() for m in state.messages] == [m.to_dict() for m in agent.messages]
-    assert [c.commit for c in state.checkpoints] == [c.commit for c in agent.checkpoints.history]
+    assert [(p.kind, p.label, p.commit) for p in state.conversation.timeline] == \
+        [(p.kind, p.label, p.commit) for p in agent.conv.timeline]
     assert state.usage == agent.usage and state.first_prompt == "a"
     assert list_sessions(ctx.cwd, tmp_path / "sessions")[0].path == agent.log.path
 
@@ -95,6 +132,8 @@ def test_resume_rebuilds_the_same_conversation(ctx, tmp_path):
     resumed.restore(state)
     assert resumed.run("d") == "back"
     assert [m.role for m in resumed.messages] == ["user", "assistant"] * 4  # a, b+tool, d
+    resumed.rewind(0)            # rewind points survive the resume
+    assert resumed.messages == []
 
 
 def test_resume_answers_dangling_tool_calls(ctx, tmp_path):
@@ -108,3 +147,14 @@ def test_resume_answers_dangling_tool_calls(ctx, tmp_path):
     last = agent.messages[-1]
     assert last.role == "user" and isinstance(last.content[0], ToolResultBlock)
     assert last.content[0].tool_use_id == "t9"
+
+
+def test_new_session_starts_a_separate_log(ctx, tmp_path):
+    agent = make_agent(ctx, ScriptedProvider([reply("one"), reply("two")]), tmp_path)
+    agent.run("a")
+    first_log = agent.log.path
+    agent.new_session(SessionLog(directory=tmp_path / "sessions"))
+    agent.run("b")
+    assert texts(agent) == ["b", "two"]
+    assert [s.first_prompt for s in list_sessions(ctx.cwd, tmp_path / "sessions")] == ["b", "a"]
+    assert load_session(first_log).messages[0].text() == "a"

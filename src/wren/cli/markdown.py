@@ -18,8 +18,9 @@ _FENCES = ("```", "~~~")
 
 
 class MarkdownStream:
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, code_theme: str = "ansi_dark"):
         self.console = console
+        self.code_theme = code_theme
         self.rendered = console.is_terminal
         self._partial = ""  # text after the last newline
         self._block: list[str] = []
@@ -73,7 +74,7 @@ class MarkdownStream:
             self._live.update(Text(""), refresh=True)
         if self._printed_any:
             self.console.print()
-        self.console.print(Markdown("\n".join(self._block), code_theme="ansi_dark"))
+        self.console.print(Markdown("\n".join(self._block), code_theme=self.code_theme))
         self._printed_any = True
         self._block = []
 

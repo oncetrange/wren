@@ -6,15 +6,19 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.rule import Rule
 from rich.markup import escape
 from rich.padding import Padding
 from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
+from wren.agent.compact import is_summary_note
 from wren.agent.permissions import Decision
 from wren.cli.markdown import MarkdownStream
-from wren.tools import Tool, ToolOutput
+from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from wren.tools import Tool, ToolContext, ToolOutput
 
 MAX_DIFF_LINES = 80
 
@@ -24,9 +28,11 @@ def fmt_tokens(n: int) -> str:
 
 
 class RichUI:
-    def __init__(self, console: Console | None = None, interactive: bool | None = None):
+    def __init__(self, console: Console | None = None, interactive: bool | None = None,
+                 background: str = "dark"):
         self.console = console or Console(highlight=False)
         self.interactive = sys.stdin.isatty() if interactive is None else interactive
+        self.background = background  # "dark" | "light": picks syntax colors
         self._status: Status | None = None
         self._stream_kind: str | None = None  # "text" | "thinking" while streaming
         self._markdown: MarkdownStream | None = None
@@ -69,7 +75,7 @@ class RichUI:
             self._print_diff(preview)
             self._previewed = True
         elif "\n" in label:
-            self.console.print(Padding(Syntax(label, "bash", theme="ansi_dark"), (0, 0, 0, 4)))
+            self.console.print(Padding(Syntax(label, "bash", theme=self.code_theme), (0, 0, 0, 4)))
         if not self.interactive:
             self.console.print("  [yellow]denied (no terminal to ask for approval; use --yolo)[/]")
             return Decision(allow=False)
@@ -105,6 +111,38 @@ class RichUI:
             tail = output.content.strip().splitlines()[-8:]
             self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4)))
 
+    @property
+    def code_theme(self) -> str:
+        return "ansi_light" if self.background == "light" else "ansi_dark"
+
+    # --- history -----------------------------------------------------------
+
+    def render_history(self, messages: list[Message], tools: dict[str, Tool], ctx: ToolContext,
+                       max_messages: int = 60) -> None:
+        """Print a past conversation the way it looked while it happened."""
+        hidden = max(0, len(messages) - max_messages)
+        if hidden:
+            self.console.print(Text(f"… {hidden} earlier messages not shown", style="dim"))
+        results = {b.tool_use_id: b for m in messages for b in m.content
+                   if isinstance(b, ToolResultBlock)}
+        for m in messages[hidden:]:
+            for b in m.content:
+                if isinstance(b, TextBlock) and m.role == "user":
+                    if is_summary_note(b.text):
+                        self.console.print(Rule("earlier conversation compacted", style="dim"))
+                    else:
+                        self.console.print(Text("\n› " + b.text, style="bold"))
+                elif isinstance(b, TextBlock) and b.text.strip():
+                    self.console.print(Markdown(b.text, code_theme=self.code_theme))
+                elif isinstance(b, ToolUseBlock):
+                    tool = tools.get(b.name)
+                    self.tool_started(b.name, tool.describe(b.input, ctx) if tool else "")
+                    result = results.get(b.id)
+                    if result is not None and result.is_error:
+                        first = (result.content.strip().splitlines() or ["error"])[0]
+                        self.console.print(Text(f"  ⎿ {first}", style="red"))
+        self.console.print(Rule("resumed", style="dim"))
+
     # --- misc --------------------------------------------------------------
 
     def notice(self, text: str) -> None:
@@ -131,7 +169,7 @@ class RichUI:
         body = "\n".join(lines[:MAX_DIFF_LINES])
         if len(lines) > MAX_DIFF_LINES:
             body += f"\n... ({len(lines) - MAX_DIFF_LINES} more lines)"
-        self.console.print(Padding(Syntax(body, "diff", theme="ansi_dark"), (0, 0, 0, 4)))
+        self.console.print(Padding(Syntax(body, "diff", theme=self.code_theme), (0, 0, 0, 4)))
 
     def _stream(self, text: str, kind: str, style: str) -> None:
         self._stop_spin()
@@ -139,7 +177,7 @@ class RichUI:
             self._end_stream()
             self._stream_kind = kind
             if kind == "text":
-                self._markdown = MarkdownStream(self.console)
+                self._markdown = MarkdownStream(self.console, self.code_theme)
         if self._markdown is not None:
             self._markdown.feed(text)
         else:

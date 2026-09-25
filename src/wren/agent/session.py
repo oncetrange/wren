@@ -16,9 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from wren.checkpoint import Checkpoint
+from wren.agent.conversation import Conversation
 from wren.config import CONFIG_DIR
-from wren.llm.types import Message, ThinkingBlock, Usage
+from wren.llm.types import Message, Usage
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 
@@ -49,16 +49,25 @@ class SessionState:
     path: Path
     cwd: str = ""
     model: str | None = None
-    messages: list[Message] = field(default_factory=list)
-    checkpoints: list[Checkpoint] = field(default_factory=list)
+    conversation: Conversation = field(default_factory=Conversation)
     usage: Usage = field(default_factory=Usage)
     cost: float | None = None
     first_prompt: str = ""
     updated: float = 0.0
 
+    @property
+    def id(self) -> str:
+        return self.path.stem.rsplit("-", 1)[-1]
+
+    @property
+    def messages(self) -> list[Message]:
+        return self.conversation.messages
+
 
 def load_session(path: Path) -> SessionState:
+    """Rebuild a session by replaying its log through `Conversation`."""
     state = SessionState(path)
+    conv = state.conversation
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             e = json.loads(line)
@@ -70,44 +79,37 @@ def load_session(path: Path) -> SessionState:
                 state.cwd, state.model = e["cwd"], e["model"]
             case "message":
                 msg = Message.from_dict(e)
-                if state.messages and state.messages[-1].role == msg.role == "user":
-                    state.messages[-1].content.extend(msg.content)
+                if msg.role == "user":
+                    conv.add_user(msg.content)
+                    if not state.first_prompt:
+                        state.first_prompt = msg.text()
                 else:
-                    state.messages.append(msg)
-                if msg.role == "user" and not state.first_prompt:
-                    state.first_prompt = msg.text()
+                    conv.append(msg)
             case "usage":
                 state.usage += Usage(**e["usage"])
                 if e.get("cost") is not None:
                     state.cost = (state.cost or 0.0) + e["cost"]
             case "checkpoint":
-                state.checkpoints.append(Checkpoint(e["commit"], e["message_index"], e["prompt"]))
-            case "rewind":
-                if e["message_index"] is not None:
-                    state.messages = state.messages[: e["message_index"]]
-                state.checkpoints = state.checkpoints[: e["checkpoint_index"]]
+                conv.start_turn(e["prompt"], e.get("commit"))
             case "compact":
-                state.messages = [Message.from_dict(e["message"])]
-                for c in state.checkpoints:
-                    c.message_index = None
+                conv.compacted(e["summary"], Message.from_dict(e["message"]))
+            case "rewind":
+                conv.rewind(e["index"])
             case "clear":
-                state.messages = []
-                for c in state.checkpoints:
-                    c.message_index = None
+                conv.clear()
             case "model_switch":
                 state.model = e["model"]
-                for m in state.messages:
-                    m.content = [b for b in m.content if not isinstance(b, ThinkingBlock)]
-                state.messages = [m for m in state.messages if m.content]
+                conv.strip_thinking()
     return state
 
 
 def list_sessions(cwd: Path, directory: Path = SESSIONS_DIR, limit: int = 10) -> list[SessionState]:
-    """Sessions started in `cwd` that have a conversation, newest first."""
+    """Sessions started in `cwd` that have a conversation, most recently used first."""
     if not directory.is_dir():
         return []
     found: list[SessionState] = []
-    for path in sorted(directory.glob("*.jsonl"), reverse=True):
+    paths = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+    for path in paths:
         if not _started_in(path, cwd):
             continue
         state = load_session(path)
