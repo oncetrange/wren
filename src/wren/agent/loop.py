@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from wren.agent.compact import COMPACT_AT, compacted_history, estimate_tokens, summarize
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.prompt import build_system_prompt
-from wren.agent.session import SessionLog
+from wren.agent.session import SessionLog, SessionState
+from wren.checkpoint import Checkpoint, CheckpointError, Checkpoints
 from wren.config import ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
@@ -51,6 +53,7 @@ class Agent:
         permissions: Permissions | None = None,
         log: SessionLog | None = None,
         tools: list[Tool] | None = None,
+        checkpoints: Checkpoints | None = None,
         max_turns: int = 100,
     ):
         self.provider = provider
@@ -60,12 +63,15 @@ class Agent:
         self.permissions = permissions or Permissions()
         self.log = log or SessionLog(directory=None)
         self.tools = {t.name: t for t in (tools if tools is not None else default_tools())}
+        self.checkpoints = checkpoints
         self.max_turns = max_turns
         self.system = build_system_prompt(ctx.cwd)
         self.messages: list[Message] = []
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
+        # Prompt size as of the last response, and how many messages it covered.
         self.context_tokens = 0
+        self._billed_upto = 0
         # Tool calls of the current turn that still need a result; used to keep
         # the history valid when the user interrupts mid-turn.
         self._pending: list[ToolUseBlock] = []
@@ -76,15 +82,22 @@ class Agent:
 
     def run(self, prompt: str) -> str:
         """Run one user request to completion. Returns the final assistant text."""
-        self._add_user([TextBlock(prompt)])
         final_text = ""
         try:
+            # Compact before adding the prompt so it stays verbatim, not summarized.
+            if self._context_full(extra=len(prompt) // 4):
+                self.compact()
+            self._checkpoint(prompt)
+            self._add_user([TextBlock(prompt)])
             for _ in range(self.max_turns):
+                if self._context_full():
+                    self.compact()
                 response = self._call_model()
                 if not response.message.content:
                     self.ui.notice("model returned an empty response")
                     return final_text
                 self._append(response.message)
+                self._billed_upto = len(self.messages)
                 final_text = response.message.text() or final_text
 
                 calls = response.message.tool_uses()
@@ -107,6 +120,59 @@ class Agent:
             self.ui.error(str(e))
         return final_text
 
+    def estimated_context(self) -> int:
+        """Tokens the next request will send: last billed size plus what was added since."""
+        return self.context_tokens + estimate_tokens(self.messages[self._billed_upto :])
+
+    def _context_full(self, extra: int = 0) -> bool:
+        return self.estimated_context() + extra > self.model.context_window * COMPACT_AT
+
+    def compact(self) -> None:
+        """Replace the conversation with a summary of it. Raises LLMError."""
+        if not self.messages:
+            return
+        before = self.estimated_context()
+        self.ui.notice(f"compacting conversation (~{before // 1000}k tokens)…")
+        self.ui.model_started()
+        try:
+            summary = summarize(self.provider, self.system, self.messages,
+                                [t.spec() for t in self.tools.values()])
+        finally:
+            self.ui.model_finished()
+        self.messages = compacted_history(summary)
+        self.ctx.read_files.clear()
+        self.context_tokens, self._billed_upto = 0, 0
+        if self.checkpoints:
+            self.checkpoints.forget_conversation()
+        self.log.record("compact", summary=summary, message=self.messages[0].to_dict())
+        self.ui.notice(f"compacted to ~{self.estimated_context() // 1000}k tokens")
+
+    def rewind(self, cp: Checkpoint) -> None:
+        """Restore files, and the conversation when possible, to before `cp`'s turn.
+        Raises CheckpointError."""
+        assert self.checkpoints is not None
+        index = self.checkpoints.history.index(cp)
+        self.checkpoints.restore(cp)
+        if cp.message_index is not None:
+            self.messages = self.messages[: cp.message_index]
+            self.context_tokens, self._billed_upto = 0, 0
+        self.ctx.read_files.clear()
+        self.log.record("rewind", commit=cp.commit, message_index=cp.message_index,
+                        checkpoint_index=index)
+
+    def restore(self, state: SessionState) -> None:
+        """Continue a logged session."""
+        self.messages = state.messages
+        self.usage = state.usage
+        if state.cost is not None:
+            self.cost = state.cost
+        if self.checkpoints and self.checkpoints.enabled:
+            self.checkpoints.history = state.checkpoints
+        # A session that crashed mid-turn can end with unanswered tool calls.
+        if self.messages and self.messages[-1].role == "assistant":
+            self._abandon_pending(self.messages[-1].tool_uses(), "Interrupted: the session ended.")
+        self.log.record("resume", model=self.model.name)
+
     def set_model(self, provider: Provider, model: ModelConfig) -> None:
         # Thinking blocks are signed by the model that produced them and other
         # providers may reject them, so drop them when switching models.
@@ -121,8 +187,22 @@ class Agent:
     def clear(self) -> None:
         self.messages.clear()
         self.ctx.read_files.clear()
-        self.context_tokens = 0
+        self.context_tokens, self._billed_upto = 0, 0
+        if self.checkpoints:
+            self.checkpoints.forget_conversation()
         self.log.record("clear")
+
+    def _checkpoint(self, prompt: str) -> None:
+        if not (self.checkpoints and self.checkpoints.enabled):
+            return
+        try:
+            cp = self.checkpoints.snapshot(len(self.messages), prompt)
+        except CheckpointError as e:
+            self.ui.notice(f"checkpoint skipped: {e}")
+            return
+        if cp:
+            self.log.record("checkpoint", commit=cp.commit, message_index=cp.message_index,
+                            prompt=prompt)
 
     # --- model -------------------------------------------------------------
 

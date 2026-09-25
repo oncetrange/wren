@@ -13,6 +13,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from wren.agent.permissions import Decision
+from wren.cli.markdown import MarkdownStream
 from wren.tools import Tool, ToolOutput
 
 MAX_DIFF_LINES = 80
@@ -28,6 +29,7 @@ class RichUI:
         self.interactive = sys.stdin.isatty() if interactive is None else interactive
         self._status: Status | None = None
         self._stream_kind: str | None = None  # "text" | "thinking" while streaming
+        self._markdown: MarkdownStream | None = None
         self._previewed = False
 
     # --- model stream ------------------------------------------------------
@@ -113,8 +115,11 @@ class RichUI:
         self._stop_spin()
         self.console.print(f"[bold red]error:[/] {escape(text)}")
 
-    def usage_line(self, context_tokens: int, output_tokens: int, cost: float | None) -> None:
-        parts = [f"context {fmt_tokens(context_tokens)}", f"output {fmt_tokens(output_tokens)} total"]
+    def usage_line(self, context_tokens: int, context_window: int, output_tokens: int,
+                   cost: float | None) -> None:
+        pct = 100 * context_tokens / context_window if context_window else 0
+        parts = [f"context {fmt_tokens(context_tokens)}/{fmt_tokens(context_window)} ({pct:.0f}%)",
+                 f"output {fmt_tokens(output_tokens)} total"]
         if cost is not None:
             parts.append(f"${cost:.4f}")
         self.console.print(Text("  " + " · ".join(parts), style="dim"))
@@ -133,12 +138,20 @@ class RichUI:
         if self._stream_kind != kind:
             self._end_stream()
             self._stream_kind = kind
-        self.console.print(text, end="", style=style, markup=False, soft_wrap=True)
+            if kind == "text":
+                self._markdown = MarkdownStream(self.console)
+        if self._markdown is not None:
+            self._markdown.feed(text)
+        else:
+            self.console.print(text, end="", style=style, markup=False, soft_wrap=True)
 
     def _end_stream(self) -> None:
-        if self._stream_kind is not None:
+        if self._markdown is not None:
+            self._markdown.close()
+            self._markdown = None
+        elif self._stream_kind is not None:
             self.console.print()
-            self._stream_kind = None
+        self._stream_kind = None
 
     def _spin(self, message: str) -> None:
         if not self.console.is_terminal:

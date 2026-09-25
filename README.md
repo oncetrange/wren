@@ -15,10 +15,15 @@ export MOONSHOT_API_KEY=sk-...   # for the default `kimi` model
 wren                              # interactive session
 wren -m claude                    # pick a model
 wren -p "fix the failing test"    # one-shot, non-interactive
+wren -c                           # continue the last session in this directory
+wren -r                           # pick a session to resume (or: wren -r <id>)
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/model [name]`, `/clear`, `/cost`, `/help`. Esc-Enter inserts a newline; Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/model [name]`, `/clear`, `/cost`, `/help`. Esc-Enter inserts a newline; Ctrl-C interrupts the agent.
+
+- **Checkpoints**: the workspace is snapshotted before every prompt into a shadow git repository under `~/.wren/checkpoints` (your project's own git is never touched). `/undo` reverts the last turn's file changes, including those made by shell commands, and rewinds the conversation; `/rewind` goes back further.
+- **Compaction**: when the conversation nears the model's context window it is replaced by a structured summary, automatically or with `/compact`.
 
 Project-specific instructions are read from `WREN.md` or `AGENTS.md` in the working directory, and global ones from `~/.wren/WREN.md`.
 
@@ -56,14 +61,15 @@ Models are only read from the user config, never from the project directory, so 
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
 ├── tools/    read_file, write_file, edit_file, bash, grep, glob
-├── agent/    the loop, permissions, system prompt, JSONL session log
+├── agent/    the loop, compaction, permissions, system prompt, JSONL session log/replay
+├── checkpoint.py  workspace snapshots in a shadow git repo
 └── cli/      REPL and rich rendering
 ```
 
 - The agent only sees `wren.llm.types`; adding a provider means writing one adapter.
 - `edit_file` does exact string replacement, requires the file to have been read, and refuses if it changed on disk since.
 - Tool failures are returned to the model as error results so it can correct itself.
-- Every session is logged to `~/.wren/sessions/*.jsonl`.
+- Every session is logged to `~/.wren/sessions/*.jsonl`; resuming replays the log (messages, compactions, rewinds) to rebuild the exact conversation.
 
 ## Development
 

@@ -16,6 +16,14 @@ class ToolContext:
     # Files the model has read, mapped to their mtime at read time. Edits are
     # refused on files that were never read or changed on disk since.
     read_files: dict[Path, int] = field(default_factory=dict)
+    # Where the bash tool's shell currently is; `cd` persists across calls.
+    shell_cwd: Path | None = None
+
+    @property
+    def bash_cwd(self) -> Path:
+        if self.shell_cwd is not None and self.shell_cwd.is_dir():
+            return self.shell_cwd
+        return self.cwd
 
     def resolve(self, path: str) -> Path:
         return (self.cwd / Path(path).expanduser()).resolve()

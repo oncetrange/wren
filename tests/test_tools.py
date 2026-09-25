@@ -105,3 +105,14 @@ def test_validate_args():
     assert "unknown argument" in validate_args(schema, {"path": "a", "bogus": 1})
     assert "integer" in validate_args(schema, {"path": "a", "limit": "10"})
     assert "integer" in validate_args(schema, {"path": "a", "limit": True})
+
+
+def test_bash_cd_persists(ctx: ToolContext):
+    (ctx.cwd / "sub").mkdir()
+    out = Bash().run({"command": "cd sub && echo in"}, ctx)
+    assert "working directory is now" in out.content
+    assert Bash().run({"command": "pwd"}, ctx).content.startswith(str(ctx.cwd / "sub"))
+    # exit still records the directory; file tools stay relative to the project
+    Bash().run({"command": "cd .. ; exit 1"}, ctx)
+    assert ctx.bash_cwd == ctx.cwd
+    assert ctx.resolve("a.py") == ctx.cwd / "a.py"

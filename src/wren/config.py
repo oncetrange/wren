@@ -50,6 +50,8 @@ class ModelConfig:
     # well, which most Anthropic-compatible gateways expect.
     auth: Literal["api_key", "bearer"] = "api_key"
     max_tokens: int = 32000
+    # Total tokens the model accepts; the conversation is compacted before this fills up.
+    context_window: int = 200_000
     prompt_cache: bool = True
     # The request's `thinking` parameter: a type string such as "adaptive", or a
     # full table like {type = "enabled", budget_tokens = 16000}. None omits it.
@@ -71,6 +73,7 @@ class ModelConfig:
 BUILTIN_MODELS: dict[str, dict[str, Any]] = {
     "qwen": {
         "model": "qwen3-coder-plus",
+        "context_window": 262_144,
         "base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
         "api_key_env": "DASHSCOPE_API_KEY",
         "auth": "bearer",
@@ -79,6 +82,7 @@ BUILTIN_MODELS: dict[str, dict[str, Any]] = {
     },
     "kimi": {
         "model": "kimi-k2.7-code",
+        "context_window": 262_144,
         "base_url": "https://api.moonshot.cn/anthropic",
         "api_key_env": "MOONSHOT_API_KEY",
         "auth": "bearer",
@@ -91,6 +95,7 @@ BUILTIN_MODELS: dict[str, dict[str, Any]] = {
     },
     "claude": {
         "model": "claude-opus-5",
+        "context_window": 1_000_000,
         "api_key_env": "ANTHROPIC_API_KEY",
         "max_tokens": 64000,
         "thinking": "adaptive",
