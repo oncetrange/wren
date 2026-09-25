@@ -16,7 +16,12 @@ from wren.agent.permissions import Permissions
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.cli.pickers import confirm, pick
-from wren.cli.terminal import detect_background, register_shift_enter, shift_enter_help
+from wren.cli.terminal import (
+    detect_background,
+    distinguish_shift_enter,
+    register_shift_enter,
+    shift_enter_help,
+)
 from wren.cli.ui import RichUI, fmt_tokens
 from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, load_config
 from wren.llm.factory import create_provider
@@ -153,7 +158,8 @@ class Repl:
         while True:
             prefill, self._prefill = self._prefill, ""
             try:
-                text = session.prompt("\n› ", default=prefill).strip()
+                with distinguish_shift_enter():
+                    text = session.prompt("\n› ", default=prefill).strip()
             except KeyboardInterrupt:
                 continue
             except EOFError:

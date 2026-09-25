@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import select
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Literal
 
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
@@ -14,14 +17,55 @@ from prompt_toolkit.keys import Keys
 
 Background = Literal["dark", "light"]
 
-# Shift+Enter as sent by terminals with CSI-u / modifyOtherKeys reporting turned
-# on. We read them as Esc Enter, which inserts a newline.
-_SHIFT_ENTER_SEQUENCES = ("\x1b[13;2u", "\x1b[27;2;13~")
+# Shift+Enter (and Ctrl/Ctrl+Shift+Enter) as sent by terminals with CSI-u or
+# modifyOtherKeys reporting on. We read them as Esc Enter, which inserts a newline.
+_NEWLINE_SEQUENCES = ("\x1b[13;2u", "\x1b[13;5u", "\x1b[13;6u",
+                      "\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[27;6;13~")
+# Ctrl+Shift+letter under modifyOtherKeys: swallow instead of typing the bytes.
+_IGNORED_SEQUENCES = tuple(f"\x1b[27;6;{ord(c)}~" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+# xterm modifyOtherKeys mode 1: modified keys without a well-known encoding
+# (such as Shift+Enter) are reported as CSI 27;<mods>;<key>~, while Ctrl+C,
+# Ctrl+D, Esc and Backspace keep their usual bytes. WezTerm and xterm honor it
+# without any user configuration; other terminals ignore the request.
+_MOK_ON, _MOK_OFF = "\x1b[>4;1m", "\x1b[>4;0m"
 
 
 def register_shift_enter() -> None:
-    for seq in _SHIFT_ENTER_SEQUENCES:
+    for seq in _NEWLINE_SEQUENCES:
         ANSI_SEQUENCES[seq] = (Keys.Escape, Keys.ControlM)
+    for seq in _IGNORED_SEQUENCES:
+        ANSI_SEQUENCES[seq] = Keys.Ignore
+
+
+@contextmanager
+def distinguish_shift_enter(stream=None) -> Iterator[None]:
+    """Ask the terminal to report Shift+Enter distinctly while reading input.
+
+    Only on while we wait for input, so programs the agent runs and the shell
+    after we exit get the terminal in its normal state.
+    """
+    stream = stream or sys.stdout
+    if not stream.isatty():
+        yield
+        return
+    stream.write(_MOK_ON)
+    stream.flush()
+    atexit.register(_reset, stream)
+    try:
+        yield
+    finally:
+        _reset(stream)
+        atexit.unregister(_reset)
+
+
+def _reset(stream) -> None:
+    try:
+        stream.write(_MOK_OFF)
+        stream.flush()
+    except (OSError, ValueError):
+        pass
 
 
 def detect_background(timeout: float = 0.15) -> Background | None:
@@ -73,12 +117,7 @@ def shift_enter_help() -> str:
     """How to make Shift+Enter insert a newline in the user's terminal."""
     term = os.environ.get("TERM_PROGRAM", "")
     snippets = {
-        "WezTerm": (
-            "Add to ~/.wezterm.lua (inside the config table):\n\n"
-            "  config.keys = {\n"
-            "    { key = 'Enter', mods = 'SHIFT', action = wezterm.action.SendString '\\x1b\\r' },\n"
-            "  }"
-        ),
+        "WezTerm": "Shift+Enter works out of the box in WezTerm; no configuration needed.",
         "iTerm.app": (
             "iTerm2 → Settings → Profiles → Keys → Key Mappings → +\n"
             "  Shortcut: Shift+Enter · Action: Send Escape Sequence · Esc+: (a single carriage return, ^M)\n"
