@@ -72,6 +72,9 @@ class Agent:
         # Prompt size as of the last response, and how many messages it covered.
         self.context_tokens = 0
         self._billed_upto = 0
+        # How the last run() ended: done | max_turns | error | interrupted | refusal
+        self.status = "done"
+        self.turns = self.tool_calls = self.tool_errors = 0
         # Tool calls of the current turn that still need a result; used to keep
         # the history valid when the user interrupts mid-turn.
         self._pending: list[ToolUseBlock] = []
@@ -87,6 +90,7 @@ class Agent:
     def run(self, prompt: str) -> str:
         """Run one user request to completion. Returns the final assistant text."""
         final_text = ""
+        self.status = "done"
         try:
             # Compact before adding the prompt so it stays verbatim, not summarized.
             if self._context_full(extra=len(prompt) // 4):
@@ -107,6 +111,7 @@ class Agent:
                 calls = response.message.tool_uses()
                 if response.stop_reason == "refusal":
                     self.ui.notice("the model declined to continue")
+                    self.status = "refusal"
                     self._abandon_pending(calls, "Not executed: the response was a refusal.")
                     return final_text
                 if not calls:
@@ -116,12 +121,15 @@ class Agent:
                 if not self._run_tools(calls, truncated=response.stop_reason == "max_tokens"):
                     return final_text
             self.ui.notice(f"stopped after {self.max_turns} turns")
+            self.status = "max_turns"
         except KeyboardInterrupt:
             self._abandon_pending(self._pending, "Interrupted by the user.")
             self.ui.notice("interrupted")
+            self.status = "interrupted"
         except LLMError as e:
             self.log.record("error", error=str(e))
             self.ui.error(str(e))
+            self.status = "error"
         return final_text
 
     def estimated_context(self) -> int:
@@ -238,6 +246,7 @@ class Agent:
             raise LLMError("stream ended without a final message")
 
         self.usage += response.usage
+        self.turns += 1
         self.context_tokens = response.usage.context_tokens + response.usage.output_tokens
         turn_cost = self.model.cost(response.usage)
         if turn_cost is not None and self.cost is not None:
@@ -312,12 +321,17 @@ class Agent:
             output = ToolOutput(f"internal error in {call.name}: {type(e).__name__}: {e}", True,
                                 summary=f"{type(e).__name__}: {e}")
         self.ui.tool_finished(call.name, output)
-        self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error)
+        self.tool_calls += 1
+        self.tool_errors += output.is_error
+        self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
+                        error=output.content[:500] if output.is_error else None)
         return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), True
 
     def _error(self, call: ToolUseBlock, text: str) -> ToolResultBlock:
         self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary=text))
-        self.log.record("tool", name=call.name, input=call.input, is_error=True)
+        self.tool_calls += 1
+        self.tool_errors += 1
+        self.log.record("tool", name=call.name, input=call.input, is_error=True, error=text[:500])
         return ToolResultBlock(call.id, text, is_error=True)
 
     def _abandon_pending(self, calls: list[ToolUseBlock], reason: str) -> None:

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from rich.console import Console
 from rich.markup import escape
 
 from wren import __version__
@@ -51,7 +54,14 @@ HELP = """\
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wren", description="A coding agent for your terminal.")
     parser.add_argument("-p", "--print", dest="prompt", metavar="PROMPT",
-                        help="run a single request non-interactively and exit")
+                        help="run a single request non-interactively and exit ('-' reads stdin)")
+    parser.add_argument("--output-format", choices=["text", "json"], default="text",
+                        help="with -p: 'json' prints one JSON result object to stdout and "
+                             "sends progress output to stderr")
+    parser.add_argument("--max-turns", type=int, default=100, metavar="N",
+                        help="stop after N model calls per request (default 100)")
+    parser.add_argument("--no-checkpoints", action="store_true",
+                        help="don't snapshot the workspace before each prompt")
     parser.add_argument("-m", "--model", help="model name from the config (default: config default_model)")
     parser.add_argument("-c", "--continue", dest="continue_", action="store_true",
                         help="continue the most recent session in this directory")
@@ -61,8 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"wren {__version__}")
     args = parser.parse_args(argv)
 
+    json_output = bool(args.prompt) and args.output_format == "json"
+    if args.prompt == "-":
+        args.prompt = sys.stdin.read()
+
     settings = Settings.load()
-    ui = RichUI(background=_background(settings))
+    # In JSON mode stdout carries only the result object; everything else goes to stderr.
+    console = Console(highlight=False, stderr=json_output)
+    ui = RichUI(console, background=_background(settings))
     cwd = Path.cwd().resolve()
     try:
         config = load_config()
@@ -83,16 +99,44 @@ def main(argv: list[str] | None = None) -> int:
         ui,
         permissions=Permissions(mode="auto" if args.yolo else "ask"),
         log=SessionLog(path=state.path) if state else SessionLog(),
-        checkpoints=Checkpoints(cwd),
+        checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
+        max_turns=args.max_turns,
     )
     if state:
         agent.restore(state)
         ui.render_history(agent.messages, agent.tools, agent.ctx)
 
     if args.prompt:
-        agent.run(args.prompt)
-        return 0
+        start = time.monotonic()
+        result = agent.run(args.prompt)
+        if json_output:
+            print(json.dumps(_result_json(agent, result, time.monotonic() - start),
+                             ensure_ascii=False))
+        return 0 if agent.status == "done" else 1
     return Repl(agent, ui, config, settings).loop()
+
+
+def _result_json(agent: Agent, result: str, seconds: float) -> dict:
+    u = agent.usage
+    return {
+        "status": agent.status,
+        "result": result,
+        "model": agent.model.name,
+        "model_id": agent.model.model,
+        "session_id": agent.log.id,
+        "session_log": str(agent.log.path) if agent.log.path else None,
+        "turns": agent.turns,
+        "tool_calls": agent.tool_calls,
+        "tool_errors": agent.tool_errors,
+        "usage": {
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+        },
+        "cost_usd": agent.cost,
+        "duration_s": round(seconds, 1),
+    }
 
 
 def _background(settings: Settings) -> str:

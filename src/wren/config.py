@@ -110,11 +110,17 @@ class Config:
     models: dict[str, ModelConfig] = field(default_factory=dict)
 
     def model(self, name: str | None = None) -> ModelConfig:
-        name = name or self.default_model
-        if name not in self.models:
-            known = ", ".join(sorted(self.models))
-            raise ConfigError(f"unknown model {name!r} (configured: {known})")
-        return self.models[name]
+        """Look a model up by its config name, or by its model id with an
+        optional provider prefix ("kimi-k2.7-code", "moonshot/kimi-k2.7-code")."""
+        name = name or os.environ.get("WREN_MODEL") or self.default_model
+        if name in self.models:
+            return self.models[name]
+        model_id = name.split("/", 1)[-1]
+        for m in self.models.values():
+            if m.model == model_id:
+                return m
+        known = ", ".join(sorted(self.models))
+        raise ConfigError(f"unknown model {name!r} (configured: {known})")
 
 
 class ConfigError(Exception):

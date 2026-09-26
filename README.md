@@ -75,6 +75,35 @@ src/wren/
 - Tool failures are returned to the model as error results so it can correct itself.
 - Every session is logged to `~/.wren/sessions/*.jsonl`; resuming replays the log (messages, compactions, rewinds) to rebuild the exact conversation.
 
+## Headless use
+
+```bash
+wren -p "fix the failing test" --yolo --output-format json   # one JSON object on stdout
+echo "task text" | wren -p - --yolo --max-turns 50            # prompt from stdin
+```
+
+Exit code is 0 when the agent finished normally, 1 otherwise (`status` in the JSON says why:
+`max_turns`, `error`, ...). `-m` also accepts a model id such as `moonshot/kimi-k2.7-code`, and
+`WREN_MODEL` sets the default.
+
+## Benchmarks (Pier / Harbor)
+
+wren ships a Pier/Harbor installed-agent adapter, so it runs on
+[DeepSWE](https://github.com/datacurve-ai/deep-swe) and other Harbor-format benchmarks:
+
+```bash
+uv tool install datacurve-pier --with git+https://github.com/oncetrange/wren
+git clone https://github.com/datacurve-ai/deep-swe
+pier run -p deep-swe/tasks --env modal --n-tasks 10 --sample-seed 0 \
+    --agent-import-path wren.integrations.pier_agent:WrenAgent \
+    -m moonshot/kimi-k2.7-code --ae MOONSHOT_API_KEY=$MOONSHOT_API_KEY \
+    --ak version=main --ak max_turns=150
+```
+
+Inside each task container the adapter installs wren from this repository at the given git ref,
+runs it headless with network access limited to the model's API host, and reports tokens, cost,
+steps and compactions back to Pier. Session logs are kept under the trial's `agent/wren/` logs.
+
 ## Development
 
 ```bash
