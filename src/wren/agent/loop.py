@@ -20,6 +20,7 @@ from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
+from wren.agent.todos import format_todos
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import CONFIG_DIR, ModelConfig
 from wren.llm.base import Provider
@@ -182,7 +183,7 @@ class Agent:
         finally:
             self.ui.model_finished()
         archive = self._archive(span)
-        note = summary_note(summary, archive)
+        note = summary_note(summary, archive, format_todos(self.conv.todos))
         self.conv.compacted(summary, note, kept_from)
         self.ctx.read_files.clear()
         self._reestimate()
@@ -378,6 +379,9 @@ class Agent:
         except Exception as e:  # a bug in a tool must not kill the session
             output = ToolOutput(f"internal error in {call.name}: {type(e).__name__}: {e}", True,
                                 summary=f"{type(e).__name__}: {e}")
+        if output.todos is not None:
+            self.conv.todos = output.todos
+            self.log.record("todos", items=[t.to_dict() for t in output.todos])
         self.ui.tool_finished(call.name, output)
         self.tool_calls += 1
         self.tool_errors += output.is_error

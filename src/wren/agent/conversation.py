@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from wren.agent.compact import mask_old_tool_traffic
+from wren.agent.todos import TodoItem
 from wren.llm.types import ContentBlock, Message, TextBlock, ThinkingBlock
 
 
@@ -28,12 +29,15 @@ class RestorePoint:
     # index in `messages` from which the tail was kept verbatim.
     summary: str | None = None
     kept_from: int = 0
+    # The task list at that point.
+    todos: list[TodoItem] | None = None
 
 
 class Conversation:
     def __init__(self) -> None:
         self.messages: list[Message] = []
         self.timeline: list[RestorePoint] = []
+        self.todos: list[TodoItem] = []
 
     # --- messages ------------------------------------------------------------
 
@@ -57,7 +61,8 @@ class Conversation:
     # --- restore points ------------------------------------------------------
 
     def start_turn(self, prompt: str, commit: str | None) -> None:
-        self.timeline.append(RestorePoint("turn", prompt, _copy(self.messages), commit))
+        self.timeline.append(RestorePoint("turn", prompt, _copy(self.messages), commit,
+                                          todos=list(self.todos)))
 
     def mask(self, keep_turns: int, min_chars: int) -> int:
         """L1: mask old tool traffic in place. Returns characters freed."""
@@ -81,6 +86,7 @@ class Conversation:
         point = self.timeline[index]
         if point.kind == "turn":
             self.messages = _copy(point.messages)
+            self.todos = list(point.todos or [])
             del self.timeline[index:]
         else:
             # Everything but the summary note is still current: put the
@@ -102,6 +108,7 @@ class Conversation:
 
     def clear(self) -> None:
         self.messages = []
+        self.todos = []
 
 
 def _copy(messages: list[Message]) -> list[Message]:

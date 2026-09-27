@@ -78,7 +78,7 @@ Earlier parts of this session were compacted to save context. Summary:
 <summary>
 {summary}
 </summary>
-{archive}
+{archive}{todos}
 The most recent messages follow verbatim. File contents seen earlier may be \
 out of date: re-read files before editing them."""
 
@@ -166,9 +166,11 @@ def summarize(provider: Provider, system: str, span: list[Message], tools: list[
     return summary
 
 
-def summary_note(summary: str, archive: Path | None) -> Message:
+def summary_note(summary: str, archive: Path | None, todos: str = "") -> Message:
     archive_text = ARCHIVE_NOTE.format(path=archive) if archive else ""
-    return Message("user", [TextBlock(RESUME_NOTE.format(summary=summary, archive=archive_text))])
+    todos_text = f"\nYour task list (keep maintaining it with todo_write):\n{todos}\n" if todos else ""
+    return Message("user", [TextBlock(RESUME_NOTE.format(summary=summary, archive=archive_text,
+                                                         todos=todos_text))])
 
 
 def append_archive(path: Path, span: list[Message], heading: str) -> None:

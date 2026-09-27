@@ -16,6 +16,7 @@ from rich.markup import escape
 from wren import __version__
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
+from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.cli.keys import newline_bindings
@@ -40,6 +41,7 @@ HELP = """\
   /compact        summarize the conversation to free up context
   /resume         switch to another session in this directory
   /clear          start a new session
+  /todos          show the current task list
   /model (name)   show or switch the model
   /theme          dark / light / auto-detected colors
   /keys           how to make Shift+Enter insert a newline in your terminal
@@ -136,6 +138,7 @@ def _result_json(agent: Agent, result: str, seconds: float) -> dict:
             "cache_write_tokens": u.cache_write_tokens,
         },
         "cost_usd": agent.cost,
+        "todos": [t.to_dict() for t in agent.conv.todos],
         "duration_s": round(seconds, 1),
     }
 
@@ -247,6 +250,13 @@ class Repl:
                 )
             case "/model":
                 self.switch_model(arg)
+            case "/todos":
+                todos = self.agent.conv.todos
+                if todos:
+                    self.console.print(f"[bold]Tasks[/] [dim]({progress(todos)})[/]")
+                    self.ui.print_todos_text(format_todos(todos))
+                else:
+                    self.console.print("[dim]no task list[/]")
             case "/undo":
                 timeline = self.agent.conv.timeline
                 if not timeline:

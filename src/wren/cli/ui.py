@@ -110,9 +110,18 @@ class RichUI:
         self.console.print(Text(f"  ⎿ {summary}", style=style))
         if output.diff and not self._previewed:
             self._print_diff(output.diff)
+        if output.display:
+            self.print_todos_text(output.display)
         if output.is_error and name == "bash":
             tail = output.content.strip().splitlines()[-8:]
             self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4)))
+
+    def print_todos_text(self, text: str) -> None:
+        styled = Text()
+        for line in text.splitlines():
+            style = {"✓": "dim strike", "▸": "bold cyan"}.get(line[:1], "")
+            styled.append(line + "\n", style=style)
+        self.console.print(Padding(styled, (0, 0, 0, 4)), end="")
 
     @property
     def code_theme(self) -> str:

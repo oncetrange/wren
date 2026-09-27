@@ -46,6 +46,7 @@ def test_json_result(run_wren):
     assert (out["model"], out["turns"], out["tool_calls"], out["tool_errors"]) == ("fake", 2, 1, 0)
     assert out["usage"]["input_tokens"] == 2000 and out["cost_usd"] == pytest.approx(0.0022)
     assert (run_wren.project / "hello.txt").read_text() == "hi\n"
+    assert out["todos"] == []
     assert "write_file" in proc.stderr       # progress still visible, on stderr
 
 

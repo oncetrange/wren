@@ -45,6 +45,10 @@ class ToolOutput:
     # What the terminal shows the user; the model always gets `content`.
     summary: str = ""
     diff: str | None = None
+    # Extra text shown under the tool line (e.g. the task list).
+    display: str | None = None
+    # A new task list, for todo_write; the agent stores it (list[TodoItem]).
+    todos: list[Any] | None = None
 
 
 class ToolError(Exception):

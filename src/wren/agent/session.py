@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from wren.agent.conversation import Conversation
+from wren.agent.todos import TodoItem
 from wren.config import CONFIG_DIR
 from wren.llm.types import Message, Usage
 
@@ -91,6 +92,8 @@ def load_session(path: Path) -> SessionState:
                     state.cost = (state.cost or 0.0) + e["cost"]
             case "checkpoint":
                 conv.start_turn(e["prompt"], e.get("commit"))
+            case "todos":
+                conv.todos = [TodoItem(**t) for t in e["items"]]
             case "mask":
                 conv.mask(e["keep_turns"], e["min_chars"])
             case "compact":
