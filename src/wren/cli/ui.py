@@ -10,14 +10,16 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.markup import escape
 from rich.padding import Padding
+from rich.panel import Panel
 from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
 from wren.agent.compact import is_summary_note
 from wren.agent.permissions import Decision
+from wren.agent.plans import PlanDecision, is_reminder
 from wren.cli.markdown import MarkdownStream
-from wren.cli.pickers import ask_text
+from wren.cli.pickers import ask_text, pick
 from wren.cli.terminal import distinguish_shift_enter
 from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from wren.tools import Tool, ToolContext, ToolOutput
@@ -104,6 +106,25 @@ class RichUI:
                 return Decision(allow=False)
         return Decision(allow=False, feedback=answer)
 
+    def review_plan(self, plan: str) -> PlanDecision | None:
+        self._stop_spin()
+        self.console.print(Panel(Markdown(plan, code_theme=self.code_theme), title="Plan",
+                                 title_align="left", border_style="cyan", padding=(0, 1)))
+        if not self.interactive:
+            return None
+        choice = pick("Approve this plan?", [
+            ("accept_edits", "Yes, and auto-accept edits"),
+            ("ask", "Yes, and ask before each edit"),
+            ("revise", "No, keep planning"),
+        ], default="accept_edits")
+        if choice in ("accept_edits", "ask"):
+            return PlanDecision(True, mode=choice)
+        if choice == "revise":
+            self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
+            with distinguish_shift_enter():
+                return PlanDecision(False, feedback=ask_text().strip())
+        return PlanDecision(False)
+
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         style = "red" if output.is_error else "dim"
         summary = output.summary or ("error" if output.is_error else "done")
@@ -140,6 +161,8 @@ class RichUI:
         for m in messages[hidden:]:
             for b in m.content:
                 if isinstance(b, TextBlock) and m.role == "user":
+                    if is_reminder(b.text):
+                        continue
                     if is_summary_note(b.text):
                         self.console.print(Rule("earlier conversation compacted", style="dim"))
                     else:

@@ -18,6 +18,7 @@ from wren.agent.compact import (
 )
 from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
+from wren.agent.plans import PLAN_MODE_OFF, PLAN_MODE_ON, PlanDecision, save_plan
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.todos import format_todos
@@ -53,6 +54,7 @@ class AgentUI(Protocol):
     def model_finished(self) -> None: ...
     def tool_started(self, name: str, label: str) -> None: ...
     def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision: ...
+    def review_plan(self, plan: str) -> PlanDecision | None: ...
     def tool_finished(self, name: str, output: ToolOutput) -> None: ...
     def notice(self, text: str) -> None: ...
     def error(self, text: str) -> None: ...
@@ -90,6 +92,10 @@ class Agent:
         # How the last run() ended: done | max_turns | error | interrupted | refusal
         self.status = "done"
         self.turns = self.tool_calls = self.tool_errors = 0
+        # Plan mode: the mode the model was last told about, and the last saved plan.
+        self._told_mode = "ask"
+        self.plan_text: str | None = None
+        self.plan_file: Path | None = None
         # Tool calls of the current turn that still need a result; used to keep
         # the history valid when the user interrupts mid-turn.
         self._pending: list[ToolUseBlock] = []
@@ -110,7 +116,7 @@ class Agent:
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
-            self._add_user([TextBlock(prompt)])
+            self._add_user([TextBlock(prompt), *self._mode_reminder()])
             for _ in range(self.max_turns):
                 self._manage_context()
                 response = self._call_model()
@@ -148,6 +154,16 @@ class Agent:
     def estimated_context(self) -> int:
         """Tokens the next request will send: last billed size plus what was added since."""
         return self.context_tokens + estimate_tokens(self.messages[self._billed_upto :])
+
+    def _mode_reminder(self) -> list[TextBlock]:
+        """Tell the model about plan mode: on every prompt while it's on, and once when it ends."""
+        mode, told = self.permissions.mode, self._told_mode
+        self._told_mode = mode
+        if mode == "plan":
+            return [TextBlock(PLAN_MODE_ON)]
+        if told == "plan":
+            return [TextBlock(PLAN_MODE_OFF)]
+        return []
 
     def _manage_context(self, extra: int = 0) -> None:
         """L1 masking, then L2 compaction if the prompt is still too large."""
@@ -357,6 +373,8 @@ class Agent:
 
         label = tool.describe(call.input, self.ctx)
         self.ui.tool_started(call.name, label)
+        if call.name == "exit_plan_mode":
+            return self._exit_plan_mode(call)
 
         reason = self.permissions.blocked(tool, call.input)
         if reason:
@@ -392,6 +410,37 @@ class Agent:
         self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
                         error=output.content[:500] if output.is_error else None)
         return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), None
+
+    def _exit_plan_mode(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
+        """Show the plan for approval. Returns a rejection Decision when the
+        turn should stop (no approval) or continue with the user's feedback."""
+        if self.permissions.mode != "plan":
+            return self._error(call, "Plan mode is not on: no approval step is needed, go ahead."), None
+        plan = call.input["plan"]
+        decision = self.ui.review_plan(plan)
+        self.tool_calls += 1
+
+        if decision is None or decision.approved:
+            self.plan_text, self.plan_file = plan, save_plan(self.ctx.cwd, plan)
+            where = self.ctx.display_path(self.plan_file)
+        if decision is None:  # nobody to ask (headless): the plan is the result
+            text = f"Plan saved to {where}. Stopping here: it needs the user's approval first."
+            summary, outcome = f"saved to {where}", Decision(allow=False)
+        elif decision.approved:
+            self.permissions.mode = self._told_mode = decision.mode
+            text = (f"The user approved the plan (saved to {where}). Plan mode is off: you can "
+                    "modify files now. Track the plan's steps with todo_write, then carry it out.")
+            summary, outcome = f"approved · {decision.mode.replace('_', ' ')}", None
+        else:
+            text = "The user did not approve the plan. " + (
+                "Their message follows: revise the plan and present it again with exit_plan_mode."
+                if decision.feedback else "Wait for their instructions.")
+            summary, outcome = "changes requested" if decision.feedback else "not approved", \
+                Decision(allow=False, feedback=decision.feedback)
+        self.log.record("plan", plan=plan, approved=bool(decision and decision.approved),
+                        file=str(self.plan_file) if decision is None or decision.approved else None)
+        self.ui.tool_finished(call.name, ToolOutput(text, summary=summary))
+        return ToolResultBlock(call.id, text), outcome
 
     def _error(self, call: ToolUseBlock, text: str) -> ToolResultBlock:
         self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary=text))

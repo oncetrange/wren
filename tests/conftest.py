@@ -47,8 +47,9 @@ def call(name: str, id: str = "t1", **input: Any) -> Response:
 
 
 class RecordingUI:
-    def __init__(self, decisions: list[Decision] | None = None):
+    def __init__(self, decisions: list[Decision] | None = None, plan_decisions=None):
         self.decisions = list(decisions or [])
+        self.plan_decisions = list(plan_decisions or [])
         self.events: list[tuple] = []
 
     def model_started(self): pass
@@ -63,6 +64,10 @@ class RecordingUI:
         return self.decisions.pop(0) if self.decisions else Decision(allow=True)
 
     def tool_finished(self, name, output: ToolOutput): self.events.append(("result", name, output))
+
+    def review_plan(self, plan):
+        self.events.append(("plan", plan))
+        return self.plan_decisions.pop(0) if self.plan_decisions else None
     def notice(self, text): self.events.append(("notice", text))
     def error(self, text): self.events.append(("error", text))
 

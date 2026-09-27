@@ -148,6 +148,8 @@ def _result_json(agent: Agent, result: str, seconds: float) -> dict:
         },
         "cost_usd": agent.cost,
         "todos": [t.to_dict() for t in agent.conv.todos],
+        "plan": agent.plan_text,
+        "plan_file": str(agent.plan_file) if agent.plan_file else None,
         "duration_s": round(seconds, 1),
     }
 

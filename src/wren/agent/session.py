@@ -19,7 +19,7 @@ from typing import Any
 from wren.agent.conversation import Conversation
 from wren.agent.todos import TodoItem
 from wren.config import CONFIG_DIR
-from wren.llm.types import Message, Usage
+from wren.llm.types import Message, TextBlock, Usage
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 
@@ -83,7 +83,8 @@ def load_session(path: Path) -> SessionState:
                 if msg.role == "user":
                     conv.add_user(msg.content)
                     if not state.first_prompt:
-                        state.first_prompt = msg.text()
+                        state.first_prompt = next(
+                            (b.text for b in msg.content if isinstance(b, TextBlock)), "")
                 else:
                     conv.append(msg)
             case "usage":
