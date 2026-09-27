@@ -49,6 +49,9 @@ def is_reminder(text: str) -> bool:
     return text.startswith(REMINDER_TAG)
 
 
+WREN_DIR_GITIGNORE = "*\n!hooks.toml\n"
+
+
 @dataclass
 class PlanDecision:
     approved: bool
@@ -61,13 +64,14 @@ class PlanDecision:
 def save_plan(cwd: Path, plan: str) -> Path:
     """Write the plan to <cwd>/.wren/plans/<timestamp>-<slug>.md.
 
-    .wren/ gets a `*` .gitignore on creation so plans stay out of git status and
-    workspace checkpoints; delete that file to version your plans.
+    .wren/ gets a .gitignore on creation that ignores everything but hooks.toml
+    (which is meant to be shared), so plans stay out of git status and workspace
+    checkpoints; edit it to version your plans.
     """
     root = cwd / ".wren"
     if not root.exists():
         root.mkdir()
-        (root / ".gitignore").write_text("*\n")
+        (root / ".gitignore").write_text(WREN_DIR_GITIGNORE)
     plans = root / "plans"
     plans.mkdir(exist_ok=True)
     title = next((l.strip("# ").strip() for l in plan.splitlines() if l.strip()), "plan")

@@ -115,6 +115,9 @@ class Hooks:
     def names(self, event: EventName) -> list[str]:
         return [r.name for r in self._handlers[event]]
 
+    def registrations(self, event: EventName) -> list[Registration]:
+        return list(self._handlers[event])
+
     def run(self, event_name: EventName, event: Event) -> list[Verdict]:
         """Call the handlers in order. For pre_tool and prompt, a deny ends the chain."""
         verdicts = []

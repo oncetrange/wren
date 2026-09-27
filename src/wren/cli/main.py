@@ -47,6 +47,7 @@ HELP = """\
   /resume         switch to another session in this directory
   /clear          start a new session
   /todos          show the current task list
+  /hooks          list active hooks and built-in policies
   /model (name)   show or switch the model
   /theme          dark / light / auto-detected colors
   /keys           how to make Shift+Enter insert a newline in your terminal
@@ -73,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="before finishing a request that changed files, have the model "
                              "re-check the request's explicit instructions; also warns when "
                              "--max-turns is nearly used up (default: on with -p, off otherwise)")
+    parser.add_argument("--trust-project-hooks", action="store_true",
+                        help="run the project's .wren/hooks.toml without asking (needed with -p)")
     parser.add_argument("--no-checkpoints", action="store_true",
                         help="don't snapshot the workspace before each prompt")
     parser.add_argument("-m", "--model", help="model name from the config (default: config default_model)")
@@ -123,7 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     if state:
         agent.restore(state)
         ui.render_history(agent.messages, agent.tools, agent.ctx)
-    shell_hooks.install(agent, config.hooks)
+    try:
+        project_hooks = shell_hooks.load_project_hooks(cwd)
+    except ConfigError as e:
+        ui.error(str(e))
+        return 1
+    hooks = config.hooks
+    if project_hooks and _trust_project_hooks(project_hooks, args, ui):
+        hooks = hooks + project_hooks.specs
+    shell_hooks.install(agent, hooks)
     agent.start_session("resume" if state else "startup")
 
     try:
@@ -163,6 +174,30 @@ def _result_json(agent: Agent, result: str, seconds: float) -> dict:
         "plan_file": str(agent.plan_file) if agent.plan_file else None,
         "duration_s": round(seconds, 1),
     }
+
+
+def _trust_project_hooks(project: shell_hooks.ProjectHooks, args: argparse.Namespace,
+                         ui: RichUI) -> bool:
+    """Project hooks run only once their exact content is trusted."""
+    if shell_hooks.is_trusted(project):
+        return True
+    if args.trust_project_hooks:
+        shell_hooks.trust(project)
+        return True
+    if args.prompt or not ui.interactive:
+        ui.notice(f"skipping untrusted project hooks in {shell_hooks.PROJECT_HOOKS} "
+                  "(pass --trust-project-hooks to run them)")
+        return False
+    ui.console.print(f"[bold]This project defines hooks[/] in {shell_hooks.PROJECT_HOOKS}; "
+                     "they run shell commands on your machine:")
+    for spec in project.specs:
+        matcher = f" [dim]({spec.matcher})[/]" if spec.matcher else ""
+        ui.console.print(f"  [cyan]{spec.event}[/]{matcher}: {escape(spec.command)}")
+    if pick("Run these hooks?", [(True, "Yes, trust this file (asks again if it changes)"),
+                                  (False, "No, skip them this time")], default=False):
+        shell_hooks.trust(project)
+        return True
+    return False
 
 
 def _mode(args: argparse.Namespace) -> str:
@@ -292,6 +327,8 @@ class Repl:
                 )
             case "/model":
                 self.switch_model(arg)
+            case "/hooks":
+                self.show_hooks()
             case "/todos":
                 todos = self.agent.conv.todos
                 if todos:
@@ -407,6 +444,25 @@ class Repl:
         self.settings.save()
         self.ui.background = theme if theme != "auto" else (detected or "dark")
         self.console.print(f"[dim]theme: {theme} ({self.ui.background})[/]")
+
+    def show_hooks(self) -> None:
+        labels = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",
+                  "pre_tool": "PreToolUse", "post_tool": "PostToolUse", "stop": "Stop",
+                  "notification": "Notification", "session_end": "SessionEnd"}
+        for event, label in labels.items():
+            regs = self.agent.hooks.registrations(event)
+            if not regs:
+                continue
+            self.console.print(f"[bold]{label}[/]")
+            for reg in regs:
+                if isinstance(reg.fn, shell_hooks.ShellHook):
+                    spec = reg.fn.spec
+                    matcher = f" [dim]({spec.matcher})[/]" if spec.matcher else ""
+                    self.console.print(f"  {escape(spec.command)}{matcher} [dim]· {spec.source}[/]")
+                else:
+                    self.console.print(f"  [dim]{reg.name} · built-in[/]")
+        self.console.print(f"[dim]user hooks: {CONFIG_FILE} · project hooks: "
+                           f"{shell_hooks.PROJECT_HOOKS}[/]")
 
     def switch_model(self, name: str) -> None:
         if not name:

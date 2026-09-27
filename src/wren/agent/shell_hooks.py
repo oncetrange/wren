@@ -17,13 +17,16 @@ Protocol (close to Claude Code's, so existing scripts port easily):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import signal
 import subprocess
 import time
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from wren.agent.events import (
@@ -36,7 +39,7 @@ from wren.agent.events import (
     Stop,
     Verdict,
 )
-from wren.config import HookSpec
+from wren.config import CONFIG_DIR, ConfigError, HookSpec, parse_hooks
 
 if TYPE_CHECKING:
     from wren.agent.loop import Agent
@@ -196,3 +199,54 @@ def install(agent: Agent, specs: list[HookSpec]) -> None:
     for spec in specs:
         hook = ShellHook(spec)
         agent.hooks.on(EVENTS[spec.event], hook.name, hook)
+
+
+# --- project hooks -------------------------------------------------------------
+#
+# .wren/hooks.toml can be committed and shared, which also means a cloned repo
+# could use it to run commands on your machine. Project hooks therefore only
+# run once you have trusted the file's exact content; any change asks again.
+
+PROJECT_HOOKS = ".wren/hooks.toml"
+TRUST_FILE = "trusted_hooks.json"
+
+
+@dataclass
+class ProjectHooks:
+    path: Path
+    specs: list[HookSpec]
+    digest: str
+
+
+def load_project_hooks(cwd: Path) -> ProjectHooks | None:
+    """Parse <cwd>/.wren/hooks.toml. Raises ConfigError if it is malformed."""
+    path = cwd / PROJECT_HOOKS
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    try:
+        raw = tomllib.loads(data.decode())
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path}: {e}") from e
+    specs = parse_hooks(raw.get("hooks", {}), source=PROJECT_HOOKS)
+    return ProjectHooks(path, specs, hashlib.sha256(data).hexdigest())
+
+
+def is_trusted(project: ProjectHooks, home: Path | None = None) -> bool:
+    return _trust_store(home or CONFIG_DIR).get(str(project.path)) == project.digest
+
+
+def trust(project: ProjectHooks, home: Path | None = None) -> None:
+    home = home or CONFIG_DIR
+    store = _trust_store(home)
+    store[str(project.path)] = project.digest
+    home.mkdir(parents=True, exist_ok=True)
+    (home / TRUST_FILE).write_text(json.dumps(store, indent=2) + "\n")
+
+
+def _trust_store(home: Path) -> dict[str, str]:
+    try:
+        data = json.loads((home / TRUST_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
