@@ -22,6 +22,7 @@ from wren.agent.permissions import LABELS, Permissions
 from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
+from wren.cli.completion import SlashCompleter
 from wren.cli.keys import newline_bindings
 from wren.cli.pickers import confirm, pick
 from wren.cli.terminal import (
@@ -35,30 +36,37 @@ from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, load_confi
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
 from wren.settings import Settings
+from wren.skills import discover
+from wren.skills import expand as expand_skill
 from wren.tools import ToolContext
 
 TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse"})
 
-HELP = """\
-[bold]Commands[/]
-  /undo           undo the last turn (files + conversation) or the last compaction
-  /rewind         pick an earlier point to go back to
-  /compact        summarize the conversation to free up context
-  /resume         switch to another session in this directory
-  /clear          start a new session
-  /todos          show the current task list
-  /hooks          list active hooks and built-in policies
-  /model (name)   show or switch the model
-  /theme          dark / light / auto-detected colors
-  /keys           how to make Shift+Enter insert a newline in your terminal
-  /cost           token usage and cost so far
-  /help           this help
-  /exit           quit (or Ctrl-D)
+COMMANDS: list[tuple[str, str]] = [
+    ("/undo", "undo the last turn (files + conversation) or the last compaction"),
+    ("/rewind", "pick an earlier point to go back to"),
+    ("/compact", "summarize the conversation to free up context"),
+    ("/resume", "switch to another session in this directory"),
+    ("/clear", "start a new session"),
+    ("/todos", "show the current task list"),
+    ("/skills", "list available skills (run one with /<name> [arguments])"),
+    ("/hooks", "list active hooks and built-in policies"),
+    ("/model", "show or switch the model"),
+    ("/theme", "dark / light / auto-detected colors"),
+    ("/keys", "how to make Shift+Enter insert a newline in your terminal"),
+    ("/cost", "token usage and cost so far"),
+    ("/help", "this help"),
+    ("/exit", "quit (or Ctrl-D)"),
+]
+BUILTIN_NAMES = {name[1:] for name, _ in COMMANDS} | {"quit"}
+
+HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc in COMMANDS) + """
 
 [bold]Keys[/]
   Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
   Shift+Tab switches mode: ask before edits → accept edits → plan (read-only)
-  Ctrl-C interrupts the agent · ↑/↓ and Enter in pickers, Esc cancels"""
+  Tab completes /commands · Ctrl-C interrupts the agent
+  ↑/↓ and Enter in pickers, Esc cancels"""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         ui.error(str(e))
         return 1
+    skills, skill_warnings = discover(cwd)
+    for warning in skill_warnings:
+        ui.notice(warning)
 
     agent = Agent(
         provider,
@@ -122,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
         max_turns=args.max_turns,
         final_check=bool(args.prompt) if args.final_check is None else args.final_check,
+        skills=skills,
     )
     if state:
         agent.restore(state)
@@ -140,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.prompt:
             start = time.monotonic()
-            result = agent.run(args.prompt)
+            result = run_prompt(agent, args.prompt)
             if json_output:
                 print(json.dumps(_result_json(agent, result, time.monotonic() - start),
                                  ensure_ascii=False))
@@ -148,6 +160,15 @@ def main(argv: list[str] | None = None) -> int:
         return Repl(agent, ui, config, settings).loop()
     finally:
         agent.end_session()
+
+
+def run_prompt(agent: Agent, text: str) -> str:
+    """Run a prompt, expanding `/skill-name arguments` into the skill."""
+    if invoked := expand_skill(text, agent.skills, BUILTIN_NAMES):
+        skill, arguments = invoked
+        agent.log.record("skill", name=skill.name, by="user")
+        return agent.run(text, attachments=[skill.invocation(arguments)])
+    return agent.run(text)
 
 
 def _result_json(agent: Agent, result: str, seconds: float) -> dict:
@@ -271,6 +292,7 @@ class Repl:
         session: PromptSession[str] = PromptSession(
             history=FileHistory(str(CONFIG_DIR / "history")), key_bindings=kb,
             bottom_toolbar=self._toolbar, style=TOOLBAR_STYLE,
+            completer=SlashCompleter(self.completions), complete_while_typing=True,
         )
         while True:
             prefill, self._prefill = self._prefill, ""
@@ -283,16 +305,22 @@ class Repl:
                 return 0
             if not text:
                 continue
-            if text.startswith("/"):
+            if text.startswith("/") and not expand_skill(text, self.agent.skills, BUILTIN_NAMES):
                 try:
                     if self.command(text) == "exit":
                         return 0
                 except (KeyboardInterrupt, EOFError):
                     self.console.print("[dim]cancelled[/]")
                 continue
-            self.agent.run(text)
+            run_prompt(self.agent, text)
             self.ui.usage_line(self.agent.estimated_context(), self.agent.model.context_window,
                                self.agent.usage.output_tokens, self.agent.cost)
+
+    def completions(self) -> list[tuple[str, str]]:
+        skills = [(f"/{s.name}", (f"{s.argument_hint} · " if s.argument_hint else "") + s.description)
+                  for s in sorted(self.agent.skills.values(), key=lambda s: s.name)
+                  if s.name not in BUILTIN_NAMES]
+        return COMMANDS + skills
 
     def _toolbar(self) -> HTML:
         mode = self.agent.permissions.mode
@@ -329,6 +357,8 @@ class Repl:
                 self.switch_model(arg)
             case "/hooks":
                 self.show_hooks()
+            case "/skills":
+                self.show_skills()
             case "/todos":
                 todos = self.agent.conv.todos
                 if todos:
@@ -444,6 +474,22 @@ class Repl:
         self.settings.save()
         self.ui.background = theme if theme != "auto" else (detected or "dark")
         self.console.print(f"[dim]theme: {theme} ({self.ui.background})[/]")
+
+    def show_skills(self) -> None:
+        skills = sorted(self.agent.skills.values(), key=lambda s: s.name)
+        if not skills:
+            self.console.print("[dim]no skills; add one as ~/.wren/skills/<name>/SKILL.md "
+                               "or .wren/skills/<name>/SKILL.md[/]")
+            return
+        for s in skills:
+            notes = [s.source]
+            if not s.model_invocable:
+                notes.append("manual only")
+            if s.name in BUILTIN_NAMES:
+                notes.append("shadowed by a built-in command")
+            hint = f" {escape(s.argument_hint)}" if s.argument_hint else ""
+            self.console.print(f"  [bold]/{s.name}[/]{hint} [dim]· {' · '.join(notes)}[/]")
+            self.console.print(f"    {escape(_one_line(s.description, 100))}")
 
     def show_hooks(self) -> None:
         labels = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",

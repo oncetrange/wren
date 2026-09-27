@@ -46,10 +46,12 @@ def reminder(*parts: str) -> str:
 
 
 def is_reminder(text: str) -> bool:
-    return text.startswith(REMINDER_TAG)
+    """Text wren added to a user message (reminders, skills): hidden in transcripts."""
+    return text.startswith("<wren-")
 
 
-WREN_DIR_GITIGNORE = "*\n!hooks.toml\n"
+# Everything in .wren/ stays out of git except what is meant to be shared.
+WREN_DIR_GITIGNORE = "*\n!hooks.toml\n!skills/\n!skills/**\n"
 
 
 @dataclass

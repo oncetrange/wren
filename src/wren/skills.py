@@ -145,3 +145,13 @@ def prompt_section(skills: dict[str, Skill]) -> str:
             "Skills hold instructions and resources for particular tasks. When a task matches a "
             "skill's description, load it with the skill tool before starting and follow it.\n"
             f"{lines}\n")
+
+
+def expand(text: str, skills: dict[str, Skill], reserved: set[str] = frozenset()) -> tuple[Skill, str] | None:
+    """`/name arguments` -> (skill, arguments) if it names a skill (and not a reserved command)."""
+    if not text.startswith("/"):
+        return None
+    name, _, arguments = text[1:].partition(" ")
+    if name in reserved or name not in skills:
+        return None
+    return skills[name], arguments.strip()

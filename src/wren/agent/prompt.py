@@ -44,8 +44,8 @@ or something is still broken, say so plainly.
 """
 
 
-def build_system_prompt(cwd: Path) -> str:
-    parts = [BASE_PROMPT, _environment(cwd)]
+def build_system_prompt(cwd: Path, skills: str = "") -> str:
+    parts = [BASE_PROMPT, _environment(cwd)] + ([skills] if skills else [])
     for path in (CONFIG_DIR / "WREN.md", *(cwd / name for name in PROJECT_FILES)):
         if path.is_file():
             parts.append(f"# Instructions from {path}\n\n{path.read_text().strip()}\n")

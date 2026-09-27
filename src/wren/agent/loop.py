@@ -53,7 +53,9 @@ from wren.llm.types import (
     Usage,
 )
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
+from wren.skills import Skill, prompt_section
 from wren.tools.base import validate_args
+from wren.tools.skill import SkillTool
 
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
@@ -89,6 +91,7 @@ class Agent:
         checkpoints: Checkpoints | None = None,
         max_turns: int = 100,
         final_check: bool = False,
+        skills: dict[str, Skill] | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -97,12 +100,16 @@ class Agent:
         self.permissions = permissions or Permissions()
         self.log = log or SessionLog(directory=None)
         self.tools = {t.name: t for t in (tools if tools is not None else default_tools())}
+        # Skills: listed in the system prompt, loaded by the model with the skill tool.
+        self.skills = skills or {}
+        if any(s.model_invocable for s in self.skills.values()):
+            self.tools["skill"] = SkillTool(self.skills)
         self.checkpoints = checkpoints
         self.max_turns = max_turns
         # Before finishing a request that changed things, ask the model once to
         # check the request's explicit instructions (on by default when headless).
         self.final_check = final_check
-        self.system = build_system_prompt(ctx.cwd)
+        self.system = build_system_prompt(ctx.cwd, prompt_section(self.skills))
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -134,8 +141,10 @@ class Agent:
 
     # --- public API --------------------------------------------------------
 
-    def run(self, prompt: str) -> str:
-        """Run one user request to completion. Returns the final assistant text."""
+    def run(self, prompt: str, attachments: list[str] | None = None) -> str:
+        """Run one user request to completion. Returns the final assistant text.
+
+        `attachments` are extra text blocks sent with the prompt (e.g. an invoked skill)."""
         final_text = ""
         self.status = "done"
         self.changed = warned = False
@@ -153,7 +162,7 @@ class Agent:
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
-            self._add_user([TextBlock(prompt), *extra])
+            self._add_user([TextBlock(prompt), *(TextBlock(a) for a in attachments or []), *extra])
             for turn in range(self.max_turns):
                 self._manage_context()
                 response = self._call_model()

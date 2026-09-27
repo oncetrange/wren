@@ -54,7 +54,7 @@ def test_approval_ends_plan_mode_and_saves_the_plan(ctx, tmp_path):
     assert (ctx.cwd / "a.py").read_text() == "x = 2\n"          # edited in the same run
     assert agent.plan_file.parent == ctx.cwd / ".wren" / "plans"
     assert agent.plan_file.name.endswith("-bump-x.md") and agent.plan_file.read_text().startswith("# Bump x")
-    assert (ctx.cwd / ".wren" / ".gitignore").read_text() == "*\n!hooks.toml\n"
+    assert (ctx.cwd / ".wren" / ".gitignore").read_text() == "*\n!hooks.toml\n!skills/\n!skills/**\n"
     result = agent.provider.requests[2][-1].content[0]
     assert "approved" in result.content and "todo_write" in result.content
 
