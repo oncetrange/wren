@@ -138,6 +138,8 @@ class WriteFile(Tool):
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
 
+    edits_files = True
+
     def permission_key(self, args: dict[str, Any]) -> str:
         return "edit"
 
@@ -192,6 +194,8 @@ class EditFile(Tool):
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
+
+    edits_files = True
 
     def permission_key(self, args: dict[str, Any]) -> str:
         return "edit"

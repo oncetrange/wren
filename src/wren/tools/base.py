@@ -60,6 +60,8 @@ class Tool(ABC):
     description: ClassVar[str]
     input_schema: ClassVar[dict[str, Any]]
     read_only: ClassVar[bool] = False
+    # Writes files in the workspace (as opposed to running arbitrary commands).
+    edits_files: ClassVar[bool] = False
 
     @abstractmethod
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput: ...

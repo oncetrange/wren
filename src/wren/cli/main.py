@@ -9,13 +9,15 @@ from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
 
 from wren import __version__
 from wren.agent.loop import Agent
-from wren.agent.permissions import Permissions
+from wren.agent.permissions import LABELS, Permissions
 from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
@@ -34,6 +36,8 @@ from wren.llm.types import LLMError
 from wren.settings import Settings
 from wren.tools import ToolContext
 
+TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse"})
+
 HELP = """\
 [bold]Commands[/]
   /undo           undo the last turn (files + conversation) or the last compaction
@@ -51,6 +55,7 @@ HELP = """\
 
 [bold]Keys[/]
   Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
+  Shift+Tab switches mode: ask before edits → accept edits → plan (read-only)
   Ctrl-C interrupts the agent · ↑/↓ and Enter in pickers, Esc cancels"""
 
 
@@ -70,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="continue the most recent session in this directory")
     parser.add_argument("-r", "--resume", nargs="?", const="", metavar="ID",
                         help="resume a session by id, or pick one from a list")
-    parser.add_argument("--yolo", action="store_true", help="run every tool without asking for approval")
+    parser.add_argument("--mode", choices=["ask", "accept_edits", "plan", "auto"], default="ask",
+                        help="permission mode to start in (Shift+Tab switches in a session)")
+    parser.add_argument("--plan", action="store_true", help="start in plan mode (same as --mode plan)")
+    parser.add_argument("--yolo", action="store_true",
+                        help="run every tool without asking (same as --mode auto)")
     parser.add_argument("--version", action="version", version=f"wren {__version__}")
     args = parser.parse_args(argv)
 
@@ -100,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         model,
         ToolContext(cwd=cwd),
         ui,
-        permissions=Permissions(mode="auto" if args.yolo else "ask"),
+        permissions=Permissions(mode=_mode(args), allow_auto=_mode(args) == "auto"),
         log=SessionLog(path=state.path) if state else SessionLog(),
         checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
         max_turns=args.max_turns,
@@ -141,6 +150,10 @@ def _result_json(agent: Agent, result: str, seconds: float) -> dict:
         "todos": [t.to_dict() for t in agent.conv.todos],
         "duration_s": round(seconds, 1),
     }
+
+
+def _mode(args: argparse.Namespace) -> str:
+    return "auto" if args.yolo else "plan" if args.plan else args.mode
 
 
 def _background(settings: Settings) -> str:
@@ -200,8 +213,16 @@ class Repl:
                                "/undo only rewinds the conversation[/]")
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         register_shift_enter()
+        kb = newline_bindings()
+
+        @kb.add("s-tab")
+        def _(event) -> None:
+            self.agent.permissions.cycle()
+            event.app.invalidate()
+
         session: PromptSession[str] = PromptSession(
-            history=FileHistory(str(CONFIG_DIR / "history")), key_bindings=_key_bindings()
+            history=FileHistory(str(CONFIG_DIR / "history")), key_bindings=kb,
+            bottom_toolbar=self._toolbar, style=TOOLBAR_STYLE,
         )
         while True:
             prefill, self._prefill = self._prefill, ""
@@ -224,6 +245,13 @@ class Repl:
             self.agent.run(text)
             self.ui.usage_line(self.agent.estimated_context(), self.agent.model.context_window,
                                self.agent.usage.output_tokens, self.agent.cost)
+
+    def _toolbar(self) -> HTML:
+        mode = self.agent.permissions.mode
+        icon = {"ask": "⏵", "accept_edits": "⏵⏵", "plan": "⏸", "auto": "⏵⏵⏵"}[mode]
+        color = {"ask": "ansigray", "accept_edits": "ansigreen", "plan": "ansicyan", "auto": "ansired"}[mode]
+        return HTML(f"  <{color}>{icon} {LABELS[mode]}</{color}>"
+                    f"<ansigray> · shift+tab to switch · {self.agent.model.name}</ansigray>")
 
     def command(self, text: str) -> str | None:
         name, _, arg = text.partition(" ")

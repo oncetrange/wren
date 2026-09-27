@@ -358,6 +358,10 @@ class Agent:
         label = tool.describe(call.input, self.ctx)
         self.ui.tool_started(call.name, label)
 
+        reason = self.permissions.blocked(tool, call.input)
+        if reason:
+            return self._error(call, reason), None
+
         if self.permissions.needs_approval(tool, call.input):
             decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
             if not decision.allow:
