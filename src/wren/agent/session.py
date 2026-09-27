@@ -91,8 +91,10 @@ def load_session(path: Path) -> SessionState:
                     state.cost = (state.cost or 0.0) + e["cost"]
             case "checkpoint":
                 conv.start_turn(e["prompt"], e.get("commit"))
+            case "mask":
+                conv.mask(e["keep_turns"], e["min_chars"])
             case "compact":
-                conv.compacted(e["summary"], Message.from_dict(e["message"]))
+                conv.compacted(e["summary"], Message.from_dict(e["message"]), e.get("kept_from"))
             case "rewind":
                 conv.rewind(e["index"])
             case "clear":

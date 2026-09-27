@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol
 
-from wren.agent.compact import COMPACT_AT, compacted_history, estimate_tokens, summarize
+from wren.agent.compact import (
+    MASK_MIN_CHARS,
+    append_archive,
+    estimate_tokens,
+    plan_compaction,
+    plan_mask,
+    summarize,
+    summary_note,
+)
 from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
 from wren.checkpoint import CheckpointError, Checkpoints
-from wren.config import ModelConfig
+from wren.config import CONFIG_DIR, ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
     Completed,
@@ -28,6 +39,9 @@ from wren.llm.types import (
 )
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.tools.base import validate_args
+
+
+TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 
 
 class AgentUI(Protocol):
@@ -92,14 +106,12 @@ class Agent:
         final_text = ""
         self.status = "done"
         try:
-            # Compact before adding the prompt so it stays verbatim, not summarized.
-            if self._context_full(extra=len(prompt) // 4):
-                self.compact()
+            # Manage context before adding the prompt so it stays verbatim.
+            self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
             self._add_user([TextBlock(prompt)])
             for _ in range(self.max_turns):
-                if self._context_full():
-                    self.compact()
+                self._manage_context()
                 response = self._call_model()
                 if not response.message.content:
                     self.ui.notice("model returned an empty response")
@@ -136,28 +148,69 @@ class Agent:
         """Tokens the next request will send: last billed size plus what was added since."""
         return self.context_tokens + estimate_tokens(self.messages[self._billed_upto :])
 
-    def _context_full(self, extra: int = 0) -> bool:
-        return self.estimated_context() + extra > self.model.context_window * COMPACT_AT
+    def _manage_context(self, extra: int = 0) -> None:
+        """L1 masking, then L2 compaction if the prompt is still too large."""
+        if self.model.mask_at and self.estimated_context() + extra > self.model.mask_at:
+            self.mask()
+        if self.estimated_context() + extra > self.model.compact_threshold:
+            self.compact()
+
+    def mask(self) -> None:
+        """Mask old tool traffic, down well below the threshold in one batch."""
+        keep, freed = plan_mask(self.messages, self.estimated_context(), self.model.mask_at)
+        if freed == 0:
+            return
+        self.conv.mask(keep, MASK_MIN_CHARS)
+        self.log.record("mask", keep_turns=keep, min_chars=MASK_MIN_CHARS, freed_chars=freed)
+        self._reestimate()
+        self.ui.notice(f"cleared old tool outputs (~{freed // 4000}k tokens); "
+                       f"context now ~{self.estimated_context() // 1000}k")
 
     def compact(self) -> None:
-        """Replace the conversation with a summary of it. Raises LLMError."""
-        if not self.messages:
-            return
+        """Summarize all but the most recent turns. Raises LLMError."""
+        if not any(m.role == "assistant" for m in self.messages):
+            return  # nothing new since the last compaction
+
+        kept_from = plan_compaction(self.messages, self._fixed_tokens(), self.model.compact_threshold)
+        span = self.messages[:kept_from]
         before = self.estimated_context()
         self.ui.notice(f"compacting conversation (~{before // 1000}k tokens)…")
         self.ui.model_started()
         try:
-            summary = summarize(self.provider, self.system, self.messages,
+            summary = summarize(self.provider, self.system, span,
                                 [t.spec() for t in self.tools.values()])
         finally:
             self.ui.model_finished()
-        replacement = compacted_history(summary)[0]
-        self.conv.compacted(summary, replacement)
+        archive = self._archive(span)
+        note = summary_note(summary, archive)
+        self.conv.compacted(summary, note, kept_from)
         self.ctx.read_files.clear()
-        self.context_tokens, self._billed_upto = 0, 0
-        self.log.record("compact", summary=summary, message=replacement.to_dict())
+        self._reestimate()
+        self.log.record("compact", summary=summary, message=note.to_dict(), kept_from=kept_from,
+                        archive=str(archive) if archive else None)
         self.ui.notice(f"compacted to ~{self.estimated_context() // 1000}k tokens "
                        "(undo with /rewind)")
+
+    def _archive(self, span: list[Message]) -> Path | None:
+        if self.log.path is None:
+            return None
+        path = TRANSCRIPTS_DIR / f"{self.log.id}.md"
+        n = sum(1 for p in self.conv.timeline if p.kind == "compaction") + 1
+        try:
+            append_archive(path, span, f"Compaction {n} ({datetime.now():%Y-%m-%d %H:%M})")
+        except OSError as e:
+            self.ui.notice(f"could not write the transcript archive: {e}")
+            return None
+        return path
+
+    def _fixed_tokens(self) -> int:
+        """Estimated size of the system prompt and tool definitions."""
+        return (len(self.system) + len(json.dumps([vars(t.spec()) for t in self.tools.values()]))) // 4
+
+    def _reestimate(self) -> None:
+        """Estimate the full prompt size after history changed underneath the last bill."""
+        self.context_tokens = self._fixed_tokens() + estimate_tokens(self.messages)
+        self._billed_upto = len(self.messages)
 
     def changed_files(self, point: RestorePoint) -> list[str]:
         """Files a rewind to `point` would restore. Raises CheckpointError."""

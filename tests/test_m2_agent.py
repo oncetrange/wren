@@ -32,7 +32,11 @@ def make_agent(ctx, provider, tmp_path, model=None, log=True):
 
 
 def big_reply(text="x"):
-    return Response(Message("assistant", [TextBlock(text)]), "end_turn", Usage(input_tokens=900))
+    return Response(Message("assistant", [TextBlock(text)]), "end_turn", Usage(input_tokens=9000))
+
+
+# Compacts past 8k tokens: above the system prompt and tool definitions (~2k).
+SMALL = dict(name="fake", model="fake-1", context_window=10_000, mask_at=0)
 
 
 def texts(agent):
@@ -41,10 +45,10 @@ def texts(agent):
 
 def test_auto_compaction_keeps_new_prompt_verbatim(ctx, tmp_path):
     provider = ScriptedProvider([big_reply(), reply("SUMMARY: user wants y"), reply("done")])
-    model = ModelConfig(name="fake", model="fake-1", context_window=1000)
+    model = ModelConfig(**SMALL)
     agent = make_agent(ctx, provider, tmp_path, model)
 
-    agent.run("first")          # leaves the context at ~900 tokens
+    agent.run("first")          # leaves the context at ~9k tokens
     assert agent.run("second") == "done"
 
     assert "about to be compacted" in provider.requests[1][-1].content[-1].text
@@ -81,7 +85,7 @@ def test_undo_restores_files_and_conversation(ctx, tmp_path):
 
 def test_rewind_past_a_compaction_restores_full_history(ctx, tmp_path):
     provider = ScriptedProvider([big_reply("one"), reply("SUMMARY"), reply("two"), reply("three")])
-    model = ModelConfig(name="fake", model="fake-1", context_window=1000)
+    model = ModelConfig(**SMALL)
     agent = make_agent(ctx, provider, tmp_path, model)
     agent.run("a")
     agent.run("b")               # compacts, then answers "two"
@@ -100,7 +104,7 @@ def test_rewind_past_a_compaction_restores_full_history(ctx, tmp_path):
 
 def test_undo_compaction_keeps_what_came_after(ctx, tmp_path):
     provider = ScriptedProvider([big_reply("one"), reply("SUMMARY"), reply("two")])
-    model = ModelConfig(name="fake", model="fake-1", context_window=1000)
+    model = ModelConfig(**SMALL)
     agent = make_agent(ctx, provider, tmp_path, model)
     agent.run("a")
     agent.run("b")

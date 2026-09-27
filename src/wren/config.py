@@ -21,14 +21,24 @@ CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 @dataclass
 class Price:
-    """USD per million tokens."""
+    """USD per million tokens.
+
+    Providers that price by prompt length list `tiers`; each request is billed
+    at the first tier whose `up_to` covers its prompt (the last tier otherwise).
+    """
 
     input: float = 0.0
     output: float = 0.0
     cache_read: float | None = None
     cache_write: float | None = None
+    up_to: int | None = None
+    tiers: list[Price] | None = None
 
     def cost(self, u: Usage) -> float:
+        if self.tiers:
+            tier = next((t for t in self.tiers if t.up_to is None or u.context_tokens <= t.up_to),
+                        self.tiers[-1])
+            return tier.cost(u)
         cache_read = self.input * 0.1 if self.cache_read is None else self.cache_read
         cache_write = self.input * 1.25 if self.cache_write is None else self.cache_write
         return (
@@ -50,8 +60,13 @@ class ModelConfig:
     # well, which most Anthropic-compatible gateways expect.
     auth: Literal["api_key", "bearer"] = "api_key"
     max_tokens: int = 32000
-    # Total tokens the model accepts; the conversation is compacted before this fills up.
+    # Total tokens the model accepts.
     context_window: int = 200_000
+    # Context management thresholds, in prompt tokens: mask old tool outputs
+    # past `mask_at` (0 disables), summarize past `compact_at` (default: 80% of
+    # the window, at most 200k; long prompts cost more and degrade quality).
+    mask_at: int = 40_000
+    compact_at: int | None = None
     prompt_cache: bool = True
     # The request's `thinking` parameter: a type string such as "adaptive", or a
     # full table like {type = "enabled", budget_tokens = 16000}. None omits it.
@@ -69,16 +84,23 @@ class ModelConfig:
     def cost(self, usage: Usage) -> float | None:
         return self.price.cost(usage) if self.price else None
 
+    @property
+    def compact_threshold(self) -> int:
+        return self.compact_at or min(int(self.context_window * 0.8), 200_000)
+
 
 BUILTIN_MODELS: dict[str, dict[str, Any]] = {
     "qwen": {
         "model": "qwen3-coder-plus",
-        "context_window": 262_144,
+        "context_window": 1_000_000,
         "base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
         "api_key_env": "DASHSCOPE_API_KEY",
         "auth": "bearer",
         "max_tokens": 32000,
         "prompt_cache": False,
+        # International pricing; only the <=32k-prompt tier is published on
+        # qwencloud.com, longer prompts are billed at it until tiers are added.
+        "price": {"tiers": [{"up_to": 32_000, "input": 1.0, "output": 5.0, "cache_read": 0.2}]},
     },
     "kimi": {
         "model": "kimi-k2.7-code",
@@ -155,5 +177,12 @@ def _model_config(name: str, spec: dict[str, Any]) -> ModelConfig:
         raise ConfigError(f"model {name!r}: missing 'model'")
     spec = dict(spec)
     if isinstance(spec.get("price"), dict):
-        spec["price"] = Price(**spec["price"])
+        spec["price"] = _price(spec["price"])
     return ModelConfig(name=name, **spec)
+
+
+def _price(spec: dict[str, Any]) -> Price:
+    spec = dict(spec)
+    if "tiers" in spec:
+        spec["tiers"] = [_price(t) for t in spec["tiers"]]
+    return Price(**spec)

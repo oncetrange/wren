@@ -39,7 +39,7 @@ HELP = """\
   /compact        summarize the conversation to free up context
   /resume         switch to another session in this directory
   /clear          start a new session
-  /model [name]   show or switch the model
+  /model (name)   show or switch the model
   /theme          dark / light / auto-detected colors
   /keys           how to make Shift+Enter insert a newline in your terminal
   /cost           token usage and cost so far
