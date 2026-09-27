@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
@@ -67,7 +67,8 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill
+├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
 ├── checkpoint.py  workspace snapshots in a shadow git repo
@@ -78,6 +79,33 @@ src/wren/
 - `edit_file` does exact string replacement, requires the file to have been read, and refuses if it changed on disk since. When the exact text isn't found it tolerates indentation mistakes (a unique match ignoring leading whitespace, with one consistent shift, gets `new_string` re-indented to fit), otherwise it shows the closest region of the file. `read_file` prefixes lines with `N→` rather than a tab, which models confuse with indentation.
 - Tool failures are returned to the model as error results so it can correct itself.
 - Every session is logged to `~/.wren/sessions/*.jsonl`; resuming replays the log (messages, compactions, rewinds) to rebuild the exact conversation.
+
+## Skills
+
+A skill packages instructions (and any scripts or references they need) for a particular task,
+such as your team's commit format or a release checklist. Only each skill's name and description
+sit in the model's context; it loads the full instructions with the `skill` tool when a task
+matches, so you can keep many skills around at no cost. Run one yourself with `/<name> [arguments]`
+(Tab completes it), in a session or headless: `wren -p "/release 1.2.0"`.
+
+```
+~/.wren/skills/<name>/SKILL.md      # yours, in every project
+.wren/skills/<name>/SKILL.md        # the project's, shareable in git
+```
+
+```markdown
+---
+name: release
+description: Cut a release. Use when asked to release or publish a new version.
+argument-hint: "[version]"
+disable-model-invocation: true    # optional: only run when the user types /release
+---
+Bump the version to $ARGUMENTS, update CHANGELOG.md, run scripts/check.sh, then tag.
+```
+
+Skills use the Agent Skills format, so `~/.claude/skills` and `.claude/skills` are read too (wren's
+own directories win on name clashes). `/skills` lists them. See `examples/skills/commit-message`
+for a complete one with a helper script.
 
 ## Hooks
 

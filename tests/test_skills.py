@@ -189,3 +189,10 @@ def test_wren_dir_gitignore_shares_hooks_and_skills(tmp_path):
                             capture_output=True, text=True).stdout
     assert ".wren/hooks.toml" in status and ".wren/skills/x/SKILL.md" in status
     assert "plans" not in status and ".gitignore" not in status
+
+
+def test_example_skills_are_valid():
+    root = Path(__file__).parents[1] / "examples" / "skills"
+    for skill_md in root.glob("*/SKILL.md"):
+        skill = parse_skill(skill_md, "examples")
+        assert skill.files() and skill.description
