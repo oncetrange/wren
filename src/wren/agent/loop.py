@@ -18,7 +18,7 @@ from wren.agent.compact import (
 )
 from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
-from wren.agent.plans import PLAN_MODE_OFF, PLAN_MODE_ON, PlanDecision, save_plan
+from wren.agent.plans import PLAN_MODE_OFF, PLAN_MODE_ON, UNFINISHED_TODOS, PlanDecision, save_plan
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.todos import format_todos
@@ -112,6 +112,7 @@ class Agent:
         """Run one user request to completion. Returns the final assistant text."""
         final_text = ""
         self.status = "done"
+        nudged = False
         try:
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
@@ -136,6 +137,11 @@ class Agent:
                 if not calls:
                     if response.stop_reason == "max_tokens":
                         self.ui.notice("response was cut off at the max_tokens limit")
+                    elif not nudged and (open_items := self._unfinished_todos()):
+                        # Once per request: finishing with open items is often a slip.
+                        nudged = True
+                        self._add_user([TextBlock(UNFINISHED_TODOS.format(items=open_items))])
+                        continue
                     return final_text
                 if not self._run_tools(calls, truncated=response.stop_reason == "max_tokens"):
                     return final_text
@@ -154,6 +160,11 @@ class Agent:
     def estimated_context(self) -> int:
         """Tokens the next request will send: last billed size plus what was added since."""
         return self.context_tokens + estimate_tokens(self.messages[self._billed_upto :])
+
+    def _unfinished_todos(self) -> str:
+        if self.permissions.mode == "plan":
+            return ""  # planning ends with a plan, not with finished tasks
+        return format_todos([t for t in self.conv.todos if t.status != "completed"])
 
     def _mode_reminder(self) -> list[TextBlock]:
         """Tell the model about plan mode: on every prompt while it's on, and once when it ends."""

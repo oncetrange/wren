@@ -17,11 +17,15 @@ wren -m claude                    # pick a model
 wren -p "fix the failing test"    # one-shot, non-interactive
 wren -c                           # continue the last session in this directory
 wren -r                           # pick a session to resume (or: wren -r <id>)
+wren --plan                       # start in plan mode: investigate, propose, then act
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
+- **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
+- **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
+- **Task list**: for multi-step work the model keeps a checklist (`todo_write`), shown as it changes and with `/todos`. It survives compaction and follows `/undo`; if the model tries to finish with open items it gets one reminder.
 - **Newlines**: Esc Enter or Ctrl-J. For Shift+Enter, run `/keys` for a snippet for your terminal (WezTerm, iTerm2, VS Code).
 - **Checkpoints**: the workspace is snapshotted before every prompt into a shadow git repository under `~/.wren/checkpoints` (your project's own git is never touched). `/undo` reverts the last turn's file changes, including those made by shell commands, and rewinds the conversation; `/rewind` goes back further.
 - **Context management**, in layers: (1) past `mask_at` tokens (default 40k), large outputs of older tool calls are replaced by a placeholder the model can undo by re-running the call; (2) past `compact_at` (default 80% of the window, at most 200k), older turns are summarized while recent ones stay verbatim, and a later compaction updates the previous summary instead of rewriting it; (3) the summarized text is archived under `~/.wren/transcripts/` and the summary points the model at it. Both steps use hysteresis so they run in occasional batches and keep the prompt cache warm. `/compact` forces a summary; compactions are restore points, so `/undo` or `/rewind` bring the full history back. On a real 88-turn benchmark session, replaying the log with masking cut cumulative prompt tokens by 43%.
@@ -63,7 +67,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode
 ├── agent/    the loop, conversation state + restore points, compaction, permissions,
 │             system prompt, JSONL session log/replay
 ├── checkpoint.py  workspace snapshots in a shadow git repo

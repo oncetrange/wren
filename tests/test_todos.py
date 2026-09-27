@@ -47,8 +47,8 @@ def test_tool_output(ctx):
 def make_agent(ctx, tmp_path, turns):
     return Agent(ScriptedProvider(turns), ModelConfig(name="fake", model="f"), ctx,
                  RecordingUI(), Permissions(mode="auto"),
-        log=SessionLog(directory=tmp_path / "sessions"),
-        checkpoints=Checkpoints(ctx.cwd, root=tmp_path / "shadow"))
+                 log=SessionLog(directory=tmp_path / "sessions"),
+                 checkpoints=Checkpoints(ctx.cwd, root=tmp_path / "shadow"))
 
 
 @pytest.fixture
@@ -63,6 +63,7 @@ def test_agent_keeps_list_across_replay_and_rewind(ctx, tmp_path):
     done = [{"content": "a", "status": "completed"}]
     agent = make_agent(ctx, tmp_path, [
         call("todo_write", "t1", todos=first), reply("started"),
+        reply("pausing: waiting for the user"),               # answers the unfinished-items reminder
         call("todo_write", "t2", todos=done), reply("finished"),
     ])
     agent.run("one")
@@ -78,7 +79,7 @@ def test_agent_keeps_list_across_replay_and_rewind(ctx, tmp_path):
 
 def test_compaction_note_carries_the_list(ctx, tmp_path):
     agent = make_agent(ctx, tmp_path, [call("todo_write", "t1", todos=PLAN), reply("ok"),
-                                       reply("SUMMARY")])
+                                       reply("paused"), reply("SUMMARY")])
     agent.run("plan it")
     agent.compact()
     note = agent.messages[0].text()
@@ -91,3 +92,22 @@ def test_todos_are_shown_under_the_tool_line():
     ui.tool_started("todo_write", "3 items")
     ui.tool_finished("todo_write", TodoWrite().run({"todos": PLAN}, None))
     assert "✓ Read the code" in out.getvalue() and "○ Run the tests" in out.getvalue()
+
+
+def test_one_reminder_about_unfinished_items(ctx, tmp_path):
+    todos = [{"content": "a", "status": "completed"}, {"content": "b", "status": "pending"}]
+    agent = make_agent(ctx, tmp_path, [
+        call("todo_write", "t1", todos=todos), reply("all done!"),       # finishes too early
+        reply("b is waiting for your answer"), reply("unused"),
+    ])
+    assert agent.run("do a and b") == "b is waiting for your answer"
+    reminder = agent.provider.requests[2][-1].content[-1].text
+    assert "unfinished" in reminder and "○ b" in reminder and "✓ a" not in reminder
+    assert len(agent.provider.requests) == 3                             # reminded once only
+
+
+def test_no_reminder_when_everything_is_done(ctx, tmp_path):
+    todos = [{"content": "a", "status": "completed"}]
+    agent = make_agent(ctx, tmp_path, [call("todo_write", "t1", todos=todos), reply("done")])
+    agent.run("do a")
+    assert len(agent.provider.requests) == 2

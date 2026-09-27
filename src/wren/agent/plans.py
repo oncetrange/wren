@@ -23,6 +23,13 @@ Plan mode is off: you may modify files again.
 </wren-reminder>"""
 
 
+UNFINISHED_TODOS = f"""{REMINDER_TAG}
+Your task list still has unfinished items:
+{{items}}
+If they're done, blocked, waiting on the user, or no longer needed, say so and update the list with todo_write. Otherwise continue with the next one.
+</wren-reminder>"""
+
+
 def is_reminder(text: str) -> bool:
     return text.startswith(REMINDER_TAG)
 
