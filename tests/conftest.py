@@ -68,6 +68,7 @@ class RecordingUI:
     def review_plan(self, plan):
         self.events.append(("plan", plan))
         return self.plan_decisions.pop(0) if self.plan_decisions else None
+    def hook_ran(self, name, status): self.events.append(("hook", name, status))
     def notice(self, text): self.events.append(("notice", text))
     def error(self, text): self.events.append(("error", text))
 

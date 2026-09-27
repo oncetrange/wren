@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from wren import __version__
+from wren.agent import shell_hooks
 from wren.agent.loop import Agent
 from wren.agent.permissions import LABELS, Permissions
 from wren.agent.todos import format_todos, progress
@@ -122,15 +123,20 @@ def main(argv: list[str] | None = None) -> int:
     if state:
         agent.restore(state)
         ui.render_history(agent.messages, agent.tools, agent.ctx)
+    shell_hooks.install(agent, config.hooks)
+    agent.start_session("resume" if state else "startup")
 
-    if args.prompt:
-        start = time.monotonic()
-        result = agent.run(args.prompt)
-        if json_output:
-            print(json.dumps(_result_json(agent, result, time.monotonic() - start),
-                             ensure_ascii=False))
-        return 0 if agent.status == "done" else 1
-    return Repl(agent, ui, config, settings).loop()
+    try:
+        if args.prompt:
+            start = time.monotonic()
+            result = agent.run(args.prompt)
+            if json_output:
+                print(json.dumps(_result_json(agent, result, time.monotonic() - start),
+                                 ensure_ascii=False))
+            return 0 if agent.status == "done" else 1
+        return Repl(agent, ui, config, settings).loop()
+    finally:
+        agent.end_session()
 
 
 def _result_json(agent: Agent, result: str, seconds: float) -> dict:
@@ -271,6 +277,7 @@ class Repl:
             case "/clear":
                 old = self.agent.log.id
                 self.agent.new_session(SessionLog())
+                self.agent.start_session("clear")
                 self.console.print(f"[dim]new session started · the previous one can be resumed "
                                    f"with /resume or wren -r {old}[/]")
             case "/resume":
@@ -327,6 +334,7 @@ class Repl:
             return
         self.agent.log = SessionLog(path=state.path)
         self.agent.restore(state)
+        self.agent.start_session("resume")
         self.console.clear()
         self.ui.render_history(self.agent.messages, self.agent.tools, self.agent.ctx)
 

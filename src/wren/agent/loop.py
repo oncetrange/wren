@@ -18,7 +18,18 @@ from wren.agent.compact import (
 )
 from wren.agent.builtin_hooks import register_builtins
 from wren.agent.conversation import Conversation, RestorePoint
-from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, allowed, denial
+from wren.agent.events import (
+    Hooks,
+    Notification,
+    PostToolUse,
+    PreToolUse,
+    PromptSubmit,
+    SessionEnd,
+    SessionStart,
+    Stop,
+    allowed,
+    denial,
+)
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.plans import TURN_BUDGET, PlanDecision, is_reminder, reminder, save_plan
 from wren.agent.prompt import build_system_prompt
@@ -60,6 +71,7 @@ class AgentUI(Protocol):
     def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision: ...
     def review_plan(self, plan: str) -> PlanDecision | None: ...
     def tool_finished(self, name: str, output: ToolOutput) -> None: ...
+    def hook_ran(self, name: str, status: str) -> None: ...
     def notice(self, text: str) -> None: ...
     def error(self, text: str) -> None: ...
 
@@ -112,6 +124,8 @@ class Agent:
         self.changed = False
         self.hooks = Hooks()
         register_builtins(self.hooks)
+        # Context from session-start handlers, added to the next prompt.
+        self._session_context: list[str] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
 
     @property
@@ -133,8 +147,9 @@ class Agent:
                 self.ui.notice(f"prompt blocked by {blocked.source}: {blocked.reason}")
                 self.status = "blocked"
                 return final_text
-            extra = [TextBlock(v.context if is_reminder(v.context) else reminder(v.context))
-                     for v in verdicts if v.context]
+            contexts = self._session_context + [v.context for v in verdicts if v.context]
+            self._session_context = []
+            extra = [TextBlock(c if is_reminder(c) else reminder(c)) for c in contexts]
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
@@ -273,6 +288,19 @@ class Agent:
         self.log.record("rewind", index=index)
         return point
 
+    def start_session(self, source: str) -> None:
+        """Fire session_start ("startup", "resume" or "clear")."""
+        for v in self.hooks.run("session_start", SessionStart(self, source)):
+            if v.context:
+                self._session_context.append(v.context)
+
+    def end_session(self) -> None:
+        self.hooks.run("session_end", SessionEnd(self))
+
+    def notify(self, message: str) -> None:
+        """Fire notification: the agent is waiting for the user."""
+        self.hooks.run("notification", Notification(self, message))
+
     def restore(self, state: SessionState) -> None:
         """Continue a logged session (its log must be `self.log`)."""
         self.conv = state.conversation
@@ -406,6 +434,7 @@ class Agent:
             return self._error(call, blocked.reason), None
 
         if not allowed(verdicts) and self.permissions.needs_approval(tool, call.input):
+            self.notify(f"wren needs your approval: {call.name} {label}".strip())
             decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
             if not decision.allow:
                 text = "The user rejected this tool call, so it was not run."
@@ -447,6 +476,7 @@ class Agent:
         if self.permissions.mode != "plan":
             return self._error(call, "Plan mode is not on: no approval step is needed, go ahead."), None
         plan = call.input["plan"]
+        self.notify("wren has a plan for you to review")
         decision = self.ui.review_plan(plan)
         self.tool_calls += 1
 

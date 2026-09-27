@@ -180,6 +180,11 @@ class RichUI:
 
     # --- misc --------------------------------------------------------------
 
+    def hook_ran(self, name: str, status: str) -> None:
+        self._stop_spin()
+        style = "dim" if status.startswith("ok") else "yellow"
+        self.console.print(Text(f"  ◆ {name} · {status}", style=style))
+
     def notice(self, text: str) -> None:
         self._stop_spin()
         self.console.print(f"[yellow]{escape(text)}[/]")

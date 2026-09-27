@@ -126,10 +126,28 @@ BUILTIN_MODELS: dict[str, dict[str, Any]] = {
 }
 
 
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+               "Notification", "SessionEnd")
+
+
+@dataclass
+class HookSpec:
+    """A shell command run on a lifecycle event (see agent/shell_hooks.py)."""
+
+    event: str
+    command: str
+    # Regex matched against the tool name (PreToolUse / PostToolUse); None matches all.
+    matcher: str | None = None
+    timeout: int = 60
+    # Where it was configured: "user" or the project hooks file.
+    source: str = "user"
+
+
 @dataclass
 class Config:
     default_model: str = "kimi"
     models: dict[str, ModelConfig] = field(default_factory=dict)
+    hooks: list[HookSpec] = field(default_factory=list)
 
     def model(self, name: str | None = None) -> ModelConfig:
         """Look a model up by its config name, or by its model id with an
@@ -165,7 +183,31 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
     return Config(
         default_model=raw.get("default_model", Config.default_model),
         models={name: _model_config(name, spec) for name, spec in model_defs.items()},
+        hooks=parse_hooks(raw.get("hooks", {}), source="user"),
     )
+
+
+def parse_hooks(raw: dict[str, Any], source: str) -> list[HookSpec]:
+    """[[hooks.<Event>]] tables -> HookSpecs, validated."""
+    import re
+
+    specs = []
+    for event, entries in raw.items():
+        if event not in HOOK_EVENTS:
+            raise ConfigError(f"hooks: unknown event {event!r} (one of {', '.join(HOOK_EVENTS)})")
+        for entry in entries if isinstance(entries, list) else [entries]:
+            unknown = set(entry) - {"command", "matcher", "timeout"}
+            if unknown or not isinstance(entry.get("command"), str):
+                raise ConfigError(f"hooks.{event}: each hook needs a 'command' "
+                                  f"(and optionally 'matcher', 'timeout'); got {sorted(entry)}")
+            if entry.get("matcher"):
+                try:
+                    re.compile(entry["matcher"])
+                except re.error as e:
+                    raise ConfigError(f"hooks.{event}: bad matcher {entry['matcher']!r}: {e}") from e
+            specs.append(HookSpec(event, entry["command"], entry.get("matcher"),
+                                  int(entry.get("timeout", 60)), source))
+    return specs
 
 
 def _model_config(name: str, spec: dict[str, Any]) -> ModelConfig:

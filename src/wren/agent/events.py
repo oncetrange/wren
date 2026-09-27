@@ -12,6 +12,9 @@ in registration order, so the rules for combining them live in one place:
                the user); each `context` is added for the model.
   stop         the model is about to finish. Each "block" keeps it going, with
                the reasons sent as one message. Capped per request.
+  session_start  a session began, resumed or was cleared. Each `context` is
+               added to the next prompt.
+  session_end / notification  informational (e.g. the agent waits for the user).
 """
 
 from __future__ import annotations
@@ -26,7 +29,8 @@ from wren.tools.base import Tool, ToolOutput
 if TYPE_CHECKING:
     from wren.agent.loop import Agent
 
-EventName = Literal["pre_tool", "post_tool", "prompt", "stop"]
+EventName = Literal["pre_tool", "post_tool", "prompt", "stop",
+                    "session_start", "session_end", "notification"]
 
 
 @dataclass
@@ -58,7 +62,24 @@ class Stop:
     blocked_by: set[str] = field(default_factory=set)
 
 
-Event = PreToolUse | PostToolUse | PromptSubmit | Stop
+@dataclass
+class SessionStart:
+    agent: Agent
+    source: Literal["startup", "resume", "clear"]
+
+
+@dataclass
+class SessionEnd:
+    agent: Agent
+
+
+@dataclass
+class Notification:
+    agent: Agent
+    message: str
+
+
+Event = PreToolUse | PostToolUse | PromptSubmit | Stop | SessionStart | SessionEnd | Notification
 
 
 @dataclass
@@ -86,7 +107,7 @@ class Registration:
 class Hooks:
     def __init__(self) -> None:
         self._handlers: dict[EventName, list[Registration]] = {
-            "pre_tool": [], "post_tool": [], "prompt": [], "stop": []}
+            name: [] for name in EventName.__args__}
 
     def on(self, event: EventName, name: str, fn: Handler) -> None:
         self._handlers[event].append(Registration(name, fn))
