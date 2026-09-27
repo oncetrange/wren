@@ -30,8 +30,10 @@ list with todo_write. Otherwise continue with the next one."""
 
 FINAL_CHECK = """Before you finish, re-read the user's request and check that every explicit \
 instruction in it is satisfied: for example git operations they asked for (branch, commit), \
-tests to run, or where and in what form to deliver the work. Do whatever is missing. If \
-everything is done, reply with your final summary."""
+tests to run, or where and in what form to deliver the work. Also remove scratch files and \
+build outputs you created that are not part of the requested change (and make sure none of \
+them were committed). Do whatever is missing. If everything is done, reply with your final \
+summary."""
 
 TURN_BUDGET = """You have {left} model calls left before you are stopped. Wrap up: make \
 sure the work is saved the way the user asked (e.g. committed if they asked for a commit), \
