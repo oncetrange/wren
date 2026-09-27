@@ -84,3 +84,16 @@ def test_permission_prompt_supports_cursor_keys():
                         lambda: ui.confirm(Bash(), {"command": "ls"}, "ls", None))
     assert not decision.allow and decision.feedback == "run tests"
     assert run_keys("a\r", lambda: ui.confirm(Bash(), {"command": "ls"}, "ls", None)).remember
+
+
+@pytest.mark.parametrize("seq", ["\x1b[Z", "\x1b[27;2;9~"])
+def test_shift_tab_sequences(seq):
+    from prompt_toolkit import PromptSession
+    from wren.cli.keys import newline_bindings
+
+    register_shift_enter()
+    pressed = []
+    kb = newline_bindings()
+    kb.add("s-tab")(lambda event: pressed.append(True))
+    text = run_keys(f"a{seq}b\x1b[27;5;9~\r", lambda: PromptSession(key_bindings=kb).prompt())
+    assert pressed == [True] and text == "ab"

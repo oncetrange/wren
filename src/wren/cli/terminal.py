@@ -21,8 +21,12 @@ Background = Literal["dark", "light"]
 # modifyOtherKeys reporting on. We read them as Esc Enter, which inserts a newline.
 _NEWLINE_SEQUENCES = ("\x1b[13;2u", "\x1b[13;5u", "\x1b[13;6u",
                       "\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[27;6;13~")
-# Ctrl+Shift+letter under modifyOtherKeys: swallow instead of typing the bytes.
-_IGNORED_SEQUENCES = tuple(f"\x1b[27;6;{ord(c)}~" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+# Shift+Tab under modifyOtherKeys (WezTerm sends it instead of the usual CSI Z).
+_BACKTAB_SEQUENCES = ("\x1b[27;2;9~",)
+# Ctrl+Shift+letter and Ctrl(+Shift)+Tab under modifyOtherKeys: swallow them
+# instead of typing the bytes into the input.
+_IGNORED_SEQUENCES = (tuple(f"\x1b[27;6;{ord(c)}~" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                      + ("\x1b[27;5;9~", "\x1b[27;6;9~"))
 
 
 # xterm modifyOtherKeys mode 1: modified keys without a well-known encoding
@@ -35,6 +39,8 @@ _MOK_ON, _MOK_OFF = "\x1b[>4;1m", "\x1b[>4;0m"
 def register_shift_enter() -> None:
     for seq in _NEWLINE_SEQUENCES:
         ANSI_SEQUENCES[seq] = (Keys.Escape, Keys.ControlM)
+    for seq in _BACKTAB_SEQUENCES:
+        ANSI_SEQUENCES[seq] = Keys.BackTab
     for seq in _IGNORED_SEQUENCES:
         ANSI_SEQUENCES[seq] = Keys.Ignore
 
