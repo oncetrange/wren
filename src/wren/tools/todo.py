@@ -13,7 +13,9 @@ class TodoWrite(Tool):
         "steps, or when the user gives several things to do; skip it for simple tasks. Send the "
         "complete list every time (it replaces the previous one). Mark an item in_progress "
         "before starting it (only one at a time) and completed as soon as it is done; add "
-        "items you discover along the way and remove ones that no longer apply."
+        "items you discover along the way and remove ones that no longer apply. Include every "
+        "explicit instruction from the user as its own item (e.g. 'commit the changes', 'run "
+        "the test suite'), so none is forgotten."
     )
     input_schema = {
         "type": "object",

@@ -87,7 +87,10 @@ echo "task text" | wren -p - --yolo --max-turns 50            # prompt from stdi
 ```
 
 Exit code is 0 when the agent finished normally, 1 otherwise (`status` in the JSON says why:
-`max_turns`, `error`, ...). `-m` also accepts a model id such as `moonshot/kimi-k2.7-code`, and
+`max_turns`, `error`, ...). Headless runs also have the model re-check the request's explicit
+instructions (commit, run tests, ...) once before finishing a request that changed files, and warn
+it when `--max-turns` is nearly used up (`--no-final-check` disables both; `--final-check` enables
+them interactively). `-m` also accepts a model id such as `moonshot/kimi-k2.7-code`, and
 `WREN_MODEL` sets the default.
 
 ## Benchmarks (Pier / Harbor)

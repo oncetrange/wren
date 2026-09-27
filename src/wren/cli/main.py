@@ -68,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
                              "sends progress output to stderr")
     parser.add_argument("--max-turns", type=int, default=100, metavar="N",
                         help="stop after N model calls per request (default 100)")
+    parser.add_argument("--final-check", action=argparse.BooleanOptionalAction, default=None,
+                        help="before finishing a request that changed files, have the model "
+                             "re-check the request's explicit instructions; also warns when "
+                             "--max-turns is nearly used up (default: on with -p, off otherwise)")
     parser.add_argument("--no-checkpoints", action="store_true",
                         help="don't snapshot the workspace before each prompt")
     parser.add_argument("-m", "--model", help="model name from the config (default: config default_model)")
@@ -113,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         log=SessionLog(path=state.path) if state else SessionLog(),
         checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
         max_turns=args.max_turns,
+        final_check=bool(args.prompt) if args.final_check is None else args.final_check,
     )
     if state:
         agent.restore(state)

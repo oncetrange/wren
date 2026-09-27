@@ -18,7 +18,16 @@ from wren.agent.compact import (
 )
 from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.permissions import Decision, Permissions
-from wren.agent.plans import PLAN_MODE_OFF, PLAN_MODE_ON, UNFINISHED_TODOS, PlanDecision, save_plan
+from wren.agent.plans import (
+    FINAL_CHECK,
+    PLAN_MODE_OFF,
+    PLAN_MODE_ON,
+    TURN_BUDGET,
+    UNFINISHED_TODOS,
+    PlanDecision,
+    reminder,
+    save_plan,
+)
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.todos import format_todos
@@ -72,6 +81,7 @@ class Agent:
         tools: list[Tool] | None = None,
         checkpoints: Checkpoints | None = None,
         max_turns: int = 100,
+        final_check: bool = False,
     ):
         self.provider = provider
         self.model = model
@@ -82,6 +92,9 @@ class Agent:
         self.tools = {t.name: t for t in (tools if tools is not None else default_tools())}
         self.checkpoints = checkpoints
         self.max_turns = max_turns
+        # Before finishing a request that changed things, ask the model once to
+        # check the request's explicit instructions (on by default when headless).
+        self.final_check = final_check
         self.system = build_system_prompt(ctx.cwd)
         self.conv = Conversation()
         self.usage = Usage()
@@ -112,13 +125,14 @@ class Agent:
         """Run one user request to completion. Returns the final assistant text."""
         final_text = ""
         self.status = "done"
-        nudged = False
+        nudged = checked = warned = False
+        self._changed = False  # set once a tool that can modify files ran successfully
         try:
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
             self._add_user([TextBlock(prompt), *self._mode_reminder()])
-            for _ in range(self.max_turns):
+            for turn in range(self.max_turns):
                 self._manage_context()
                 response = self._call_model()
                 if not response.message.content:
@@ -137,14 +151,25 @@ class Agent:
                 if not calls:
                     if response.stop_reason == "max_tokens":
                         self.ui.notice("response was cut off at the max_tokens limit")
-                    elif not nudged and (open_items := self._unfinished_todos()):
-                        # Once per request: finishing with open items is often a slip.
-                        nudged = True
-                        self._add_user([TextBlock(UNFINISHED_TODOS.format(items=open_items))])
-                        continue
+                    else:
+                        # Each at most once per request, sent together in one message.
+                        parts = []
+                        if not nudged and (open_items := self._unfinished_todos()):
+                            nudged = True
+                            parts.append(UNFINISHED_TODOS.format(items=open_items))
+                        if self.final_check and self._changed and not checked:
+                            checked = True
+                            parts.append(FINAL_CHECK)
+                        if parts:
+                            self._add_user([TextBlock(reminder(*parts))])
+                            continue
                     return final_text
                 if not self._run_tools(calls, truncated=response.stop_reason == "max_tokens"):
                     return final_text
+                left = self.max_turns - turn - 1
+                if self.final_check and not warned and 0 < left <= max(3, self.max_turns // 10):
+                    warned = True
+                    self._add_user([TextBlock(reminder(TURN_BUDGET.format(left=left)))])
             self.ui.notice(f"stopped after {self.max_turns} turns")
             self.status = "max_turns"
         except KeyboardInterrupt:
@@ -418,6 +443,8 @@ class Agent:
         self.ui.tool_finished(call.name, output)
         self.tool_calls += 1
         self.tool_errors += output.is_error
+        if not tool.read_only and not output.is_error:
+            self._changed = True
         self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
                         error=output.content[:500] if output.is_error else None)
         return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), None

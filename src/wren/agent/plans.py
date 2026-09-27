@@ -23,11 +23,24 @@ Plan mode is off: you may modify files again.
 </wren-reminder>"""
 
 
-UNFINISHED_TODOS = f"""{REMINDER_TAG}
-Your task list still has unfinished items:
-{{items}}
-If they're done, blocked, waiting on the user, or no longer needed, say so and update the list with todo_write. Otherwise continue with the next one.
-</wren-reminder>"""
+UNFINISHED_TODOS = """Your task list still has unfinished items:
+{items}
+If they're done, blocked, waiting on the user, or no longer needed, say so and update the \
+list with todo_write. Otherwise continue with the next one."""
+
+FINAL_CHECK = """Before you finish, re-read the user's request and check that every explicit \
+instruction in it is satisfied: for example git operations they asked for (branch, commit), \
+tests to run, or where and in what form to deliver the work. Do whatever is missing. If \
+everything is done, reply with your final summary."""
+
+TURN_BUDGET = """You have {left} model calls left before you are stopped. Wrap up: make \
+sure the work is saved the way the user asked (e.g. committed if they asked for a commit), \
+then give your final summary."""
+
+
+def reminder(*parts: str) -> str:
+    """Wrap reminder text for the model (hidden in transcripts)."""
+    return f"{REMINDER_TAG}\n" + "\n\n".join(parts) + "\n</wren-reminder>"
 
 
 def is_reminder(text: str) -> bool:
