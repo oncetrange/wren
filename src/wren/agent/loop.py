@@ -16,18 +16,11 @@ from wren.agent.compact import (
     summarize,
     summary_note,
 )
+from wren.agent.builtin_hooks import register_builtins
 from wren.agent.conversation import Conversation, RestorePoint
+from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, allowed, denial
 from wren.agent.permissions import Decision, Permissions
-from wren.agent.plans import (
-    FINAL_CHECK,
-    PLAN_MODE_OFF,
-    PLAN_MODE_ON,
-    TURN_BUDGET,
-    UNFINISHED_TODOS,
-    PlanDecision,
-    reminder,
-    save_plan,
-)
+from wren.agent.plans import TURN_BUDGET, PlanDecision, is_reminder, reminder, save_plan
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.todos import format_todos
@@ -53,6 +46,8 @@ from wren.tools.base import validate_args
 
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
+# How often stop handlers may keep the model going within one request.
+MAX_STOP_BLOCKS = 3
 
 
 class AgentUI(Protocol):
@@ -106,13 +101,17 @@ class Agent:
         self.status = "done"
         self.turns = self.tool_calls = self.tool_errors = 0
         # Plan mode: the mode the model was last told about, and the last saved plan.
-        self._told_mode = "ask"
+        self.told_mode = "ask"
         self.plan_text: str | None = None
         self.plan_file: Path | None = None
         # Tool calls of the current turn that still need a result; used to keep
         # the history valid when the user interrupts mid-turn.
         self._pending: list[ToolUseBlock] = []
         self._results: list[ToolResultBlock] = []
+        # Whether a tool that can modify files ran successfully in this request.
+        self.changed = False
+        self.hooks = Hooks()
+        register_builtins(self.hooks)
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
 
     @property
@@ -125,13 +124,21 @@ class Agent:
         """Run one user request to completion. Returns the final assistant text."""
         final_text = ""
         self.status = "done"
-        nudged = checked = warned = False
-        self._changed = False  # set once a tool that can modify files ran successfully
+        self.changed = warned = False
+        stopped_by: set[str] = set()
+        stop_blocks = 0
         try:
+            verdicts = self.hooks.run("prompt", PromptSubmit(self, prompt))
+            if blocked := denial(verdicts):
+                self.ui.notice(f"prompt blocked by {blocked.source}: {blocked.reason}")
+                self.status = "blocked"
+                return final_text
+            extra = [TextBlock(v.context if is_reminder(v.context) else reminder(v.context))
+                     for v in verdicts if v.context]
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
-            self._add_user([TextBlock(prompt), *self._mode_reminder()])
+            self._add_user([TextBlock(prompt), *extra])
             for turn in range(self.max_turns):
                 self._manage_context()
                 response = self._call_model()
@@ -151,17 +158,14 @@ class Agent:
                 if not calls:
                     if response.stop_reason == "max_tokens":
                         self.ui.notice("response was cut off at the max_tokens limit")
-                    else:
-                        # Each at most once per request, sent together in one message.
-                        parts = []
-                        if not nudged and (open_items := self._unfinished_todos()):
-                            nudged = True
-                            parts.append(UNFINISHED_TODOS.format(items=open_items))
-                        if self.final_check and self._changed and not checked:
-                            checked = True
-                            parts.append(FINAL_CHECK)
-                        if parts:
-                            self._add_user([TextBlock(reminder(*parts))])
+                    elif stop_blocks < MAX_STOP_BLOCKS:
+                        blocks = [v for v in self.hooks.run("stop", Stop(self, final_text, stopped_by))
+                                  if v.decision == "block"]
+                        if blocks:
+                            # All reasons in one message, so one extra model call.
+                            stop_blocks += 1
+                            stopped_by.update(v.source for v in blocks)
+                            self._add_user([TextBlock(reminder(*(v.reason for v in blocks)))])
                             continue
                     return final_text
                 if not self._run_tools(calls, truncated=response.stop_reason == "max_tokens"):
@@ -185,21 +189,6 @@ class Agent:
     def estimated_context(self) -> int:
         """Tokens the next request will send: last billed size plus what was added since."""
         return self.context_tokens + estimate_tokens(self.messages[self._billed_upto :])
-
-    def _unfinished_todos(self) -> str:
-        if self.permissions.mode == "plan":
-            return ""  # planning ends with a plan, not with finished tasks
-        return format_todos([t for t in self.conv.todos if t.status != "completed"])
-
-    def _mode_reminder(self) -> list[TextBlock]:
-        """Tell the model about plan mode: on every prompt while it's on, and once when it ends."""
-        mode, told = self.permissions.mode, self._told_mode
-        self._told_mode = mode
-        if mode == "plan":
-            return [TextBlock(PLAN_MODE_ON)]
-        if told == "plan":
-            return [TextBlock(PLAN_MODE_OFF)]
-        return []
 
     def _manage_context(self, extra: int = 0) -> None:
         """L1 masking, then L2 compaction if the prompt is still too large."""
@@ -412,11 +401,11 @@ class Agent:
         if call.name == "exit_plan_mode":
             return self._exit_plan_mode(call)
 
-        reason = self.permissions.blocked(tool, call.input)
-        if reason:
-            return self._error(call, reason), None
+        verdicts = self.hooks.run("pre_tool", PreToolUse(self, tool, call))
+        if blocked := denial(verdicts):
+            return self._error(call, blocked.reason), None
 
-        if self.permissions.needs_approval(tool, call.input):
+        if not allowed(verdicts) and self.permissions.needs_approval(tool, call.input):
             decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
             if not decision.allow:
                 text = "The user rejected this tool call, so it was not run."
@@ -440,11 +429,14 @@ class Agent:
         if output.todos is not None:
             self.conv.todos = output.todos
             self.log.record("todos", items=[t.to_dict() for t in output.todos])
+        if not tool.read_only and not output.is_error:
+            self.changed = True
+        for v in self.hooks.run("post_tool", PostToolUse(self, tool, call, output)):
+            if v.context:
+                output.content = f"{output.content}\n\n{v.context}"
         self.ui.tool_finished(call.name, output)
         self.tool_calls += 1
         self.tool_errors += output.is_error
-        if not tool.read_only and not output.is_error:
-            self._changed = True
         self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
                         error=output.content[:500] if output.is_error else None)
         return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), None
@@ -465,7 +457,7 @@ class Agent:
             text = f"Plan saved to {where}. Stopping here: it needs the user's approval first."
             summary, outcome = f"saved to {where}", Decision(allow=False)
         elif decision.approved:
-            self.permissions.mode = self._told_mode = decision.mode
+            self.permissions.mode = self.told_mode = decision.mode
             text = (f"The user approved the plan (saved to {where}). Plan mode is off: you can "
                     "modify files now. Track the plan's steps with todo_write, then carry it out.")
             summary, outcome = f"approved · {decision.mode.replace('_', ' ')}", None
