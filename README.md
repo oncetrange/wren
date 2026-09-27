@@ -71,7 +71,7 @@ src/wren/
 ```
 
 - The agent only sees `wren.llm.types`; adding a provider means writing one adapter.
-- `edit_file` does exact string replacement, requires the file to have been read, and refuses if it changed on disk since.
+- `edit_file` does exact string replacement, requires the file to have been read, and refuses if it changed on disk since. When the exact text isn't found it tolerates indentation mistakes (a unique match ignoring leading whitespace, with one consistent shift, gets `new_string` re-indented to fit), otherwise it shows the closest region of the file. `read_file` prefixes lines with `N→` rather than a tab, which models confuse with indentation.
 - Tool failures are returned to the model as error results so it can correct itself.
 - Every session is logged to `~/.wren/sessions/*.jsonl`; resuming replays the log (messages, compactions, rewinds) to rebuild the exact conversation.
 

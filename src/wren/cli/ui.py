@@ -17,6 +17,8 @@ from rich.text import Text
 from wren.agent.compact import is_summary_note
 from wren.agent.permissions import Decision
 from wren.cli.markdown import MarkdownStream
+from wren.cli.pickers import ask_text
+from wren.cli.terminal import distinguish_shift_enter
 from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from wren.tools import Tool, ToolContext, ToolOutput
 
@@ -89,7 +91,8 @@ class RichUI:
             f"· [red]n[/]o · or type what to do instead"
         )
         try:
-            answer = self.console.input("  [bold]›[/] ").strip()
+            with distinguish_shift_enter():
+                answer = ask_text().strip()
         except EOFError:
             answer = "n"
         match answer.lower():

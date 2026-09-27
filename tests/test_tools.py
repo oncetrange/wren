@@ -10,7 +10,7 @@ from wren.tools.shell import Bash
 def test_read_numbers_lines_and_pages(ctx: ToolContext):
     (ctx.cwd / "a.txt").write_text("one\ntwo\nthree\n")
     out = ReadFile().run({"path": "a.txt", "offset": 2, "limit": 1}, ctx)
-    assert out.content.startswith("     2\ttwo")
+    assert out.content.startswith("     2→two")
     assert "showing lines 2-2 of 3" in out.content
 
 
@@ -116,3 +116,16 @@ def test_bash_cd_persists(ctx: ToolContext):
     Bash().run({"command": "cd .. ; exit 1"}, ctx)
     assert ctx.bash_cwd == ctx.cwd
     assert ctx.resolve("a.py") == ctx.cwd / "a.py"
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("write", {"path": "a.py", "content": "x = 1\n[1187 characters omitted to save context]\n"}),
+    ("edit", {"path": "a.py", "old_string": "x = 1", "new_string": "[4294 characters omitted to save context]"}),
+])
+def test_context_placeholders_are_never_written(ctx: ToolContext, tool, args):
+    f = ctx.cwd / "a.py"
+    f.write_text("x = 1\n")
+    ReadFile().run({"path": "a.py"}, ctx)
+    with pytest.raises(ToolError, match="context placeholder"):
+        (WriteFile() if tool == "write" else EditFile()).run(args, ctx)
+    assert f.read_text() == "x = 1\n"

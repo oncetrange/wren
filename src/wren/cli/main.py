@@ -18,6 +18,7 @@ from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
+from wren.cli.keys import newline_bindings
 from wren.cli.pickers import confirm, pick
 from wren.cli.terminal import (
     detect_background,
@@ -371,14 +372,7 @@ class Repl:
 
 
 def _key_bindings() -> KeyBindings:
-    kb = KeyBindings()
-
-    @kb.add("escape", "enter")
-    @kb.add("c-j")
-    def _(event) -> None:
-        event.current_buffer.insert_text("\n")
-
-    return kb
+    return newline_bindings()
 
 
 if __name__ == "__main__":

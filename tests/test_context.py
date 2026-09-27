@@ -67,13 +67,19 @@ def test_masks_only_old_large_outputs():
     assert mask_old_tool_traffic(masked)[1] == 0                                # idempotent
 
 
-def test_masks_bulky_arguments_of_old_edits():
+def test_never_masks_the_models_own_tool_arguments():
+    # Masked arguments get imitated: the model copies the placeholder into new edits.
     msgs = [Message("user", [TextBlock("t")]),
             Message("assistant", [ToolUseBlock("e", "write_file", {"path": "a.py", "content": "y" * 3000})]),
             Message("user", [ToolResultBlock("e", "created a.py")])] + history(KEEP_TURNS)[1:]
     masked, _ = mask_old_tool_traffic(msgs)
-    args = masked[1].content[0].input
-    assert args["path"] == "a.py" and args["content"] == "[3000 characters omitted to save context]"
+    assert masked[1].content[0].input["content"] == "y" * 3000
+
+
+def test_small_gains_are_not_worth_a_cache_miss():
+    from wren.agent.compact import plan_mask
+    msgs = history(KEEP_TURNS + 1, size=500)         # only one small old output
+    assert plan_mask(msgs, current_tokens=50_000, mask_at=40_000)[1] == 0
 
 
 def test_recent_start_is_an_assistant_turn():

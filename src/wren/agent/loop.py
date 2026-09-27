@@ -318,7 +318,7 @@ class Agent:
     def _run_tools(self, calls: list[ToolUseBlock], truncated: bool) -> bool:
         """Execute a turn's tool calls. Returns False if the loop should stop."""
         self._pending, self._results = list(calls), []
-        keep_going = True
+        denial: Decision | None = None
         for call in calls:
             if truncated and call is calls[-1]:
                 result = ToolResultBlock(
@@ -328,23 +328,31 @@ class Agent:
                     "steps (e.g. create a file in parts, or use edit_file).",
                     is_error=True,
                 )
-            elif not keep_going:
-                result = ToolResultBlock(call.id, "Skipped: the user denied an earlier tool call.", True)
+            elif denial is not None:
+                result = ToolResultBlock(
+                    call.id, "Not run: the user rejected an earlier tool call in this turn.", True)
             else:
-                result, keep_going = self._execute(call)
+                result, denial = self._execute(call)
             self._results.append(result)
             self._pending.remove(call)
-        self._add_user(self._results)
+        blocks: list[ContentBlock] = list(self._results)
+        if denial is not None and denial.feedback:
+            # What the user typed is a message from them, not tool output: it
+            # goes in as their own text after the tool results.
+            blocks.append(TextBlock(denial.feedback))
+        self._add_user(blocks)
         self._results = []
-        return keep_going
+        # A bare "no" hands control back to the user; with a message, the model responds to it.
+        return denial is None or bool(denial.feedback)
 
-    def _execute(self, call: ToolUseBlock) -> tuple[ToolResultBlock, bool]:
+    def _execute(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
+        """Run one call. Returns its result, and the user's decision if they rejected it."""
         tool = self.tools.get(call.name)
         if tool is None:
-            return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}"), True
+            return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}"), None
         problem = validate_args(tool.input_schema, call.input)
         if problem:
-            return self._error(call, f"invalid arguments for {call.name}: {problem}"), True
+            return self._error(call, f"invalid arguments for {call.name}: {problem}"), None
 
         label = tool.describe(call.input, self.ctx)
         self.ui.tool_started(call.name, label)
@@ -352,15 +360,12 @@ class Agent:
         if self.permissions.needs_approval(tool, call.input):
             decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
             if not decision.allow:
-                text = "The user denied this tool call."
+                text = "The user rejected this tool call, so it was not run."
                 if decision.feedback:
-                    text += f" Their feedback: {decision.feedback}"
-                output = ToolOutput(text, is_error=True, summary="denied")
-                self.ui.tool_finished(call.name, output)
+                    text += " Their message follows."
+                self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary="denied"))
                 self.log.record("tool", name=call.name, input=call.input, denied=True)
-                # Without feedback there is nothing for the model to act on; hand
-                # control back to the user.
-                return ToolResultBlock(call.id, text, True), bool(decision.feedback)
+                return ToolResultBlock(call.id, text, True), decision
             if decision.remember:
                 self.permissions.remember(tool, call.input)
 
@@ -378,7 +383,7 @@ class Agent:
         self.tool_errors += output.is_error
         self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
                         error=output.content[:500] if output.is_error else None)
-        return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), True
+        return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), None
 
     def _error(self, call: ToolUseBlock, text: str) -> ToolResultBlock:
         self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary=text))

@@ -71,3 +71,16 @@ def test_modify_other_keys_is_scoped_to_input():
         with distinguish_shift_enter(out):
             raise KeyboardInterrupt
     assert out.getvalue() == "\x1b[>4;1m\x1b[>4;0m"   # always switched back off
+
+
+def test_permission_prompt_supports_cursor_keys():
+    from rich.console import Console
+    from wren.cli.ui import RichUI
+    from wren.tools.shell import Bash
+
+    ui = RichUI(Console(file=__import__("io").StringIO()), interactive=True)
+    # type "run tsts", move left 3, insert "e": feedback becomes "run tests"
+    decision = run_keys("run tsts\x1b[D\x1b[D\x1b[De\r",
+                        lambda: ui.confirm(Bash(), {"command": "ls"}, "ls", None))
+    assert not decision.allow and decision.feedback == "run tests"
+    assert run_keys("a\r", lambda: ui.confirm(Bash(), {"command": "ls"}, "ls", None)).remember

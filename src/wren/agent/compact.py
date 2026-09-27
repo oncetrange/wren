@@ -1,10 +1,13 @@
 """Context management, in layers from cheapest and least lossy to most:
 
 L0  Tool outputs are truncated when produced (tools/base.py).
-L1  Masking: once the prompt passes `mask_at` tokens, large tool outputs (and
-    large file-content arguments of edit/write calls) older than the last
-    KEEP_TURNS model turns are replaced by a short placeholder. The call
-    itself stays, so the model can re-run it: nothing is lost for good.
+L1  Masking: once the prompt passes `mask_at` tokens, large tool outputs
+    older than the last KEEP_TURNS model turns are replaced by a short
+    placeholder. The call itself stays, so the model can re-run it: nothing
+    is lost for good. The model's own messages, tool call arguments included,
+    are never masked: models imitate their earlier turns, and on a DeepSWE run
+    masked edit arguments were copied into new edits, writing the placeholder
+    into source files.
 L2  Anchored summary: once the prompt passes `compact_at`, everything but the
     last KEEP_TURNS turns is summarized. A previous summary is updated rather
     than rewritten, so details don't drift away over repeated compactions.
@@ -44,8 +47,9 @@ MASK_MIN_CHARS = 400
 # every turn once the recent turns alone are large.
 MASK_TARGET = 0.6
 COMPACT_TARGET = 0.5
-# Tool arguments that carry file contents.
-_BULKY_ARGS = ("content", "old_string", "new_string")
+# Masking only happens if it frees at least this share of the threshold:
+# each batch costs a prompt-cache miss.
+MASK_MIN_GAIN = 0.1
 
 SUMMARY_REQUEST = """\
 The conversation is about to be compacted to free up context: every message \
@@ -122,11 +126,6 @@ def mask_old_tool_traffic(messages: list[Message], keep_turns: int = KEEP_TURNS,
                 placeholder = _result_placeholder(call, len(b.content))
                 freed += len(b.content) - len(placeholder)
                 b = ToolResultBlock(b.tool_use_id, placeholder, b.is_error)
-            elif isinstance(b, ToolUseBlock):
-                args, saved = _mask_args(b.input, min_chars)
-                if saved:
-                    freed += saved
-                    b = ToolUseBlock(b.id, b.name, args)
             blocks.append(b)
         out.append(Message(m.role, blocks))
     return out, freed
@@ -139,17 +138,6 @@ def _result_placeholder(call: ToolUseBlock | None, size: int) -> str:
 
 def _is_masked(text: str) -> bool:
     return text.startswith("[output omitted to save context")
-
-
-def _mask_args(args: dict, min_chars: int) -> tuple[dict, int]:
-    saved = 0
-    new = dict(args)
-    for key in _BULKY_ARGS:
-        value = new.get(key)
-        if isinstance(value, str) and len(value) > min_chars:
-            new[key] = f"[{len(value)} characters omitted to save context]"
-            saved += len(value) - len(new[key])
-    return new, saved
 
 
 # --- L2 + L3: anchored summary with an archive ------------------------------
@@ -205,7 +193,8 @@ def append_archive(path: Path, span: list[Message], heading: str) -> None:
 def plan_mask(messages: list[Message], current_tokens: int, mask_at: int) -> tuple[int, int]:
     """Choose how many recent turns to keep so masking gets the prompt under
     MASK_TARGET * mask_at. Returns (keep_turns, chars freed); keeps as many
-    turns as possible, down to MIN_KEEP_TURNS."""
+    turns as possible, down to MIN_KEEP_TURNS. Freed is 0 when the gain would
+    be too small to be worth a cache miss."""
     target = mask_at * MASK_TARGET
     best = (KEEP_TURNS, 0)
     for keep in range(KEEP_TURNS, MIN_KEEP_TURNS - 1, -1):
@@ -213,6 +202,8 @@ def plan_mask(messages: list[Message], current_tokens: int, mask_at: int) -> tup
         best = (keep, freed)
         if current_tokens - freed // 4 <= target:
             break
+    if best[1] // 4 < mask_at * MASK_MIN_GAIN:
+        return best[0], 0
     return best
 
 

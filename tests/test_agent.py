@@ -56,16 +56,26 @@ def test_denial_without_feedback_stops_and_skips_rest(ctx, model):
     agent.run("make files")
     assert not (ctx.cwd / "x").exists() and not (ctx.cwd / "y").exists()
     r1, r2 = results(agent.messages[-1])
-    assert "denied" in r1.content and "Skipped" in r2.content
+    assert "rejected" in r1.content and "Not run" in r2.content
     assert len(provider.requests) == 1  # control returned to the user
 
 
-def test_denial_with_feedback_continues(ctx, model):
-    provider = ScriptedProvider([call("bash", command="rm -rf build"), reply("understood")])
-    agent = Agent(provider, model, ctx, RecordingUI([Decision(allow=False, feedback="use make clean")]))
+def test_denial_feedback_is_a_user_message_and_skips_the_rest(ctx, model):
+    provider = ScriptedProvider([
+        Response(Message("assistant", [
+            ToolUseBlock("t1", "bash", {"command": "pytest tests/"}),
+            ToolUseBlock("t2", "bash", {"command": "touch ran"}),
+        ]), "tool_use"),
+        reply("understood"),
+    ])
+    agent = Agent(provider, model, ctx, RecordingUI([Decision(allow=False, feedback="不用进行测试了")]))
     assert agent.run("clean") == "understood"
-    [r] = results(provider.requests[1][-1])
-    assert "use make clean" in r.content
+    last = provider.requests[1][-1]
+    r1, r2 = results(last)
+    assert "rejected" in r1.content and "不用进行测试了" not in r1.content
+    assert "Not run" in r2.content and not (ctx.cwd / "ran").exists()
+    # the feedback is the user's own text, after the tool results
+    assert isinstance(last.content[-1], TextBlock) and last.content[-1].text == "不用进行测试了"
 
 
 def test_always_allow_is_remembered(ctx, model):
