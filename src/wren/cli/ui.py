@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
+from collections.abc import Iterator
 from typing import Any
 
 from rich.console import Console
@@ -41,6 +43,19 @@ class RichUI:
         self._stream_kind: str | None = None  # "text" | "thinking" while streaming
         self._markdown: MarkdownStream | None = None
         self._previewed = False
+        # Inside a subagent's run: its tool calls print as compact, indented lines.
+        self._depth = 0
+
+    @contextlib.contextmanager
+    def nested(self) -> Iterator[None]:
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+
+    def _indent(self, renderable: Any) -> Any:
+        return Padding(renderable, (0, 0, 0, 4 * self._depth)) if self._depth else renderable
 
     # --- model stream ------------------------------------------------------
 
@@ -71,8 +86,10 @@ class RichUI:
         if label:
             first, *rest = label.splitlines()
             line.append(" " + first + (" …" if rest else ""))
-        line.truncate(self.console.width * 2, overflow="ellipsis")
-        self.console.print(line)
+        if self._depth:
+            line.stylize("dim")
+        line.truncate(self.console.width * 2 - 4 * self._depth, overflow="ellipsis")
+        self.console.print(self._indent(line))
 
     def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
         if preview:
@@ -128,14 +145,16 @@ class RichUI:
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         style = "red" if output.is_error else "dim"
         summary = output.summary or ("error" if output.is_error else "done")
-        self.console.print(Text(f"  ⎿ {summary}", style=style))
+        # A subagent's successful calls are one line each; errors and diffs still show.
+        if not (self._depth and not output.is_error):
+            self.console.print(self._indent(Text(f"  ⎿ {summary}", style=style)))
         if output.diff and not self._previewed:
             self._print_diff(output.diff)
         if output.display:
             self.print_todos_text(output.display)
         if output.is_error and name == "bash":
             tail = output.content.strip().splitlines()[-8:]
-            self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4)))
+            self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4 + 4 * self._depth)))
 
     def print_todos_text(self, text: str) -> None:
         styled = Text()
@@ -183,15 +202,15 @@ class RichUI:
     def hook_ran(self, name: str, status: str) -> None:
         self._stop_spin()
         style = "dim" if status.startswith("ok") else "yellow"
-        self.console.print(Text(f"  ◆ {name} · {status}", style=style))
+        self.console.print(self._indent(Text(f"  ◆ {name} · {status}", style=style)))
 
     def notice(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(f"[yellow]{escape(text)}[/]")
+        self.console.print(self._indent(Text(text, style="yellow")))
 
     def error(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(f"[bold red]error:[/] {escape(text)}")
+        self.console.print(self._indent(Text.assemble(("error:", "bold red"), " " + text)))
 
     def usage_line(self, context_tokens: int, context_window: int, output_tokens: int,
                    cost: float | None) -> None:
@@ -209,7 +228,8 @@ class RichUI:
         body = "\n".join(lines[:MAX_DIFF_LINES])
         if len(lines) > MAX_DIFF_LINES:
             body += f"\n... ({len(lines) - MAX_DIFF_LINES} more lines)"
-        self.console.print(Padding(Syntax(body, "diff", theme=self.code_theme), (0, 0, 0, 4)))
+        self.console.print(Padding(Syntax(body, "diff", theme=self.code_theme),
+                                   (0, 0, 0, 4 + 4 * self._depth)))
 
     def _stream(self, text: str, kind: str, style: str) -> None:
         self._stop_spin()

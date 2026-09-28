@@ -56,6 +56,7 @@ from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.skills import Skill, prompt_section
 from wren.tools.base import validate_args
 from wren.tools.skill import SkillTool
+from wren.agent.subagents import AgentType, TaskTool
 
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
@@ -92,6 +93,9 @@ class Agent:
         max_turns: int = 100,
         final_check: bool = False,
         skills: dict[str, Skill] | None = None,
+        agent_types: dict[str, AgentType] | None = None,
+        system: str | None = None,
+        hooks: Hooks | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -104,12 +108,15 @@ class Agent:
         self.skills = skills or {}
         if any(s.model_invocable for s in self.skills.values()):
             self.tools["skill"] = SkillTool(self.skills)
+        # Subagents: the task tool hands a self-contained job to a fresh agent.
+        if agent_types:
+            self.tools["task"] = TaskTool(self, agent_types)
         self.checkpoints = checkpoints
         self.max_turns = max_turns
         # Before finishing a request that changed things, ask the model once to
         # check the request's explicit instructions (on by default when headless).
         self.final_check = final_check
-        self.system = build_system_prompt(ctx.cwd, prompt_section(self.skills))
+        self.system = system or build_system_prompt(ctx.cwd, prompt_section(self.skills))
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -129,8 +136,13 @@ class Agent:
         self._results: list[ToolResultBlock] = []
         # Whether a tool that can modify files ran successfully in this request.
         self.changed = False
-        self.hooks = Hooks()
-        register_builtins(self.hooks)
+        # Given hooks (a subagent's) come ready-made; otherwise start with wren's own.
+        if hooks is None:
+            hooks = Hooks()
+            register_builtins(hooks)
+        self.hooks = hooks
+        # One summary per subagent run in this session (see agent/subagents.py).
+        self.subagent_runs: list[dict[str, Any]] = []
         # Context from session-start handlers, added to the next prompt.
         self._session_context: list[str] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
@@ -355,11 +367,14 @@ class Agent:
     def record_side_usage(self, usage: Usage, purpose: str) -> None:
         """Account for a request outside the conversation (e.g. a prediction):
         it counts toward tokens and cost, not turns or the context size."""
+        self.add_usage(usage, self.model.cost(usage), self.model.name, purpose)
+
+    def add_usage(self, usage: Usage, cost: float | None, model: str, purpose: str) -> None:
+        """Account for side requests whose cost is already known (a subagent's)."""
         self.usage += usage
-        cost = self.model.cost(usage)
         if cost is not None and self.cost is not None:
             self.cost += cost
-        self.log.record("usage", model=self.model.name, purpose=purpose, usage=vars(usage), cost=cost)
+        self.log.record("usage", model=model, purpose=purpose, usage=vars(usage), cost=cost)
 
     # --- model -------------------------------------------------------------
 
