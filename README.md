@@ -68,7 +68,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
@@ -107,6 +107,24 @@ Bump the version to $ARGUMENTS, update CHANGELOG.md, run scripts/check.sh, then 
 Skills use the Agent Skills format, so `~/.claude/skills` and `.claude/skills` are read too (wren's
 own directories win on name clashes). `/skills` lists them. See `examples/skills/commit-message`
 for a complete one with a helper script.
+
+## Subagents
+
+With the `task` tool the model hands a self-contained job to a subagent: a fresh agent with its
+own context that returns only its final report. The files it reads and the searches it runs
+never enter the main conversation, which keeps long sessions small.
+
+| Type | Tools | For |
+|---|---|---|
+| `explore` | read_file, grep, glob, bash (read-only commands only) | finding where and how things are |
+| `general` | everything except task, todo_write, exit_plan_mode | a well-defined piece of work |
+
+`explore` never asks for approval and never changes anything: bash runs only commands that read
+(`ls`, `grep`, `find`, `git log/diff/show` and the like, piped together or not); anything else,
+including redirections into files, is refused. `general` asks for approval exactly like the main
+agent, under the same permission mode. In plan mode only `explore` runs. A subagent's tool calls
+show indented under its task; its changes are part of the current turn, so `/undo` reverts them.
+Its usage counts toward `/cost`, and its full log is in `~/.wren/sessions/subagents/`.
 
 ## Hooks
 

@@ -17,6 +17,7 @@ from rich.markup import escape
 
 from wren import __version__
 from wren.agent import shell_hooks
+from wren.agent.subagents import builtin_agent_types
 from wren.agent.loop import Agent
 from wren.agent.permissions import LABELS, Permissions
 from wren.agent.predict import Predictor
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         max_turns=args.max_turns,
         final_check=bool(args.prompt) if args.final_check is None else args.final_check,
         skills=skills,
+        agent_types=builtin_agent_types(),
     )
     if state:
         agent.restore(state)
@@ -195,6 +197,7 @@ def _result_json(agent: Agent, result: str, seconds: float) -> dict:
             "cache_write_tokens": u.cache_write_tokens,
         },
         "cost_usd": agent.cost,
+        "subagents": agent.subagent_runs,
         "todos": [t.to_dict() for t in agent.conv.todos],
         "plan": agent.plan_text,
         "plan_file": str(agent.plan_file) if agent.plan_file else None,
