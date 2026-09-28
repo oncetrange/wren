@@ -36,6 +36,7 @@ from wren.agent.events import (
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.plans import TURN_BUDGET, PlanDecision, is_reminder, reminder, save_plan
 from wren.agent.prompt import build_system_prompt
+from wren.agent.remember import extract_memories
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.todos import format_todos
 from wren.checkpoint import CheckpointError, Checkpoints
@@ -58,7 +59,10 @@ from wren.llm.types import (
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.skills import Skill, prompt_section
 from wren.tools.base import validate_args
+from wren.tools.memory import MemoryTool
 from wren.tools.skill import SkillTool
+from wren.memory import Memories
+from wren.memory import prompt_section as memory_section
 from wren.agent.subagents import AgentType, Progress, TaskTool
 
 
@@ -101,6 +105,7 @@ class Agent:
         agent_types: dict[str, AgentType] | None = None,
         system: str | None = None,
         hooks: Hooks | None = None,
+        memory: Memories | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -113,6 +118,14 @@ class Agent:
         self.skills = skills or {}
         if any(s.model_invocable for s in self.skills.values()):
             self.tools["skill"] = SkillTool(self.skills)
+        # Long-term memory: the model keeps it with the memory tool; the indexes
+        # go into the system prompt.
+        self.memory = memory if memory is not None and memory.enabled else None
+        if self.memory is not None:
+            self.tools["memory"] = MemoryTool(self.memory)
+        # Save memories before context is lost (compaction, session end).
+        self.auto_memory = False
+        self._memory_upto = 0  # messages already reviewed for memories
         # Subagents: the task tool hands a self-contained job to a fresh agent.
         if agent_types:
             self.tools["task"] = TaskTool(self, agent_types)
@@ -121,7 +134,9 @@ class Agent:
         # Before finishing a request that changed things, ask the model once to
         # check the request's explicit instructions (on by default when headless).
         self.final_check = final_check
-        self.system = system or build_system_prompt(ctx.cwd, prompt_section(self.skills))
+        self.system = system or build_system_prompt(
+            ctx.cwd, prompt_section(self.skills),
+            memory=memory_section(self.memory) if self.memory else "")
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -261,6 +276,11 @@ class Agent:
         if not any(m.role == "assistant" for m in self.messages):
             return  # nothing new since the last compaction
 
+        if self.auto_memory:
+            try:
+                self.extract_memories("the conversation is being compacted")
+            except LLMError as e:  # memories are a bonus; compaction must go on
+                self.ui.notice(f"could not save memories before compacting: {e}")
         kept_from = plan_compaction(self.messages, self._fixed_tokens(), self.model.compact_threshold)
         span = self.messages[:kept_from]
         before = self.estimated_context()
@@ -276,6 +296,7 @@ class Agent:
         self.conv.compacted(summary, note, kept_from)
         self.ctx.read_files.clear()
         self._reestimate()
+        self._memory_upto = len(self.messages)
         self.log.record("compact", summary=summary, message=note.to_dict(), kept_from=kept_from,
                         archive=str(archive) if archive else None)
         self.ui.notice(f"compacted to ~{self.estimated_context() // 1000}k tokens "
@@ -344,6 +365,7 @@ class Agent:
         # A session that crashed mid-turn can end with unanswered tool calls.
         if self.messages and self.messages[-1].role == "assistant":
             self._abandon_pending(self.messages[-1].tool_uses(), "Interrupted: the session ended.")
+        self._memory_upto = len(self.messages)  # reviewed when that session ended
         self.log.record("resume", model=self.model.name)
 
     def new_session(self, log: SessionLog) -> None:
@@ -353,6 +375,7 @@ class Agent:
         self.usage = Usage()
         self.cost = 0.0 if self.model.price else None
         self.context_tokens, self._billed_upto = 0, 0
+        self._memory_upto = 0
         self.ctx.read_files.clear()
         self.log.record("session_start", model=self.model.name, cwd=str(self.ctx.cwd),
                         system=self.system)
@@ -375,6 +398,18 @@ class Agent:
                 self.ui.notice(f"checkpoint skipped, files can't be restored to this point: {e}")
         self.conv.start_turn(prompt, commit)
         self.log.record("checkpoint", commit=commit, prompt=prompt)
+
+    def extract_memories(self, reason: str) -> int:
+        """Have the model save what the conversation taught it, in a side
+        request that doesn't enter the history. Returns how many memories it
+        wrote. Raises LLMError."""
+        if self.memory is None or self._memory_upto >= len(self.messages):
+            return 0
+        if not any(m.role == "assistant" for m in self.messages[self._memory_upto:]):
+            return 0
+        saved = extract_memories(self, reason)
+        self._memory_upto = len(self.messages)
+        return saved
 
     def record_side_usage(self, usage: Usage, purpose: str) -> None:
         """Account for a request outside the conversation (e.g. a prediction):
