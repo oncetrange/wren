@@ -8,19 +8,37 @@ enter the main context.
 It shares the main agent's provider, permissions (mode and "always allow"
 list) and tool hooks. It takes no checkpoints of its own: its changes happen
 inside the main agent's turn, so that turn's restore point already covers them.
+
+Besides the built-in types, subagents can be defined in markdown files with
+YAML frontmatter, in the format Claude Code uses, searched (later entries
+overriding earlier ones with the same name, built-ins included) in
+~/.claude/agents, <project>/.claude/agents, ~/.wren/agents, <project>/.wren/agents:
+
+    ---
+    name: reviewer
+    description: Reviews a change for bugs. Use after finishing a change.
+    tools: Read, Grep, Glob, Bash   # optional; wren or Claude Code tool names
+    model: kimi                     # optional; a model name from config.toml
+    read-only: true                 # optional (wren): refuse edits, read-only bash
+    ---
+    You review code changes...      # the subagent's instructions
 """
 
 from __future__ import annotations
 
 import contextlib
+import re
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from wren.agent.events import Hooks, PreToolUse, Verdict
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SESSIONS_DIR, SessionLog
+from wren.config import CONFIG_DIR, ConfigError
+from wren.frontmatter import FrontmatterError, read_frontmatter
 from wren.llm.types import ToolSpec
 from wren.skills import prompt_section
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
@@ -77,6 +95,7 @@ class AgentType:
     tools: frozenset[str] | None = None  # None: every tool not excluded
     read_only: bool = False
     max_turns: int = DEFAULT_MAX_TURNS
+    model: str | None = None  # a config model name; None: the main agent's
     source: str = "built-in"
 
     def allows(self, tool: str) -> bool:
@@ -100,6 +119,99 @@ def builtin_agent_types() -> dict[str, AgentType]:
             GENERAL_PROMPT,
         ),
     }
+
+
+NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# Claude Code's tool names, for agent definitions written for it.
+CLAUDE_TOOLS = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
+                "MultiEdit": "edit_file", "Bash": "bash", "Grep": "grep", "Glob": "glob",
+                "LS": "glob", "Skill": "skill"}
+WREN_TOOLS = frozenset({"read_file", "write_file", "edit_file", "bash", "grep", "glob", "skill"})
+READ_ONLY_TOOLS = frozenset({"read_file", "grep", "glob", "skill"})
+
+
+class AgentTypeError(Exception):
+    pass
+
+
+def parse_agent_type(path: Path, source: str) -> tuple[AgentType, list[str]]:
+    """An agent definition file, and warnings (e.g. tools wren doesn't have)."""
+    try:
+        meta, body = read_frontmatter(path)
+    except FrontmatterError as e:
+        raise AgentTypeError(str(e)) from None
+    name, description = meta.get("name"), meta.get("description")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise AgentTypeError(f"{path}: 'name' must be lowercase letters, digits and hyphens, got {name!r}")
+    if not isinstance(description, str) or not description.strip():
+        raise AgentTypeError(f"{path}: 'description' is required")
+    if not body.strip():
+        raise AgentTypeError(f"{path}: the instructions (after the frontmatter) are empty")
+    warnings: list[str] = []
+    tools: frozenset[str] | None = None
+    if (listed := meta.get("tools")) is not None:
+        names = listed.split(",") if isinstance(listed, str) else listed
+        if not isinstance(names, list):
+            raise AgentTypeError(f"{path}: 'tools' must be a comma-separated list")
+        mapped = set()
+        for n in (str(n).strip() for n in names if str(n).strip()):
+            tool = CLAUDE_TOOLS.get(n, n)
+            if tool in WREN_TOOLS:
+                mapped.add(tool)
+            else:
+                warnings.append(f"agent {name!r} ({path}): wren has no tool {n!r}; ignoring it")
+        tools = frozenset(mapped)
+    read_only = meta.get("read-only")
+    if read_only is None:  # read-only when it can't write files or run commands anyway
+        read_only = tools is not None and tools <= READ_ONLY_TOOLS
+    model = meta.get("model")
+    if model == "inherit":
+        model = None
+    max_turns = meta.get("max-turns", DEFAULT_MAX_TURNS)
+    if not isinstance(max_turns, int) or isinstance(max_turns, bool) or max_turns < 1:
+        raise AgentTypeError(f"{path}: 'max-turns' must be a positive integer")
+    return AgentType(
+        name=name,
+        description=" ".join(description.split()),
+        prompt=f"# Your role: {name}\n{body.strip()}\n",
+        tools=tools,
+        read_only=bool(read_only),
+        max_turns=max_turns,
+        model=str(model) if model is not None else None,
+        source=source,
+    ), warnings
+
+
+def agent_dirs(cwd: Path, home: Path | None = None) -> list[tuple[Path, str]]:
+    """(directory, label) in increasing precedence."""
+    home = home or CONFIG_DIR
+    return [
+        (Path.home() / ".claude" / "agents", "~/.claude/agents"),
+        (cwd / ".claude" / "agents", ".claude/agents"),
+        (home / "agents", "~/.wren/agents"),
+        (cwd / ".wren" / "agents", ".wren/agents"),
+    ]
+
+
+def discover_agent_types(cwd: Path, home: Path | None = None) -> tuple[dict[str, AgentType], list[str]]:
+    """Built-in and defined agent types by name, and warnings about the definitions."""
+    types = builtin_agent_types()
+    warnings: list[str] = []
+    for directory, label in agent_dirs(cwd, home):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            try:
+                kind, problems = parse_agent_type(path, label)
+            except (AgentTypeError, OSError) as e:
+                warnings.append(f"skipping agent: {e}")
+                continue
+            warnings += problems
+            if kind.name in types and types[kind.name].source != "built-in":
+                warnings.append(f"agent {kind.name!r} from {label} overrides the one in "
+                                f"{types[kind.name].source}")
+            types[kind.name] = kind
+    return types, warnings
 
 
 def read_only_guard(e: PreToolUse) -> Verdict | None:
@@ -224,11 +336,21 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         for reg in parent.hooks.registrations(event):
             hooks.on(event, reg.name, reg.fn)
 
+    provider, model = parent.provider, parent.model
+    if kind.model and kind.model != parent.model.name:
+        try:
+            if parent.resolve_model is None:
+                raise ConfigError("no model configuration to look it up in")
+            provider, model = parent.resolve_model(kind.model)
+        except ConfigError as e:
+            parent.ui.notice(f"subagent {kind.name}: can't use model {kind.model!r} ({e}); "
+                             f"using {parent.model.name}")
+
     skills = parent.skills if kind.allows("skill") else {}
     log = _log(parent)
     child = Agent(
-        parent.provider,
-        parent.model,
+        provider,
+        model,
         # Its own read tracking: a file it read hasn't been seen by the parent.
         ToolContext(cwd=parent.ctx.cwd),
         SubagentUI(parent.ui),
@@ -248,7 +370,7 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
     parent.add_usage(child.usage, child.cost, child.model.name, purpose="subagent")
     parent.changed = parent.changed or child.changed
     tokens = child.usage.input_tokens + child.usage.cache_read_tokens + child.usage.cache_write_tokens
-    run = {"agent": kind.name, "description": description, "status": child.status,
+    run = {"agent": kind.name, "model": model.name, "description": description, "status": child.status,
            "turns": child.turns, "tool_calls": child.tool_calls, "cost": child.cost}
     parent.subagent_runs.append(run)
     parent.log.record("subagent_end", **run)

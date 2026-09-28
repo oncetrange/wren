@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -10,7 +11,12 @@ from wren.agent import subagents
 from wren.agent.loop import Agent
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.session import SessionLog
-from wren.agent.subagents import builtin_agent_types
+from wren.agent.subagents import (
+    AgentTypeError,
+    builtin_agent_types,
+    discover_agent_types,
+    parse_agent_type,
+)
 from wren.cli.ui import RichUI
 from wren.config import ModelConfig, Price
 from wren.llm.types import ToolResultBlock
@@ -117,7 +123,7 @@ def test_usage_and_runs_roll_up(ctx):
     assert agent.turns == 2
     assert agent.usage.input_tokens == 30 and agent.usage.output_tokens == 15
     assert agent.cost == pytest.approx(3 * (10 * 1 + 5 * 2) / 1e6)
-    assert agent.subagent_runs == [{"agent": "explore", "description": "find config", "status": "done",
+    assert agent.subagent_runs == [{"agent": "explore", "model": "fake", "description": "find config", "status": "done",
                                     "turns": 1, "tool_calls": 0, "cost": pytest.approx(20 / 1e6)}]
 
 
@@ -201,3 +207,91 @@ def test_read_only_commands(command):
 ])
 def test_writing_commands(command):
     assert not is_read_only_command(command)
+
+
+# --- agent definitions ---------------------------------------------------------
+
+
+def write_agent(directory, name, frontmatter, body="Review the change."):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(f"---\n{frontmatter}\n---\n{body}\n")
+    return path
+
+
+def test_parse_claude_code_definition(tmp_path):
+    path = write_agent(tmp_path, "reviewer", "name: reviewer\ndescription: Reviews code.\n"
+                                             "tools: Read, Grep, Glob, WebFetch\nmodel: inherit")
+    kind, warnings = parse_agent_type(path, ".claude/agents")
+    assert kind.tools == frozenset({"read_file", "grep", "glob"})
+    assert kind.read_only and kind.model is None and kind.source == ".claude/agents"
+    assert "# Your role: reviewer\nReview the change." in kind.prompt
+    assert warnings == [f"agent 'reviewer' ({path}): wren has no tool 'WebFetch'; ignoring it"]
+
+
+def test_parse_options_and_errors(tmp_path):
+    path = write_agent(tmp_path, "fixer", "name: fixer\ndescription: Fixes.\ntools: [read_file, bash]\n"
+                                          "read-only: true\nmodel: kimi\nmax-turns: 5")
+    kind, _ = parse_agent_type(path, "x")
+    assert kind.read_only and kind.tools == frozenset({"read_file", "bash"})
+    assert kind.model == "kimi" and kind.max_turns == 5
+    all_tools, _ = parse_agent_type(write_agent(tmp_path, "any", "name: any\ndescription: d"), "x")
+    assert all_tools.tools is None and not all_tools.read_only
+    with pytest.raises(AgentTypeError, match="'name'"):
+        parse_agent_type(write_agent(tmp_path, "bad", "name: Bad Name\ndescription: d"), "x")
+    with pytest.raises(AgentTypeError, match="empty"):
+        parse_agent_type(write_agent(tmp_path, "empty", "name: empty\ndescription: d", body=""), "x")
+    with pytest.raises(AgentTypeError, match="max-turns"):
+        parse_agent_type(write_agent(tmp_path, "mt", "name: mt\ndescription: d\nmax-turns: 0"), "x")
+
+
+def test_discovery_precedence(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    project, wren_home = tmp_path / "p", tmp_path / "wrenhome"
+    write_agent(tmp_path / "home" / ".claude" / "agents", "r", "name: reviewer\ndescription: claude's")
+    write_agent(project / ".wren" / "agents", "r", "name: reviewer\ndescription: project's")
+    write_agent(project / ".wren" / "agents", "e", "name: explore\ndescription: my explore")
+    (project / ".wren" / "agents" / "broken.md").write_text("no frontmatter")
+    types, warnings = discover_agent_types(project, wren_home)
+    assert types["reviewer"].description == "project's" and types["reviewer"].source == ".wren/agents"
+    assert types["explore"].description == "my explore"   # built-ins can be replaced
+    assert "general" in types
+    assert any("overrides the one in ~/.claude/agents" in w for w in warnings)
+    assert any(w.startswith("skipping agent:") for w in warnings)
+
+
+def test_custom_read_only_agent_and_its_model(ctx):
+    kinds = builtin_agent_types()
+    kinds["reviewer"] = subagents.AgentType("reviewer", "d", "# Your role: reviewer\n",
+                                            tools=frozenset({"read_file", "write_file"}),
+                                            read_only=True, model="cheap")
+    cheap = ModelConfig(name="cheap", model="c", price=Price(0.1, 0.2))
+    child_provider = SystemRecordingProvider([call("write_file", "c1", path="x", content="y"),
+                                              reply("looks fine")])
+    agent = Agent(SystemRecordingProvider([task("reviewer"), reply("done")]),
+                  ModelConfig(name="fake", model="f"), ctx, RecordingUI(), Permissions(mode="auto"),
+                  agent_types=kinds)
+    agent.resolve_model = lambda name: (child_provider, cheap)
+    agent.run("review")
+    denied = [b for m in child_provider.requests[-1] for b in m.content if isinstance(b, ToolResultBlock)]
+    assert denied[0].is_error and "read-only and can't use write_file" in denied[0].content
+    assert not (ctx.cwd / "x").exists()
+    assert agent.subagent_runs[0]["model"] == "cheap"
+    assert agent.subagent_runs[0]["cost"] == pytest.approx(2 * (10 * 0.1 + 5 * 0.2) / 1e6)
+
+
+def test_unknown_model_falls_back(ctx):
+    from wren.config import ConfigError
+
+    kinds = builtin_agent_types()
+    kinds["explore"].model = "missing"
+    agent = Agent(SystemRecordingProvider([task(), reply("report"), reply("done")]),
+                  ModelConfig(name="fake", model="f"), ctx, RecordingUI(), Permissions(mode="auto"),
+                  agent_types=kinds)
+
+    def resolve(name):
+        raise ConfigError(f"unknown model {name!r}")
+    agent.resolve_model = resolve
+    agent.run("go")
+    assert result_of(agent).content == "report"
+    assert any(e[0] == "notice" and "can't use model 'missing'" in e[1] for e in agent.ui.events)

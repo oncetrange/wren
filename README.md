@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
@@ -125,6 +125,31 @@ including redirections into files, is refused. `general` asks for approval exact
 agent, under the same permission mode. In plan mode only `explore` runs. A subagent's tool calls
 show indented under its task; its changes are part of the current turn, so `/undo` reverts them.
 Its usage counts toward `/cost`, and its full log is in `~/.wren/sessions/subagents/`.
+
+Define your own subagents as markdown files; `/agents` lists what the model can use.
+
+```
+~/.wren/agents/<name>.md      # yours, in every project
+.wren/agents/<name>.md        # the project's, shareable in git
+```
+
+```markdown
+---
+name: reviewer
+description: Reviews a finished change for bugs and missed cases. Use after making a change.
+tools: read_file, grep, glob, bash   # optional, default all; Claude Code names (Read, Bash…) work too
+read-only: true                      # optional: no edits, read-only bash (default: true only if
+                                     # the tools can't write files or run commands)
+model: kimi                          # optional: a model from config.toml, e.g. a cheaper one
+max-turns: 20                        # optional, default 30
+---
+Review the change described in the task. Run `git diff` to see it, read the surrounding code,
+and report concrete problems with path:line, most serious first.
+```
+
+The file format is Claude Code's, so `~/.claude/agents` and `.claude/agents` are read too (wren's
+own directories win on name clashes, and a definition named `explore` or `general` replaces the
+built-in one). See `examples/agents/reviewer.md`.
 
 ## Hooks
 

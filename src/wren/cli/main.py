@@ -17,7 +17,7 @@ from rich.markup import escape
 
 from wren import __version__
 from wren.agent import shell_hooks
-from wren.agent.subagents import builtin_agent_types
+from wren.agent.subagents import discover_agent_types
 from wren.agent.loop import Agent
 from wren.agent.permissions import LABELS, Permissions
 from wren.agent.predict import Predictor
@@ -35,7 +35,8 @@ from wren.cli.terminal import (
     shift_enter_help,
 )
 from wren.cli.ui import RichUI, fmt_tokens
-from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, load_config
+from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, ModelConfig, load_config
+from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
 from wren.settings import Settings
@@ -53,6 +54,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/clear", "start a new session"),
     ("/todos", "show the current task list"),
     ("/skills", "list available skills (run one with /<name> [arguments])"),
+    ("/agents", "list subagent types the model can delegate to"),
     ("/hooks", "list active hooks and built-in policies"),
     ("/model", "show or switch the model"),
     ("/theme", "dark / light / auto-detected colors"),
@@ -126,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         ui.error(str(e))
         return 1
     skills, skill_warnings = discover(cwd)
-    for warning in skill_warnings:
+    agent_types, agent_warnings = discover_agent_types(cwd)
+    for warning in skill_warnings + agent_warnings:
         ui.notice(warning)
 
     agent = Agent(
@@ -140,8 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         max_turns=args.max_turns,
         final_check=bool(args.prompt) if args.final_check is None else args.final_check,
         skills=skills,
-        agent_types=builtin_agent_types(),
+        agent_types=agent_types,
     )
+    agent.resolve_model = lambda name: _provider_for(config.model(name))
     if state:
         agent.restore(state)
         ui.render_history(agent.messages, agent.tools, agent.ctx)
@@ -167,6 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         return Repl(agent, ui, config, settings).loop()
     finally:
         agent.end_session()
+
+
+def _provider_for(model: ModelConfig) -> tuple[Provider, ModelConfig]:
+    return create_provider(model), model
 
 
 def run_prompt(agent: Agent, text: str) -> str:
@@ -387,6 +395,8 @@ class Repl:
                 self.show_hooks()
             case "/skills":
                 self.show_skills()
+            case "/agents":
+                self.show_agents()
             case "/todos":
                 todos = self.agent.conv.todos
                 if todos:
@@ -525,6 +535,20 @@ class Repl:
             hint = f" {escape(s.argument_hint)}" if s.argument_hint else ""
             self.console.print(f"  [bold]/{s.name}[/]{hint} [dim]· {' · '.join(notes)}[/]")
             self.console.print(f"    {escape(_one_line(s.description, 100))}")
+
+    def show_agents(self) -> None:
+        task = self.agent.tools.get("task")
+        if task is None:
+            self.console.print("[dim]subagents are off[/]")
+            return
+        for t in sorted(task.types.values(), key=lambda t: t.name):
+            tools = "all tools" if t.tools is None else ", ".join(sorted(t.tools)) or "no tools"
+            notes = [t.source, tools] + (["read-only"] if t.read_only else [])
+            if t.model:
+                notes.append(f"model {t.model}")
+            self.console.print(f"  [bold]{t.name}[/] [dim]· {escape(' · '.join(notes))}[/]")
+            self.console.print(f"    {escape(_one_line(t.description, 100))}")
+        self.console.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
 
     def show_hooks(self) -> None:
         labels = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",

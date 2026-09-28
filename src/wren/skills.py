@@ -17,9 +17,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
 from wren.config import CONFIG_DIR
+from wren.frontmatter import FrontmatterError, read_frontmatter
 
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 MAX_NAME, MAX_DESCRIPTION = 64, 1024
@@ -70,16 +69,10 @@ class Skill:
 
 
 def parse_skill(path: Path, source: str) -> Skill:
-    text = path.read_text(encoding="utf-8")
-    m = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)(.*)$", text, re.S)
-    if not m:
-        raise SkillError(f"{path}: must start with YAML frontmatter between --- lines")
     try:
-        meta = yaml.safe_load(m.group(1)) or {}
-    except yaml.YAMLError as e:
-        raise SkillError(f"{path}: invalid frontmatter: {e}") from None
-    if not isinstance(meta, dict):
-        raise SkillError(f"{path}: frontmatter must be a mapping")
+        meta, body = read_frontmatter(path)
+    except FrontmatterError as e:
+        raise SkillError(str(e)) from None
     name, description = meta.get("name"), meta.get("description")
     if not isinstance(name, str) or not NAME_RE.match(name) or len(name) > MAX_NAME:
         raise SkillError(f"{path}: 'name' must be lowercase letters, digits and hyphens "
@@ -97,7 +90,7 @@ def parse_skill(path: Path, source: str) -> Skill:
         name=name,
         description=" ".join(description.split()),
         path=path,
-        body=m.group(2),
+        body=body,
         source=source,
         model_invocable=not meta.get("disable-model-invocation", False),
         argument_hint=str(hint) if hint is not None else None,
