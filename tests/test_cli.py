@@ -178,3 +178,28 @@ def test_up_down_still_browse_history_without_menu():
     menu = SlashMenu(lambda: [("/help", "")])
     prompt = lambda: PromptSession(history=history, key_bindings=menu.bindings()).prompt("› ")
     assert run_keys("\x1b[A\r", prompt) == "earlier prompt"
+
+
+def prediction_prompt(keys, prediction):
+    from prompt_toolkit import PromptSession
+    from wren.cli.completion import SlashMenu
+
+    menu = SlashMenu(lambda: list(ENTRIES))
+    menu.prediction = prediction
+
+    def prompt():
+        session = PromptSession(key_bindings=menu.bindings())
+        menu.attach(session)
+        return session.prompt("› ", pre_run=lambda: menu.show_prediction(prediction, session.default_buffer))
+
+    return run_keys(keys, prompt)
+
+
+def test_tab_accepts_the_prediction():
+    assert prediction_prompt("\t\r", "run the tests") == "run the tests"
+    assert prediction_prompt("run t\t\r", "run the tests") == "run the tests"   # rest of it
+
+
+def test_prediction_disappears_when_typing_diverges():
+    assert prediction_prompt("rub\t\r", "run the tests") == "rub"
+    assert prediction_prompt("/he\t\r", "run the tests") == "/help "           # commands win

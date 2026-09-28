@@ -9,7 +9,9 @@ completion uses the space that is always there:
 - the selected command is shown as grey ghost text after the cursor.
 
 ↑/↓ change the selection, Tab completes it (→ also accepts the ghost text),
-Enter runs it. Matching and selection live in `SlashMenu`; only `toolbar` and
+Enter runs it. When no command is being typed, the ghost text instead shows a
+predicted next prompt (see agent/predict.py) while it matches what was typed;
+Tab or → accepts it. Matching and selection live in `SlashMenu`; only `toolbar` and
 the ghost text are about how it is shown, so a full-screen UI could reuse the rest.
 """
 
@@ -41,6 +43,8 @@ class SlashMenu:
         self.entries = entries
         self.index = 0
         self._last_text = ""
+        # Predicted next prompt, offered as ghost text when no command is typed.
+        self.prediction: str | None = None
 
     def items(self, text: str | None = None) -> list[tuple[str, str]]:
         if text is None:
@@ -59,8 +63,15 @@ class SlashMenu:
         session.default_buffer.on_text_changed += self._update_ghost
 
     def _update_ghost(self, buf: Buffer) -> None:
-        name = self.selected(buf.text)
-        buf.suggestion = Suggestion(name[len(buf.text):]) if name and len(name) > len(buf.text) else None
+        text = buf.text
+        name = self.selected(text)
+        if name is None and self.prediction and not text.startswith("/"):
+            name = self.prediction
+        buf.suggestion = Suggestion(name[len(text):]) if name and name.startswith(text) and len(name) > len(text) else None
+
+    def show_prediction(self, prediction: str | None, buf: Buffer) -> None:
+        self.prediction = prediction
+        self._update_ghost(buf)
 
     @property
     def is_open(self) -> Condition:
@@ -135,5 +146,12 @@ class SlashMenu:
             buf = event.current_buffer
             buf.text = self.selected(buf.text)
             buf.validate_and_handle()
+
+        @kb.add("tab", filter=~is_open & Condition(
+            lambda: get_app().current_buffer.suggestion is not None
+            and get_app().current_buffer.document.is_cursor_at_the_end))
+        def _(event) -> None:
+            buf = event.current_buffer
+            buf.insert_text(buf.suggestion.text)
 
         return kb

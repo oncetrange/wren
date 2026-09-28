@@ -352,6 +352,15 @@ class Agent:
         self.conv.start_turn(prompt, commit)
         self.log.record("checkpoint", commit=commit, prompt=prompt)
 
+    def record_side_usage(self, usage: Usage, purpose: str) -> None:
+        """Account for a request outside the conversation (e.g. a prediction):
+        it counts toward tokens and cost, not turns or the context size."""
+        self.usage += usage
+        cost = self.model.cost(usage)
+        if cost is not None and self.cost is not None:
+            self.cost += cost
+        self.log.record("usage", model=self.model.name, purpose=purpose, usage=vars(usage), cost=cost)
+
     # --- model -------------------------------------------------------------
 
     def _call_model(self) -> Response:

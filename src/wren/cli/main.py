@@ -19,6 +19,7 @@ from wren import __version__
 from wren.agent import shell_hooks
 from wren.agent.loop import Agent
 from wren.agent.permissions import LABELS, Permissions
+from wren.agent.predict import Predictor
 from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
@@ -54,6 +55,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/hooks", "list active hooks and built-in policies"),
     ("/model", "show or switch the model"),
     ("/theme", "dark / light / auto-detected colors"),
+    ("/suggest", "turn next-prompt suggestions on or off"),
     ("/keys", "how to make Shift+Enter insert a newline in your terminal"),
     ("/cost", "token usage and cost so far"),
     ("/help", "this help"),
@@ -67,6 +69,7 @@ HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc i
   Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
   Shift+Tab switches mode: ask before edits → accept edits → plan (read-only)
   Typing / lists commands and skills in the bottom line: ↑/↓ choose, Tab completes, Enter runs
+  After an answer, a predicted next prompt shows as grey text: Tab or → accepts it
   Ctrl-C interrupts the agent
   ↑/↓ and Enter in pickers, Esc cancels"""
 
@@ -292,7 +295,8 @@ class Repl:
             event.app.invalidate()
 
         self.menu = SlashMenu(self.completions)
-        session: PromptSession[str] = PromptSession(
+        self.predictor = Predictor(self.agent, on_ready=self._prediction_ready)
+        self.session = session = PromptSession(
             history=FileHistory(str(CONFIG_DIR / "history")),
             key_bindings=merge_key_bindings([kb, self.menu.bindings()]),
             bottom_toolbar=self._toolbar, style=TOOLBAR_STYLE,
@@ -300,15 +304,17 @@ class Repl:
         self.menu.attach(session)
         while True:
             prefill, self._prefill = self._prefill, ""
+            self.menu.prediction = self.predictor.take()
             try:
                 with distinguish_shift_enter():
-                    text = session.prompt("\n› ", default=prefill).strip()
+                    text = session.prompt("\n› ", default=prefill, pre_run=self._show_prediction).strip()
             except KeyboardInterrupt:
                 continue
             except EOFError:
                 return 0
             if not text:
                 continue
+            self.predictor.clear()  # a new turn: the old guess no longer applies
             if text.startswith("/") and not expand_skill(text, self.agent.skills, BUILTIN_NAMES):
                 try:
                     if self.command(text) == "exit":
@@ -319,6 +325,18 @@ class Repl:
             run_prompt(self.agent, text)
             self.ui.usage_line(self.agent.estimated_context(), self.agent.model.context_window,
                                self.agent.usage.output_tokens, self.agent.cost)
+            if self.settings.suggestions and self.agent.status == "done":
+                self.predictor.start()
+
+    def _prediction_ready(self) -> None:
+        """From the predictor's thread: show the guess if the prompt is waiting."""
+        app = self.session.app
+        if app.is_running:
+            app.loop.call_soon_threadsafe(self._show_prediction)
+
+    def _show_prediction(self) -> None:
+        self.menu.show_prediction(self.predictor.take(), self.session.default_buffer)
+        self.session.app.invalidate()
 
     def completions(self) -> list[tuple[str, str]]:
         skills = [(f"/{s.name}", (f"{s.argument_hint} · " if s.argument_hint else "") + s.description)
@@ -390,6 +408,13 @@ class Repl:
                     self.ui.notice("compaction cancelled")
             case "/theme":
                 self.pick_theme()
+            case "/suggest":
+                self.settings.suggestions = not self.settings.suggestions
+                self.settings.save()
+                if not self.settings.suggestions:
+                    self.predictor.clear()
+                state = "on" if self.settings.suggestions else "off"
+                self.console.print(f"[dim]next-prompt suggestions {state} (Tab accepts one)[/]")
             case "/keys":
                 self.console.print(escape(shift_enter_help()))
             case _:

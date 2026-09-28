@@ -17,6 +17,8 @@ Theme = Literal["auto", "dark", "light"]
 @dataclass
 class Settings:
     theme: Theme = "auto"
+    # Predict the next prompt after each answer (one extra, mostly cached, request).
+    suggestions: bool = True
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> Settings:
