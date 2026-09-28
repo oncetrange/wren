@@ -49,7 +49,8 @@ class WrenAgent(BaseInstalledAgent):
     @with_prompt_template
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
         model = support.resolve_model(self.model_name)
-        env = self.build_process_env({model.api_key_env: self._get_env(model.api_key_env)})
+        keys = {model.key_env: self._get_env(model.key_env)} if model.key_env else {}
+        env = self.build_process_env(keys)
         env["WREN_HOME"] = support.WREN_HOME
         await self.exec_as_agent(
             environment,

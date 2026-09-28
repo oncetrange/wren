@@ -33,7 +33,8 @@ def resolve_model(model_name: str | None) -> ModelConfig:
 
 def model_hosts(model: ModelConfig) -> list[str]:
     """Domains the agent must reach at run time (for air-gapped tasks)."""
-    host = urlparse(model.base_url).hostname if model.base_url else "api.anthropic.com"
+    default = "api.openai.com" if model.provider == "openai" else "api.anthropic.com"
+    host = urlparse(model.base_url).hostname if model.base_url else default
     return [host] if host else []
 
 

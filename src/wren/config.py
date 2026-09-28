@@ -53,9 +53,12 @@ class Price:
 class ModelConfig:
     name: str
     model: str
-    provider: str = "anthropic"
+    # "anthropic": the Messages API; "openai": OpenAI-compatible chat completions.
+    provider: Literal["anthropic", "openai"] = "anthropic"
     base_url: str | None = None
-    api_key_env: str = "ANTHROPIC_API_KEY"
+    # The environment variable holding the key; default ANTHROPIC_API_KEY or
+    # OPENAI_API_KEY by provider. "" for endpoints without keys (local servers).
+    api_key_env: str | None = None
     # "api_key" sends X-Api-Key; "bearer" sends it as Authorization: Bearer as
     # well, which most Anthropic-compatible gateways expect.
     auth: Literal["api_key", "bearer"] = "api_key"
@@ -72,12 +75,42 @@ class ModelConfig:
     # full table like {type = "enabled", budget_tokens = 16000}. None omits it.
     thinking: str | dict[str, Any] | None = None
     price: Price | None = None
+    # OpenAI provider only. Sent as `reasoning_effort` ("low", "medium", "high").
+    reasoning_effort: str | None = None
+    # Extra request fields for vendor-specific options (e.g. {enable_thinking = true}).
+    extra_body: dict[str, Any] | None = None
+    # Send the model's reasoning back with its tool calls, as `reasoning_content`
+    # (DeepSeek and Kimi require this in thinking mode; others reject or ignore it).
+    replay_reasoning: bool = False
+    # "max_tokens", or "max_completion_tokens" (OpenAI's own newer models);
+    # default: the latter for api.openai.com, the former elsewhere.
+    max_tokens_param: str | None = None
+
+    def ignored_options(self) -> list[str]:
+        """Options set for this model that its provider doesn't use."""
+        if self.provider == "openai":
+            unused = {"thinking": self.thinking is not None, "auth": self.auth != "api_key"}
+        else:
+            unused = {"reasoning_effort": self.reasoning_effort is not None,
+                      "extra_body": self.extra_body is not None,
+                      "replay_reasoning": self.replay_reasoning,
+                      "max_tokens_param": self.max_tokens_param is not None}
+        return [name for name, is_set in unused.items() if is_set]
+
+    @property
+    def key_env(self) -> str:
+        if self.api_key_env is not None:
+            return self.api_key_env
+        return "OPENAI_API_KEY" if self.provider == "openai" else "ANTHROPIC_API_KEY"
 
     def api_key(self) -> str:
-        key = os.environ.get(self.api_key_env)
+        """The API key ("" for a model configured without one)."""
+        if self.key_env == "":
+            return ""
+        key = os.environ.get(self.key_env)
         if not key:
             raise ConfigError(
-                f"model {self.name!r} needs an API key: set ${self.api_key_env}"
+                f"model {self.name!r} needs an API key: set ${self.key_env}"
             )
         return key
 
@@ -114,6 +147,26 @@ BUILTIN_MODELS: dict[str, dict[str, Any]] = {
         # K2.7 Code rejects requests without thinking enabled.
         "thinking": {"type": "enabled", "budget_tokens": 16000},
         "price": {"input": 0.95, "output": 4.0, "cache_read": 0.19, "cache_write": 0.95},
+    },
+    # The same model as "qwen" through DashScope's OpenAI-compatible endpoint,
+    # for comparing the two protocols.
+    "qwen-openai": {
+        "provider": "openai",
+        "model": "qwen3-coder-plus",
+        "context_window": 1_000_000,
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "max_tokens": 32000,
+        "price": {"tiers": [{"up_to": 32_000, "input": 1.0, "output": 5.0, "cache_read": 0.2}]},
+    },
+    # No price: set one in config.toml ([models.deepseek.price]) to see costs.
+    "deepseek": {
+        "provider": "openai",
+        "model": "deepseek-chat",
+        "context_window": 128_000,
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "max_tokens": 8192,
     },
     "claude": {
         "model": "claude-opus-5",
@@ -217,6 +270,9 @@ def _model_config(name: str, spec: dict[str, Any]) -> ModelConfig:
         raise ConfigError(f"model {name!r}: unknown keys {sorted(unknown)}")
     if "model" not in spec:
         raise ConfigError(f"model {name!r}: missing 'model'")
+    if spec.get("provider", "anthropic") not in ("anthropic", "openai"):
+        raise ConfigError(f"model {name!r}: provider must be 'anthropic' or 'openai', "
+                          f"got {spec['provider']!r}")
     spec = dict(spec)
     if isinstance(spec.get("price"), dict):
         spec["price"] = _price(spec["price"])
