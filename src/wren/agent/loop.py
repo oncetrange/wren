@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -143,6 +144,8 @@ class Agent:
         self.hooks = hooks
         # One summary per subagent run in this session (see agent/subagents.py).
         self.subagent_runs: list[dict[str, Any]] = []
+        # Looks up another configured model by name, for subagents that name one.
+        self.resolve_model: Callable[[str], tuple[Provider, ModelConfig]] | None = None
         # Context from session-start handlers, added to the next prompt.
         self._session_context: list[str] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)

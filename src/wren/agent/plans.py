@@ -51,7 +51,7 @@ def is_reminder(text: str) -> bool:
 
 
 # Everything in .wren/ stays out of git except what is meant to be shared.
-WREN_DIR_GITIGNORE = "*\n!hooks.toml\n!skills/\n!skills/**\n"
+WREN_DIR_GITIGNORE = "*\n!hooks.toml\n!skills/\n!skills/**\n!agents/\n!agents/**\n"
 
 
 @dataclass
