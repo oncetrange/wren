@@ -125,6 +125,8 @@ including redirections into files, is refused. `general` asks for approval exact
 agent, under the same permission mode. In plan mode only `explore` runs. A subagent's tool calls
 show indented under its task; its changes are part of the current turn, so `/undo` reverts them.
 Its usage counts toward `/cost`, and its full log is in `~/.wren/sessions/subagents/`.
+Read-only subagents requested together run at the same time (up to 4), with one status line
+each; Ctrl-C stops them all. Subagents that can change files run one after another.
 
 Define your own subagents as markdown files; `/agents` lists what the model can use.
 

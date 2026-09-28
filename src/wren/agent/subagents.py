@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import threading
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from wren.agent.events import Hooks, PreToolUse, Verdict
+from wren.agent.permissions import Decision
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SESSIONS_DIR, SessionLog
 from wren.config import CONFIG_DIR, ConfigError
@@ -48,6 +50,8 @@ if TYPE_CHECKING:
     from wren.agent.loop import Agent, AgentUI
 
 SUBAGENTS_DIR = SESSIONS_DIR / "subagents"
+# Guards the parent's accounting when subagents finish on several threads.
+_BOOKKEEPING = threading.Lock()
 DEFAULT_MAX_TURNS = 30
 # Never given to a subagent: no nesting, and the task list and plan approval
 # belong to the conversation with the user.
@@ -273,6 +277,68 @@ class SubagentUI:
             self.ui.error(text)
 
 
+class Progress:
+    """Status lines for subagents running at the same time, one per subagent."""
+
+    def __init__(self, ui: AgentUI):
+        self.ui = ui
+        self.cancel = threading.Event()  # set when the user interrupts
+        self.lock = threading.Lock()
+        self._rows: list[list[str]] = []  # [label, what it's doing]
+
+    def child_ui(self, label: str) -> ProgressUI:
+        with self.lock:
+            self._rows.append([label, "starting"])
+            return ProgressUI(self, len(self._rows) - 1, label)
+
+    def update(self, row: int, activity: str) -> None:
+        with self.lock:
+            self._rows[row][1] = activity
+            self._show([f"{_clip(label, 40)} · {activity}" for label, activity in self._rows])
+
+    def close(self) -> None:
+        self._show(None)
+
+    def _show(self, lines: list[str] | None) -> None:
+        if show := getattr(self.ui, "progress", None):
+            show(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+class ProgressUI:
+    """A concurrently running subagent's UI: its activity goes to one status
+    line; only notices and errors are printed. It never asks for approval,
+    since only read-only subagents run concurrently."""
+
+    def __init__(self, progress: Progress, row: int, label: str):
+        self.progress, self.row, self.label = progress, row, label
+
+    def model_started(self) -> None: self.progress.update(self.row, "thinking")
+    def text_delta(self, text: str) -> None: pass
+    def thinking_delta(self, text: str) -> None: pass
+    def tool_call_started(self, name: str) -> None: self.progress.update(self.row, f"preparing {name}")
+    def model_finished(self) -> None: pass
+    def tool_started(self, name: str, label: str) -> None:
+        self.progress.update(self.row, f"{name} {label.splitlines()[0] if label else ''}".strip())
+    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
+        return Decision(allow=False)
+    def review_plan(self, plan: str) -> None: return None
+    def tool_finished(self, name: str, output: ToolOutput) -> None: pass
+    def hook_ran(self, name: str, status: str) -> None: pass
+    def done(self, status: str) -> None: self.progress.update(self.row, status)
+
+    def notice(self, text: str) -> None:
+        with self.progress.lock:
+            self.progress.ui.notice(f"{self.label}: {text}")
+
+    def error(self, text: str) -> None:
+        with self.progress.lock:
+            self.progress.ui.error(f"{self.label}: {text}")
+
+
 class TaskTool(Tool):
     name = "task"
     description = (
@@ -314,6 +380,10 @@ class TaskTool(Tool):
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return f"{args.get('description', '')} ({args.get('agent') or 'general'})"
 
+    def concurrent_safe(self, args: dict[str, Any]) -> bool:
+        kind = self.types.get(args.get("agent") or "general")
+        return kind is not None and kind.read_only
+
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         kind = self.types.get(args.get("agent") or "general")
         if kind is None:
@@ -347,13 +417,15 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
                              f"using {parent.model.name}")
 
     skills = parent.skills if kind.allows("skill") else {}
+    progress = parent._progress  # set when running alongside other subagents
+    ui = progress.child_ui(f"{description} ({kind.name})") if progress else SubagentUI(parent.ui)
     log = _log(parent)
     child = Agent(
         provider,
         model,
         # Its own read tracking: a file it read hasn't been seen by the parent.
         ToolContext(cwd=parent.ctx.cwd),
-        SubagentUI(parent.ui),
+        ui,
         permissions=parent.permissions,
         log=log,
         tools=[t for t in default_tools() if kind.allows(t.name)],
@@ -363,17 +435,22 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
                                    base=f"{SUBAGENT_BASE}\n{kind.prompt}"),
         hooks=hooks,
     )
-    parent.log.record("subagent", agent=kind.name, description=description,
-                      log=str(log.path) if log.path else None)
+    child.cancel = progress.cancel if progress else None
+    with _BOOKKEEPING:
+        parent.log.record("subagent", agent=kind.name, description=description,
+                          log=str(log.path) if log.path else None)
     report = child.run(prompt)
+    if isinstance(ui, ProgressUI):
+        ui.done(child.status)
 
-    parent.add_usage(child.usage, child.cost, child.model.name, purpose="subagent")
-    parent.changed = parent.changed or child.changed
     tokens = child.usage.input_tokens + child.usage.cache_read_tokens + child.usage.cache_write_tokens
     run = {"agent": kind.name, "model": model.name, "description": description, "status": child.status,
            "turns": child.turns, "tool_calls": child.tool_calls, "cost": child.cost}
-    parent.subagent_runs.append(run)
-    parent.log.record("subagent_end", **run)
+    with _BOOKKEEPING:
+        parent.add_usage(child.usage, child.cost, child.model.name, purpose="subagent")
+        parent.changed = parent.changed or child.changed
+        parent.subagent_runs.append(run)
+        parent.log.record("subagent_end", **run)
     if child.status == "interrupted":
         raise KeyboardInterrupt  # stop the main agent's turn too
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -57,12 +59,14 @@ from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.skills import Skill, prompt_section
 from wren.tools.base import validate_args
 from wren.tools.skill import SkillTool
-from wren.agent.subagents import AgentType, TaskTool
+from wren.agent.subagents import AgentType, Progress, TaskTool
 
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 # How often stop handlers may keep the model going within one request.
 MAX_STOP_BLOCKS = 3
+# Most tool calls (read-only subagents) run at the same time.
+MAX_CONCURRENT = 4
 
 
 class AgentUI(Protocol):
@@ -146,6 +150,11 @@ class Agent:
         self.subagent_runs: list[dict[str, Any]] = []
         # Looks up another configured model by name, for subagents that name one.
         self.resolve_model: Callable[[str], tuple[Provider, ModelConfig]] | None = None
+        # Set while calls run concurrently: where subagents report their progress.
+        self._progress: Progress | None = None
+        # Set from another thread to stop this agent at its next step (a subagent
+        # running concurrently, when the user interrupts).
+        self.cancel: threading.Event | None = None
         # Context from session-start handlers, added to the next prompt.
         self._session_context: list[str] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
@@ -390,6 +399,7 @@ class Agent:
                 messages=self.messages,
                 tools=[t.spec() for t in self.tools.values()],
             ):
+                self._check_cancel()
                 match event:
                     case TextDelta(text):
                         self.ui.text_delta(text)
@@ -425,7 +435,16 @@ class Agent:
         """Execute a turn's tool calls. Returns False if the loop should stop."""
         self._pending, self._results = list(calls), []
         denial: Decision | None = None
-        for call in calls:
+        i = 0
+        while i < len(calls):
+            call = calls[i]
+            group = self._concurrent_group(calls[i:len(calls) - truncated]) if denial is None else []
+            if len(group) > 1:
+                self._results += self._execute_concurrently(group)
+                for c in group:
+                    self._pending.remove(c)
+                i += len(group)
+                continue
             if truncated and call is calls[-1]:
                 result = ToolResultBlock(
                     call.id,
@@ -438,9 +457,11 @@ class Agent:
                 result = ToolResultBlock(
                     call.id, "Not run: the user rejected an earlier tool call in this turn.", True)
             else:
+                self._check_cancel()
                 result, denial = self._execute(call)
             self._results.append(result)
             self._pending.remove(call)
+            i += 1
         blocks: list[ContentBlock] = list(self._results)
         if denial is not None and denial.feedback:
             # What the user typed is a message from them, not tool output: it
@@ -453,12 +474,9 @@ class Agent:
 
     def _execute(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
         """Run one call. Returns its result, and the user's decision if they rejected it."""
-        tool = self.tools.get(call.name)
-        if tool is None:
-            return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}"), None
-        problem = validate_args(tool.input_schema, call.input)
-        if problem:
-            return self._error(call, f"invalid arguments for {call.name}: {problem}"), None
+        tool = self._check(call)
+        if isinstance(tool, ToolResultBlock):
+            return tool, None
 
         label = tool.describe(call.input, self.ctx)
         self.ui.tool_started(call.name, label)
@@ -482,15 +500,34 @@ class Agent:
             if decision.remember:
                 self.permissions.remember(tool, call.input)
 
+        return self._finish(call, tool, self._run_tool(tool, call)), None
+
+    def _check_cancel(self) -> None:
+        if self.cancel is not None and self.cancel.is_set():
+            raise KeyboardInterrupt
+
+    def _check(self, call: ToolUseBlock) -> Tool | ToolResultBlock:
+        """The call's tool, or an error result if there is no such tool or the arguments are wrong."""
+        tool = self.tools.get(call.name)
+        if tool is None:
+            return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}")
+        problem = validate_args(tool.input_schema, call.input)
+        if problem:
+            return self._error(call, f"invalid arguments for {call.name}: {problem}")
+        return tool
+
+    def _run_tool(self, tool: Tool, call: ToolUseBlock) -> ToolOutput:
         try:
-            output = tool.run(call.input, self.ctx)
+            return tool.run(call.input, self.ctx)
         except ToolError as e:
-            output = ToolOutput(str(e), is_error=True, summary=str(e).splitlines()[0])
+            return ToolOutput(str(e), is_error=True, summary=str(e).splitlines()[0])
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:  # a bug in a tool must not kill the session
-            output = ToolOutput(f"internal error in {call.name}: {type(e).__name__}: {e}", True,
-                                summary=f"{type(e).__name__}: {e}")
+            return ToolOutput(f"internal error in {call.name}: {type(e).__name__}: {e}", True,
+                              summary=f"{type(e).__name__}: {e}")
+
+    def _finish(self, call: ToolUseBlock, tool: Tool, output: ToolOutput) -> ToolResultBlock:
         if output.todos is not None:
             self.conv.todos = output.todos
             self.log.record("todos", items=[t.to_dict() for t in output.todos])
@@ -504,7 +541,54 @@ class Agent:
         self.tool_errors += output.is_error
         self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
                         error=output.content[:500] if output.is_error else None)
-        return ToolResultBlock(call.id, output.content or "(no output)", output.is_error), None
+        return ToolResultBlock(call.id, output.content or "(no output)", output.is_error)
+
+    # --- concurrent calls ----------------------------------------------------
+
+    def _concurrent_group(self, calls: list[ToolUseBlock]) -> list[ToolUseBlock]:
+        """The leading calls that may run at the same time (read-only subagents):
+        they never ask for approval and change nothing, so order doesn't matter."""
+        group = []
+        for call in calls:
+            tool = self.tools.get(call.name)
+            if (tool is None or validate_args(tool.input_schema, call.input)
+                    or not tool.concurrent_safe(call.input)):
+                break
+            group.append(call)
+        return group
+
+    def _execute_concurrently(self, calls: list[ToolUseBlock]) -> list[ToolResultBlock]:
+        """Run the calls on threads, showing their progress; print each call
+        with its result once all are done, in the order they were made."""
+        results: dict[str, ToolResultBlock] = {}
+        runnable: list[tuple[ToolUseBlock, Tool]] = []
+        for call in calls:
+            tool = self.tools[call.name]
+            if blocked := denial(self.hooks.run("pre_tool", PreToolUse(self, tool, call))):
+                self.ui.tool_started(call.name, tool.describe(call.input, self.ctx))
+                results[call.id] = self._error(call, blocked.reason)
+            else:
+                runnable.append((call, tool))
+        progress = Progress(self.ui)
+        self._progress = progress
+        try:
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
+                futures = {call.id: pool.submit(self._run_tool, tool, call) for call, tool in runnable}
+                try:
+                    wait(futures.values())
+                except KeyboardInterrupt:
+                    progress.cancel.set()  # the workers stop at their next step
+                    raise
+        finally:
+            self._progress = None
+            progress.close()
+        for call, tool in runnable:
+            self.ui.tool_started(call.name, tool.describe(call.input, self.ctx))
+            error = futures[call.id].exception()
+            if isinstance(error, KeyboardInterrupt):
+                raise error
+            results[call.id] = self._finish(call, tool, futures[call.id].result())
+        return [results[c.id] for c in calls]
 
     def _exit_plan_mode(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
         """Show the plan for approval. Returns a rejection Decision when the
