@@ -84,7 +84,6 @@ from rich.console import Console
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.plans import WREN_DIR_GITIGNORE
-from wren.cli.completion import SlashCompleter
 from wren.cli.main import BUILTIN_NAMES, run_prompt
 from wren.cli.ui import RichUI
 from wren.config import ModelConfig
@@ -153,12 +152,12 @@ def test_builtin_commands_win(skills):
     assert expand("release", skills, BUILTIN_NAMES) is None
 
 
-def test_slash_completion():
-    from prompt_toolkit.document import Document
-    completer = SlashCompleter(lambda: [("/release", "cut a release"), ("/resume", "switch"), ("/help", "")])
-    names = lambda text: [c.text for c in completer.get_completions(Document(text), None)]
+def test_slash_menu_matches():
+    from wren.cli.completion import matches
+    entries = [("/release", "cut a release"), ("/resume", "switch"), ("/help", "")]
+    names = lambda text: [n for n, _ in matches(text, entries)]
     assert names("/re") == ["/release", "/resume"]
-    assert names("/release 1") == [] and names("hello") == []
+    assert names("/release 1") == [] and names("hello") == [] and names("") == []
 
 
 def test_headless_skill(tmp_path):

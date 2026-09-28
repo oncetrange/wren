@@ -10,7 +10,7 @@ from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
@@ -22,7 +22,8 @@ from wren.agent.permissions import LABELS, Permissions
 from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
-from wren.cli.completion import SlashCompleter
+from wren.cli.completion import STYLES as MENU_STYLES
+from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
 from wren.cli.pickers import confirm, pick
 from wren.cli.terminal import (
@@ -40,7 +41,7 @@ from wren.skills import discover
 from wren.skills import expand as expand_skill
 from wren.tools import ToolContext
 
-TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse"})
+TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse", **MENU_STYLES})
 
 COMMANDS: list[tuple[str, str]] = [
     ("/undo", "undo the last turn (files + conversation) or the last compaction"),
@@ -65,7 +66,8 @@ HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc i
 [bold]Keys[/]
   Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
   Shift+Tab switches mode: ask before edits → accept edits → plan (read-only)
-  Tab completes /commands · Ctrl-C interrupts the agent
+  Typing / lists commands and skills in the bottom line: ↑/↓ choose, Tab completes, Enter runs
+  Ctrl-C interrupts the agent
   ↑/↓ and Enter in pickers, Esc cancels"""
 
 
@@ -289,11 +291,13 @@ class Repl:
             self.agent.permissions.cycle()
             event.app.invalidate()
 
+        self.menu = SlashMenu(self.completions)
         session: PromptSession[str] = PromptSession(
-            history=FileHistory(str(CONFIG_DIR / "history")), key_bindings=kb,
+            history=FileHistory(str(CONFIG_DIR / "history")),
+            key_bindings=merge_key_bindings([kb, self.menu.bindings()]),
             bottom_toolbar=self._toolbar, style=TOOLBAR_STYLE,
-            completer=SlashCompleter(self.completions), complete_while_typing=True,
         )
+        self.menu.attach(session)
         while True:
             prefill, self._prefill = self._prefill, ""
             try:
@@ -322,7 +326,10 @@ class Repl:
                   if s.name not in BUILTIN_NAMES]
         return COMMANDS + skills
 
-    def _toolbar(self) -> HTML:
+    def _toolbar(self):
+        """The slash menu while typing a command, otherwise the mode line."""
+        if line := self.menu.toolbar():
+            return line
         mode = self.agent.permissions.mode
         icon = {"ask": "⏵", "accept_edits": "⏵⏵", "plan": "⏸", "auto": "⏵⏵⏵"}[mode]
         color = {"ask": "ansigray", "accept_edits": "ansigreen", "plan": "ansicyan", "auto": "ansired"}[mode]

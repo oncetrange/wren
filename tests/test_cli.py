@@ -97,3 +97,84 @@ def test_shift_tab_sequences(seq):
     kb.add("s-tab")(lambda event: pressed.append(True))
     text = run_keys(f"a{seq}b\x1b[27;5;9~\r", lambda: PromptSession(key_bindings=kb).prompt())
     assert pressed == [True] and text == "ab"
+
+
+ENTRIES = (("/release", "cut a release"), ("/resume", "switch session"), ("/help", "help"))
+
+
+def menu_prompt(keys, entries=ENTRIES):
+    """Run a prompt with the slash menu. Ctrl-T in `keys` records the ghost text."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+    from wren.cli.completion import SlashMenu
+    from wren.cli.keys import newline_bindings
+
+    menu = SlashMenu(lambda: list(entries))
+    ghosts = []
+    probe = KeyBindings()
+
+    @probe.add("c-t")
+    def _(event):
+        s = event.current_buffer.suggestion
+        ghosts.append(s.text if s else None)
+
+    def prompt():  # created inside run_keys, where the pipe input is active
+        session = PromptSession(key_bindings=merge_key_bindings([newline_bindings(), menu.bindings(), probe]))
+        menu.attach(session)
+        return session.prompt("› ")
+
+    return run_keys(keys, prompt), ghosts
+
+
+def line_text(line):
+    return "".join(t for _, t in line) if line else ""
+
+
+def test_slash_menu_enter_runs_the_selection():
+    text, _ = menu_prompt("/re\x1b[B\r")           # down to the second match, Enter
+    assert text == "/resume"
+
+
+def test_slash_menu_tab_completes_for_arguments():
+    text, _ = menu_prompt("/rel\t1.0\r")
+    assert text == "/release 1.0"
+
+
+def test_toolbar_line_shows_matches_and_the_selected_description():
+    from wren.cli.completion import SlashMenu
+    menu = SlashMenu(lambda: list(ENTRIES))
+    assert menu.toolbar(80, text="hi") is None           # closed: the usual mode line shows
+    first = line_text(menu.toolbar(80, text="/re"))
+    assert "/release  cut a release" in first and "/resume" in first and "switch session" not in first
+    menu.index = 1
+    second = line_text(menu.toolbar(80, text="/re"))
+    assert "/resume  switch session" in second and "cut a release" not in second
+
+
+def test_ghost_text_follows_the_selection():
+    text, ghosts = menu_prompt("/re\x14\x1b[B\x14\x1b[B\x14\r")
+    assert ghosts == ["lease", "sume", "lease"]            # wraps around
+    assert text == "/release"
+
+
+def test_long_lists_scroll_to_the_selection():
+    from wren.cli.completion import SlashMenu
+    entries = [(f"/command-{i:02d}", "a fairly long description " * 3) for i in range(20)]
+    menu = SlashMenu(lambda: entries)
+    menu.items("/c")
+    menu.index = 15
+    text = line_text(menu.toolbar(60, text="/c"))
+    assert "/command-15" in text and "/command-00" not in text and len(text) <= 60
+    assert text.endswith("↑↓ Tab ↵")
+
+
+def test_up_down_still_browse_history_without_menu():
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+    from wren.cli.completion import SlashMenu
+
+    history = InMemoryHistory()
+    history.append_string("earlier prompt")
+    menu = SlashMenu(lambda: [("/help", "")])
+    prompt = lambda: PromptSession(history=history, key_bindings=menu.bindings()).prompt("› ")
+    assert run_keys("\x1b[A\r", prompt) == "earlier prompt"
