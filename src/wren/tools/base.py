@@ -77,6 +77,11 @@ class Tool(ABC):
         """Granularity of an "always allow" decision."""
         return self.name
 
+    def concurrent_safe(self, args: dict[str, Any]) -> bool:
+        """Whether this call may run alongside others: it must never ask for
+        approval and never change anything. Only read-only subagents so far."""
+        return False
+
     def preview(self, args: dict[str, Any], ctx: ToolContext) -> str | None:
         """A diff shown before asking permission, if the tool can compute one."""
         return None

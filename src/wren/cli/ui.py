@@ -197,6 +197,19 @@ class RichUI:
                         self.console.print(Text(f"  ⎿ {first}", style="red"))
         self.console.print(Rule("resumed", style="dim"))
 
+    def progress(self, lines: list[str] | None) -> None:
+        """Live status lines for subagents running concurrently; None ends it."""
+        if lines is None:
+            self._stop_spin()
+            return
+        width = max(20, self.console.width - 6)
+        status = Text(f"{len(lines)} subagents")
+        for line in lines:
+            row = Text("\n  " + line, style="dim")
+            row.truncate(width + 3, overflow="ellipsis")
+            status.append_text(row)
+        self._spin(status)
+
     # --- misc --------------------------------------------------------------
 
     def hook_ran(self, name: str, status: str) -> None:
@@ -251,7 +264,7 @@ class RichUI:
             self.console.print()
         self._stream_kind = None
 
-    def _spin(self, message: str) -> None:
+    def _spin(self, message: str | Text) -> None:
         if not self.console.is_terminal:
             return
         if self._status is None:
