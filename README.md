@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
@@ -68,7 +68,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
@@ -107,6 +107,39 @@ Bump the version to $ARGUMENTS, update CHANGELOG.md, run scripts/check.sh, then 
 Skills use the Agent Skills format, so `~/.claude/skills` and `.claude/skills` are read too (wren's
 own directories win on name clashes). `/skills` lists them. See `examples/skills/commit-message`
 for a complete one with a helper script.
+
+## Memory
+
+wren keeps a long-term memory across sessions, and the model maintains it itself with the
+`memory` tool: what you corrected or confirmed about how it works, who you are and what you prefer,
+project context that isn't in the code (decisions, deadlines), and where to find external
+resources. It doesn't store what the repository already records, such as code structure or history.
+
+```
+~/.wren/memory/                       # about you, used in every project
+~/.wren/projects/<path>/memory/       # about this project (outside the repo: never committed)
+```
+
+Each memory is one markdown file with frontmatter; `MEMORY.md` in each directory is an index that
+wren regenerates. The indexes are in the system prompt, and the model reads a memory's text when
+it looks relevant. Memories are background knowledge, not instructions: when one conflicts with
+what you ask now, your request wins. Saving needs no approval, but every change shows as a line:
+
+```
+● memory write user/prefers-pytest
+  ⎿ saved user/prefers-pytest: User prefers pytest over unittest
+```
+
+Models seldom stop mid-task to take notes, so before a compaction and when a session ends
+(`/exit`, `/clear`, `/resume`, Ctrl-D) the model also reviews the conversation for anything worth
+keeping, in one side request that mostly reads from the prompt cache (Ctrl-C skips it).
+
+- `/memory` lists memories to view, edit in `$EDITOR` or delete
+- `/remember <text>` has the model save something now
+- `/memory off` / `/memory on` turns memory off or on for this project; `/memory auto` toggles the
+  end-of-session review
+- Headless runs (`wren -p`) don't use memory unless given `--memory`, so benchmark runs stay
+  independent of each other
 
 ## Subagents
 

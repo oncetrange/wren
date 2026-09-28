@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -13,14 +16,18 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape
+from rich.panel import Panel
 
 from wren import __version__
 from wren.agent import shell_hooks
 from wren.agent.subagents import discover_agent_types
 from wren.agent.loop import Agent
 from wren.agent.permissions import LABELS, Permissions
+from wren.agent.plans import reminder
 from wren.agent.predict import Predictor
+from wren.agent.remember import REMEMBER_REQUEST
 from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.checkpoint import CheckpointError, Checkpoints
@@ -39,6 +46,7 @@ from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, ModelConfi
 from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
+from wren.memory import Memories
 from wren.settings import Settings
 from wren.skills import discover
 from wren.skills import expand as expand_skill
@@ -55,6 +63,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/todos", "show the current task list"),
     ("/skills", "list available skills (run one with /<name> [arguments])"),
     ("/agents", "list subagent types the model can delegate to"),
+    ("/memory", "view, edit or delete memories · /memory on|off|auto"),
+    ("/remember", "have the model remember something across sessions"),
     ("/hooks", "list active hooks and built-in policies"),
     ("/model", "show or switch the model"),
     ("/theme", "dark / light / auto-detected colors"),
@@ -92,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
                              "--max-turns is nearly used up (default: on with -p, off otherwise)")
     parser.add_argument("--trust-project-hooks", action="store_true",
                         help="run the project's .wren/hooks.toml without asking (needed with -p)")
+    parser.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
+                        help="use long-term memory: the model reads and keeps memories across "
+                             "sessions (default: on, off with -p)")
     parser.add_argument("--no-checkpoints", action="store_true",
                         help="don't snapshot the workspace before each prompt")
     parser.add_argument("-m", "--model", help="model name from the config (default: config default_model)")
@@ -129,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     skills, skill_warnings = discover(cwd)
     agent_types, agent_warnings = discover_agent_types(cwd)
+    memories = Memories.for_project(cwd)
     for warning in skill_warnings + agent_warnings:
         ui.notice(warning)
 
@@ -144,7 +158,9 @@ def main(argv: list[str] | None = None) -> int:
         final_check=bool(args.prompt) if args.final_check is None else args.final_check,
         skills=skills,
         agent_types=agent_types,
+        memory=memories if (not args.prompt if args.memory is None else args.memory) else None,
     )
+    agent.auto_memory = settings.memory_auto
     agent.resolve_model = lambda name: _provider_for(config.model(name))
     if state:
         agent.restore(state)
@@ -168,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(_result_json(agent, result, time.monotonic() - start),
                                  ensure_ascii=False))
             return 0 if agent.status == "done" else 1
-        return Repl(agent, ui, config, settings).loop()
+        return Repl(agent, ui, config, settings, memories).loop()
     finally:
         agent.end_session()
 
@@ -281,8 +297,10 @@ def _one_line(text: str, width: int = 60) -> str:
 
 
 class Repl:
-    def __init__(self, agent: Agent, ui: RichUI, config: Config, settings: Settings):
+    def __init__(self, agent: Agent, ui: RichUI, config: Config, settings: Settings,
+                 memories: Memories | None = None):
         self.agent, self.ui, self.config, self.settings = agent, ui, config, settings
+        self.memories = memories
         self.console = ui.console
         self._prefill = ""  # text to pre-fill the next prompt with (e.g. after /undo)
 
@@ -322,6 +340,7 @@ class Repl:
             except KeyboardInterrupt:
                 continue
             except EOFError:
+                self.save_memories()
                 return 0
             if not text:
                 continue
@@ -370,10 +389,12 @@ class Repl:
         arg = arg.strip()
         match name:
             case "/exit" | "/quit":
+                self.save_memories()
                 return "exit"
             case "/help":
                 self.console.print(HELP)
             case "/clear":
+                self.save_memories()
                 old = self.agent.log.id
                 self.agent.new_session(SessionLog())
                 self.agent.start_session("clear")
@@ -430,9 +451,90 @@ class Repl:
                 self.console.print(f"[dim]next-prompt suggestions {state} (Tab accepts one)[/]")
             case "/keys":
                 self.console.print(escape(shift_enter_help()))
+            case "/memory":
+                self.memory_command(arg)
+            case "/remember":
+                if self.agent.memory is None:
+                    self.ui.error("memory is off in this session (see /memory)")
+                elif not arg:
+                    self.ui.error("usage: /remember <what to remember>")
+                else:
+                    self.agent.run(arg, attachments=[reminder(REMEMBER_REQUEST)])
             case _:
                 self.ui.error(f"unknown command {name}; see /help")
         return None
+
+    # --- memory ----------------------------------------------------------------
+
+    def save_memories(self) -> None:
+        """Before this conversation is left behind: let the model keep what it learned."""
+        if self.agent.memory is None or not self.agent.auto_memory:
+            return
+        if self.agent._memory_upto >= len(self.agent.messages):
+            return
+        self.console.print("[dim]reviewing the session for memories… (Ctrl-C skips)[/]")
+        try:
+            saved = self.agent.extract_memories("the session is ending")
+        except KeyboardInterrupt:
+            self.console.print("[dim]skipped[/]")
+            return
+        except LLMError as e:
+            self.ui.error(f"could not save memories: {e}")
+            return
+        if not saved:
+            self.console.print("[dim]nothing new to remember[/]")
+
+    def memory_command(self, arg: str) -> None:
+        memories = self.memories
+        if memories is None:
+            self.ui.error("memory is not available")
+            return
+        match arg:
+            case "on" | "off":
+                memories.set_enabled(arg == "on")
+                live = (self.agent.memory is not None) == (arg == "on")
+                self.console.print(f"[dim]memory {arg} for this project"
+                                   + ("" if live else "; takes effect when wren next starts") + "[/]")
+                return
+            case "auto":
+                self.settings.memory_auto = self.agent.auto_memory = not self.settings.memory_auto
+                self.settings.save()
+                state = "on" if self.settings.memory_auto else "off"
+                self.console.print(f"[dim]reviewing sessions for memories (at compaction and "
+                                   f"session end) is {state}[/]")
+                return
+            case "":
+                pass
+            case _:
+                self.ui.error("usage: /memory [on|off|auto]")
+                return
+        state = "on" if memories.enabled else "off (/memory on enables it)"
+        auto = "on" if self.settings.memory_auto else "off"
+        self.console.print(f"[bold]Memory[/] {state} · review at session end {auto} (/memory auto)")
+        entries = [(store, m) for store in (memories.user, memories.project) for m in store.all()]
+        for store in (memories.user, memories.project):
+            self.console.print(f"  [dim]{store.scope}: {store.dir}[/]")
+        if not entries:
+            self.console.print("[dim]no memories yet[/]")
+            return
+        choice = pick("Which memory?", [
+            (i, f"{store.scope}/{m.name} · {_one_line(m.description, 70)}")
+            for i, (store, m) in enumerate(entries)])
+        if choice is None:
+            return
+        store, memory = entries[choice]
+        self.console.print(Panel(Markdown(memory.body, code_theme=self.ui.code_theme),
+                                 title=f"{store.scope}/{memory.name} · {memory.type} · {memory.updated}",
+                                 title_align="left", border_style="dim", padding=(0, 1)))
+        action = pick("Do what with it?", [("keep", "Keep"), ("edit", "Edit in $EDITOR"),
+                                            ("delete", "Delete")], default="keep")
+        if action == "delete" and confirm(f"Delete {store.scope}/{memory.name}?"):
+            store.delete(memory.name)
+            self.console.print("[dim]deleted[/]")
+        elif action == "edit":
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            subprocess.run([*shlex.split(editor), str(store.path(memory.name))])
+            store.reindex()
 
     # --- sessions ------------------------------------------------------------
 
@@ -444,6 +546,7 @@ class Repl:
         state = pick("Switch to which session?", _session_options(sessions, self.agent.log.path))
         if state is None or state.path == self.agent.log.path:
             return
+        self.save_memories()
         self.agent.log = SessionLog(path=state.path)
         self.agent.restore(state)
         self.agent.start_session("resume")
