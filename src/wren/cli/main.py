@@ -47,6 +47,7 @@ from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, ModelConfi
 from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
+from wren.mcp_servers import PROJECT_MCP, McpServers, ProjectMcp, load_project_mcp
 from wren.memory import Memories
 from wren.settings import Settings, Theme
 from wren.skills import discover
@@ -66,6 +67,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/agents", "list subagent types the model can delegate to"),
     ("/memory", "view, edit or delete memories · /memory on|off|auto"),
     ("/remember", "have the model remember something across sessions"),
+    ("/mcp", "MCP servers: status and tools"),
     ("/hooks", "list active hooks and built-in policies"),
     ("/model", "show or switch the model"),
     ("/theme", "dark / light / auto-detected colors"),
@@ -103,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
                              "--max-turns is nearly used up (default: on with -p, off otherwise)")
     parser.add_argument("--trust-project-hooks", action="store_true",
                         help="run the project's .wren/hooks.toml without asking (needed with -p)")
+    parser.add_argument("--trust-project-mcp", action="store_true",
+                        help="start the project's .mcp.json servers without asking (needed with -p)")
     parser.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
                         help="use long-term memory: the model reads and keeps memories across "
                              "sessions (default: on, off with -p)")
@@ -149,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     memories = Memories.for_project(cwd)
     for warning in skill_warnings + agent_warnings:
         ui.notice(warning)
+    try:
+        mcp = _connect_mcp(config, cwd, args, ui)
+    except ConfigError as e:
+        ui.error(str(e))
+        return 1
 
     agent = Agent(
         provider,
@@ -163,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         skills=skills,
         agent_types=agent_types,
         memory=memories if (not args.prompt if args.memory is None else args.memory) else None,
+        mcp=mcp,
     )
     agent.auto_memory = settings.memory_auto
     agent.resolve_model = lambda name: _provider_for(config.model(name))
@@ -173,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         project_hooks = shell_hooks.load_project_hooks(cwd)
     except ConfigError as e:
         ui.error(str(e))
+        if mcp:
+            mcp.close()
         return 1
     hooks = config.hooks
     if project_hooks and _trust_project_hooks(project_hooks, args, ui):
@@ -191,6 +203,49 @@ def main(argv: list[str] | None = None) -> int:
         return Repl(agent, ui, config, settings, memories).loop()
     finally:
         agent.end_session()
+        if mcp:
+            mcp.close()
+
+
+def _connect_mcp(config: Config, cwd: Path, args: argparse.Namespace, ui: RichUI) -> McpServers | None:
+    """Connect to the user's MCP servers and the project's trusted ones. Raises ConfigError."""
+    servers = list(config.mcp)
+    project = load_project_mcp(cwd)
+    if project and project.servers and _trust_project_mcp(project, args, ui):
+        taken = {s.name for s in servers}
+        servers += [s for s in project.servers if s.name not in taken]
+    if not servers:
+        return None
+    mcp = McpServers(servers, cwd)
+    with ui.console.status(f"connecting to MCP server{'s' if len(servers) > 1 else ''}…"):
+        mcp.connect()
+    for state in mcp.servers.values():
+        if state.status != "connected":
+            ui.notice(f"MCP server {state.config.name!r} unavailable: {state.error} (see /mcp)")
+    return mcp
+
+
+def _trust_project_mcp(project: ProjectMcp, args: argparse.Namespace, ui: RichUI) -> bool:
+    """A project's MCP servers start only once the file's exact content is trusted."""
+    if shell_hooks.is_trusted(project):
+        return True
+    if args.trust_project_mcp:
+        shell_hooks.trust(project)
+        return True
+    if args.prompt or not ui.interactive:
+        ui.notice(f"skipping untrusted MCP servers in {PROJECT_MCP} "
+                  "(pass --trust-project-mcp to start them)")
+        return False
+    ui.console.print(f"[bold]This project defines MCP servers[/] in {PROJECT_MCP}; "
+                     "they run programs or connect to services:")
+    for s in project.servers:
+        target = s.url if s.url else " ".join([s.command or "", *s.args])
+        ui.console.print(f"  [cyan]{s.name}[/]: {escape(target)}")
+    if pick("Start these servers?", [(True, "Yes, trust this file (asks again if it changes)"),
+                                     (False, "No, skip them this time")], default=False):
+        shell_hooks.trust(project)
+        return True
+    return False
 
 
 def _provider_for(model: ModelConfig) -> tuple[Provider, ModelConfig]:
@@ -422,6 +477,8 @@ class Repl:
                 self.show_skills()
             case "/agents":
                 self.show_agents()
+            case "/mcp":
+                self.show_mcp()
             case "/todos":
                 todos = self.agent.conv.todos
                 if todos:
@@ -657,6 +714,26 @@ class Repl:
             self.console.print(f"  [bold]{t.name}[/] [dim]· {escape(' · '.join(notes))}[/]")
             self.console.print(f"    {escape(_one_line(t.description, 100))}")
         self.console.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
+
+    def show_mcp(self) -> None:
+        mcp = self.agent.mcp
+        if mcp is None:
+            self.console.print("[dim]no MCP servers; add one as [mcp.<name>] in "
+                               f"{CONFIG_FILE} or in the project's {PROJECT_MCP}[/]")
+            return
+        for state in mcp.servers.values():
+            cfg = state.config
+            color = {"connected": "green", "failed": "red"}.get(state.status, "yellow")
+            target = cfg.url if cfg.url else " ".join([cfg.command or "", *cfg.args])
+            self.console.print(f"  [bold]{cfg.name}[/] [{color}]{state.status}[/] "
+                               f"[dim]· {cfg.transport} · {cfg.source} · {escape(target)}[/]")
+            if state.error:
+                self.console.print(f"    [red]{escape(state.error)}[/]")
+            if cfg.transport == "stdio":
+                self.console.print(f"    [dim]log: {mcp.log_dir / f'mcp-{cfg.name}.log'}[/]")
+            names = [t.name + (" (read-only)" if t.read_only else "") for t in state.tools]
+            if names:
+                self.console.print(f"    {escape(', '.join(names))}")
 
     def show_hooks(self) -> None:
         labels: dict[EventName, str] = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",

@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
@@ -85,7 +85,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic, OpenAI chat completions)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory, MCP tools
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
@@ -202,6 +202,31 @@ and report concrete problems with path:line, most serious first.
 The file format is Claude Code's, so `~/.claude/agents` and `.claude/agents` are read too (wren's
 own directories win on name clashes, and a definition named `explore` or `general` replaces the
 built-in one). See `examples/agents/reviewer.md`.
+
+## MCP servers
+
+wren connects to [MCP](https://modelcontextprotocol.io) servers at startup and gives the model
+their tools as `mcp__<server>__<tool>`. Configure them in `~/.wren/config.toml`:
+
+```toml
+[mcp.github]                           # a local server, over stdio
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }   # ${VAR} reads your environment
+
+[mcp.docs]                             # a remote server, over Streamable HTTP
+url = "https://example.com/mcp"
+headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+timeout = 60                           # seconds per tool call (default 120)
+```
+
+A project can list servers in `.mcp.json`, in Claude Code's format (`{"mcpServers": {...}}`).
+Since that starts programs, wren asks first and remembers the answer until the file changes;
+headless runs need `--trust-project-mcp`. MCP tools go through the same permission prompts and
+hooks as built-in ones; tools the server marks read-only run without asking. The `general`
+subagent can use them, `explore` can't. A server that fails to start is reported and skipped;
+`/mcp` shows each server's status, tools and log file (a stdio server's stderr goes to
+`~/.wren/logs/mcp-<name>.log`). Only tools are supported, not MCP resources or prompts.
 
 ## Hooks
 

@@ -44,6 +44,7 @@ from wren.frontmatter import FrontmatterError, read_frontmatter
 from wren.llm.types import ToolSpec
 from wren.skills import prompt_section
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
+from wren.tools.mcp import McpTool
 from wren.tools.readonly import is_read_only_command
 
 if TYPE_CHECKING:
@@ -417,6 +418,9 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
                              f"using {parent.model.name}")
 
     skills = parent.skills if kind.allows("skill") else {}
+    # MCP tools can do anything, so read-only subagents don't get them.
+    mcp = [] if kind.read_only else [t for t in parent.tools.values()
+                                     if isinstance(t, McpTool) and kind.allows(t.name)]
     progress = parent._progress  # set when running alongside other subagents
     ui = progress.child_ui(f"{description} ({kind.name})") if progress else SubagentUI(parent.ui)
     log = _log(parent)
@@ -428,11 +432,12 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         ui,
         permissions=parent.permissions,
         log=log,
-        tools=[t for t in default_tools() if kind.allows(t.name)],
+        tools=[t for t in default_tools() if kind.allows(t.name)] + mcp,
         max_turns=kind.max_turns,
         skills=skills,
         system=build_system_prompt(parent.ctx.cwd, prompt_section(skills),
-                                   base=f"{SUBAGENT_BASE}\n{kind.prompt}"),
+                                   base=f"{SUBAGENT_BASE}\n{kind.prompt}",
+                                   mcp=parent.mcp.instructions() if mcp and parent.mcp else ""),
         hooks=hooks,
     )
     child.cancel = progress.cancel if progress else None

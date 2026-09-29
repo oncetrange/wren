@@ -27,7 +27,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from wren.agent.events import (
     EventName,
@@ -233,11 +233,18 @@ def load_project_hooks(cwd: Path) -> ProjectHooks | None:
     return ProjectHooks(path, specs, hashlib.sha256(data).hexdigest())
 
 
-def is_trusted(project: ProjectHooks, home: Path | None = None) -> bool:
+class Trustable(Protocol):
+    """A project file that runs things (hooks, MCP servers), identified by content."""
+
+    path: Path
+    digest: str
+
+
+def is_trusted(project: Trustable, home: Path | None = None) -> bool:
     return _trust_store(home or CONFIG_DIR).get(str(project.path)) == project.digest
 
 
-def trust(project: ProjectHooks, home: Path | None = None) -> None:
+def trust(project: Trustable, home: Path | None = None) -> None:
     home = home or CONFIG_DIR
     store = _trust_store(home)
     store[str(project.path)] = project.digest

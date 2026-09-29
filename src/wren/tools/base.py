@@ -62,6 +62,8 @@ class Tool(ABC):
     read_only: ClassVar[bool] = False
     # Writes files in the workspace (as opposed to running arbitrary commands).
     edits_files: ClassVar[bool] = False
+    # Check arguments against input_schema before running (MCP tools leave it to their server).
+    strict_args: ClassVar[bool] = True
 
     @abstractmethod
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput: ...
