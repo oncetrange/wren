@@ -1,6 +1,7 @@
 import io
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 from rich.console import Console
 
 from wren.agent.loop import Agent
@@ -8,12 +9,10 @@ from wren.agent.permissions import Permissions
 from wren.agent.session import SessionLog, load_session
 from wren.agent.todos import TodoItem, format_todos, parse_todos
 from wren.checkpoint import Checkpoints
-from wren.config import ModelConfig
 from wren.cli.ui import RichUI
+from wren.config import ModelConfig
 from wren.tools import ToolError
 from wren.tools.todo import TodoWrite
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 PLAN = [{"content": "Read the code", "status": "completed"},
         {"content": "Fix the bug", "status": "in_progress"},

@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+# (pier is only installed alongside wren on the benchmark host)
 """Run wren on Pier / Harbor benchmarks (e.g. DeepSWE) as an installed agent.
 
     uv tool install datacurve-pier --with git+https://github.com/oncetrange/wren

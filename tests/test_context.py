@@ -1,18 +1,15 @@
 """Layered context management: masking (L1), anchored summaries (L2), archives (L3)."""
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
-from wren.agent import compact, loop
-from wren.agent.compact import KEEP_TURNS, mask_old_tool_traffic, recent_start
+from wren.agent import loop
+from wren.agent.compact import KEEP_TURNS, estimate_tokens, mask_old_tool_traffic, recent_start
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.session import SessionLog, load_session
 from wren.config import ModelConfig, Price
-from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock, Usage
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
-from wren.agent.compact import estimate_tokens
-from wren.llm.types import Completed
+from wren.llm.types import Completed, Message, TextBlock, ToolResultBlock, ToolUseBlock, Usage
 
 
 class SizedProvider(ScriptedProvider):

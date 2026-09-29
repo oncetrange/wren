@@ -3,6 +3,8 @@
 import json
 
 import pytest
+from conftest import RecordingUI
+from fake_openai import FakeOpenAI, text_turn, tool_turn
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
@@ -10,7 +12,6 @@ from wren.config import ConfigError, ModelConfig, load_config
 from wren.llm.openai_provider import OpenAIProvider, messages_param
 from wren.llm.types import (
     INVALID_JSON_KEY,
-    Completed,
     LLMError,
     Message,
     TextBlock,
@@ -22,9 +23,6 @@ from wren.llm.types import (
     ToolSpec,
     ToolUseBlock,
 )
-
-from conftest import RecordingUI
-from fake_openai import FakeOpenAI, text_turn, tool_turn
 
 
 def model(server=None, **kw) -> ModelConfig:

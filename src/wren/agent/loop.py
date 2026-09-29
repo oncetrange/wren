@@ -8,8 +8,9 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+from wren.agent.builtin_hooks import register_builtins
 from wren.agent.compact import (
     MASK_MIN_CHARS,
     append_archive,
@@ -19,7 +20,6 @@ from wren.agent.compact import (
     summarize,
     summary_note,
 )
-from wren.agent.builtin_hooks import register_builtins
 from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.events import (
     Hooks,
@@ -38,6 +38,7 @@ from wren.agent.plans import TURN_BUDGET, PlanDecision, is_reminder, reminder, s
 from wren.agent.prompt import build_system_prompt
 from wren.agent.remember import extract_memories
 from wren.agent.session import SessionLog, SessionState
+from wren.agent.subagents import AgentType, Progress, TaskTool
 from wren.agent.todos import format_todos
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import CONFIG_DIR, ModelConfig
@@ -57,15 +58,13 @@ from wren.llm.types import (
     ToolUseBlock,
     Usage,
 )
-from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
+from wren.memory import Memories
+from wren.memory import prompt_section as memory_section
 from wren.skills import Skill, prompt_section
+from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.tools.base import validate_args
 from wren.tools.memory import MemoryTool
 from wren.tools.skill import SkillTool
-from wren.memory import Memories
-from wren.memory import prompt_section as memory_section
-from wren.agent.subagents import AgentType, Progress, TaskTool
-
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 # How often stop handlers may keep the model going within one request.
@@ -343,7 +342,7 @@ class Agent:
         self.log.record("rewind", index=index)
         return point
 
-    def start_session(self, source: str) -> None:
+    def start_session(self, source: Literal["startup", "resume", "clear"]) -> None:
         """Fire session_start ("startup", "resume" or "clear")."""
         for v in self.hooks.run("session_start", SessionStart(self, source)):
             if v.context:
@@ -672,7 +671,8 @@ class Agent:
 
     def _abandon_pending(self, calls: list[ToolUseBlock], reason: str) -> None:
         """Answer every unanswered tool call so the history stays valid."""
-        results = self._results + [ToolResultBlock(c.id, reason, is_error=True) for c in calls]
+        results: list[ContentBlock] = [*self._results,
+                                       *(ToolResultBlock(c.id, reason, is_error=True) for c in calls)]
         if results:
             self._add_user(results)
         self._pending, self._results = [], []

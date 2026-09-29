@@ -14,6 +14,7 @@ Search order, later entries overriding earlier ones with the same name:
 from __future__ import annotations
 
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -140,7 +141,7 @@ def prompt_section(skills: dict[str, Skill]) -> str:
             f"{lines}\n")
 
 
-def expand(text: str, skills: dict[str, Skill], reserved: set[str] = frozenset()) -> tuple[Skill, str] | None:
+def expand(text: str, skills: dict[str, Skill], reserved: AbstractSet[str] = frozenset()) -> tuple[Skill, str] | None:
     """`/name arguments` -> (skill, arguments) if it names a skill (and not a reserved command)."""
     if not text.startswith("/"):
         return None

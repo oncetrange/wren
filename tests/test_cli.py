@@ -33,6 +33,7 @@ def test_confirm_defaults():
 
 def test_shift_enter_inserts_newline():
     from prompt_toolkit import PromptSession
+
     from wren.cli.main import _key_bindings
 
     register_shift_enter()
@@ -50,6 +51,7 @@ def test_parse_osc11():
 @pytest.mark.parametrize("seq", ["\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[13;2u"])
 def test_modified_enter_sequences_insert_newline(seq):
     from prompt_toolkit import PromptSession
+
     from wren.cli.main import _key_bindings
 
     register_shift_enter()
@@ -60,6 +62,7 @@ def test_modified_enter_sequences_insert_newline(seq):
 
 def test_modify_other_keys_is_scoped_to_input():
     import io
+
     from wren.cli.terminal import distinguish_shift_enter
 
     class Tty(io.StringIO):
@@ -75,6 +78,7 @@ def test_modify_other_keys_is_scoped_to_input():
 
 def test_permission_prompt_supports_cursor_keys():
     from rich.console import Console
+
     from wren.cli.ui import RichUI
     from wren.tools.shell import Bash
 
@@ -89,6 +93,7 @@ def test_permission_prompt_supports_cursor_keys():
 @pytest.mark.parametrize("seq", ["\x1b[Z", "\x1b[27;2;9~"])
 def test_shift_tab_sequences(seq):
     from prompt_toolkit import PromptSession
+
     from wren.cli.keys import newline_bindings
 
     register_shift_enter()
@@ -106,6 +111,7 @@ def menu_prompt(keys, entries=ENTRIES):
     """Run a prompt with the slash menu. Ctrl-T in `keys` records the ghost text."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+
     from wren.cli.completion import SlashMenu
     from wren.cli.keys import newline_bindings
 
@@ -171,17 +177,21 @@ def test_long_lists_scroll_to_the_selection():
 def test_up_down_still_browse_history_without_menu():
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
+
     from wren.cli.completion import SlashMenu
 
     history = InMemoryHistory()
     history.append_string("earlier prompt")
     menu = SlashMenu(lambda: [("/help", "")])
-    prompt = lambda: PromptSession(history=history, key_bindings=menu.bindings()).prompt("› ")
+
+    def prompt():
+        return PromptSession(history=history, key_bindings=menu.bindings()).prompt("› ")
     assert run_keys("\x1b[A\r", prompt) == "earlier prompt"
 
 
 def prediction_prompt(keys, prediction):
     from prompt_toolkit import PromptSession
+
     from wren.cli.completion import SlashMenu
 
     menu = SlashMenu(lambda: list(ENTRIES))

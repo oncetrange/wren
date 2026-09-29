@@ -2,6 +2,7 @@ import io
 import json
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 from rich.console import Console
 
 from wren.agent.loop import Agent
@@ -11,10 +12,8 @@ from wren.agent.session import SessionLog, load_session
 from wren.checkpoint import Checkpoints
 from wren.cli.ui import RichUI
 from wren.config import ModelConfig
-from wren.llm.types import TextBlock, ToolResultBlock
+from wren.llm.types import TextBlock
 from wren.tools import ToolContext
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 PLAN = "# Bump x\n\n1. Change `x = 1` to `x = 2` in a.py\n2. Verify by reading it back"
 
@@ -124,7 +123,7 @@ def test_headless_cli_plan(tmp_path):
     import subprocess
     import sys
 
-    from fake_anthropic import FakeAnthropic, text_turn, tool_turn
+    from fake_anthropic import FakeAnthropic, tool_turn
 
     home, project = tmp_path / "home", tmp_path / "project"
     home.mkdir(), project.mkdir()

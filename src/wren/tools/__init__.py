@@ -1,7 +1,7 @@
 from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput
 from wren.tools.files import EditFile, ReadFile, WriteFile
-from wren.tools.search import Glob, Grep
 from wren.tools.plan import ExitPlanMode
+from wren.tools.search import Glob, Grep
 from wren.tools.shell import Bash
 from wren.tools.todo import TodoWrite
 

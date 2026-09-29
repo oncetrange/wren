@@ -1,10 +1,10 @@
 """Combination rules of the event layer, exercised with ad-hoc handlers."""
 
+from conftest import RecordingUI, ScriptedProvider, call, reply
+
 from wren.agent.events import Verdict
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 def make(ctx, model, turns, mode="ask"):

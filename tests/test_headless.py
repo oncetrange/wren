@@ -6,7 +6,6 @@ import subprocess
 import sys
 
 import pytest
-
 from fake_anthropic import FakeAnthropic, text_turn, tool_turn
 
 

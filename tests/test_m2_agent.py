@@ -1,6 +1,7 @@
 """Compaction, rewind and session resume, end to end through Agent."""
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
@@ -9,8 +10,6 @@ from wren.checkpoint import Checkpoints
 from wren.config import ModelConfig
 from wren.llm.types import Message, Response, TextBlock, ToolResultBlock, Usage
 from wren.tools import ToolContext
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 @pytest.fixture
