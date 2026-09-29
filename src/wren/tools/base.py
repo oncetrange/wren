@@ -79,6 +79,12 @@ class Tool(ABC):
         """Granularity of an "always allow" decision."""
         return self.name
 
+    def always_confirm(self, args: dict[str, Any]) -> bool:
+        """Ask the user before this call whatever the permission mode or hooks say
+        (and never remember the answer). For calls with lasting effects, like
+        creating a scheduled run."""
+        return False
+
     def concurrent_safe(self, args: dict[str, Any]) -> bool:
         """Whether this call may run alongside others: it must never ask for
         approval and never change anything. Only read-only subagents so far."""

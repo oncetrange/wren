@@ -532,7 +532,8 @@ class Agent:
         if blocked := denial(verdicts):
             return self._error(call, blocked.reason), None
 
-        if not allowed(verdicts) and self.permissions.needs_approval(tool, call.input):
+        must_ask = tool.always_confirm(call.input)
+        if must_ask or (not allowed(verdicts) and self.permissions.needs_approval(tool, call.input)):
             self.notify(f"wren needs your approval: {call.name} {label}".strip())
             decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
             if not decision.allow:
@@ -542,7 +543,7 @@ class Agent:
                 self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary="denied"))
                 self.log.record("tool", name=call.name, input=call.input, denied=True)
                 return ToolResultBlock(call.id, text, True), decision
-            if decision.remember:
+            if decision.remember and not must_ask:
                 self.permissions.remember(tool, call.input)
 
         return self._finish(call, tool, self._run_tool(tool, call)), None

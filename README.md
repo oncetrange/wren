@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/schedule`, `/loop`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
@@ -227,6 +227,34 @@ hooks as built-in ones; tools the server marks read-only run without asking. The
 subagent can use them, `explore` can't. A server that fails to start is reported and skipped;
 `/mcp` shows each server's status, tools and log file (a stdio server's stderr goes to
 `~/.wren/logs/mcp-<name>.log`). Only tools are supported, not MCP resources or prompts.
+
+## Scheduled runs
+
+wren can run prompts on a cron schedule, headless, even when no session is open: "every weekday
+at 9, check CI on main and summarize failures". Ask for one in a session (the model proposes the
+job and you approve it; creating or deleting a job always asks, whatever the permission mode), or:
+
+```bash
+wren schedule add "0 9 * * 1-5" "check CI on main and summarize failures"   # runs in this directory
+wren schedule add @daily "run the tests; fix failures on a branch" --mode accept_edits --id nightly
+wren schedule install     # once: runs `wren schedule tick` every minute (launchd on macOS, else crontab)
+wren schedule list | logs <id> | run <id> | pause <id> | resume <id> | rm <id> | status | uninstall
+```
+
+- Cron expressions have five fields in local time (`*/15`, `1-5`, `mon-fri`, `jan,jul`) or a
+  shortcut (`@hourly`, `@daily`, `@weekly`, `@monthly`).
+- Jobs run in plan mode (read-only) unless given `--mode accept_edits` or `--mode auto`; anything
+  that would need approval is refused, since nobody is there to give it.
+- Each run is a normal `wren -p` session: `wren schedule logs <id>` shows its result and cost,
+  and `wren -r <session>` continues it interactively. A desktop notification reports each run.
+- A run missed while the machine was asleep runs once when it wakes (`--no-catch-up` skips it
+  instead); a run due while the previous one is still going is skipped.
+- Scheduled runs don't see your shell's environment: put API keys in `~/.wren/env` as `KEY=value`
+  lines (`chmod 600` it); `wren schedule install` tells you which are missing. Jobs are stored in
+  `~/.wren/schedules.json`, runs in `~/.wren/schedules/<id>/`.
+
+In a session, `/schedule` lists jobs to run now, pause or delete, and `/loop 10m <prompt>` repeats
+a prompt every ten minutes while the session is open (Ctrl-C stops it).
 
 ## Hooks
 

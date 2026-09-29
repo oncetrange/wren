@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
+from rich.rule import Rule
 
 from wren import __version__
 from wren.agent import shell_hooks
@@ -36,6 +38,7 @@ from wren.cli.completion import STYLES as MENU_STYLES
 from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
 from wren.cli.pickers import confirm, pick
+from wren.cli.schedule_cmd import print_jobs, print_run
 from wren.cli.terminal import (
     detect_background,
     distinguish_shift_enter,
@@ -49,10 +52,12 @@ from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
 from wren.mcp_servers import PROJECT_MCP, McpServers, ProjectMcp, load_project_mcp
 from wren.memory import Memories
+from wren.schedules import Scheduler, Schedules, launch_detached
 from wren.settings import Settings, Theme
 from wren.skills import discover
 from wren.skills import expand as expand_skill
 from wren.tools import ToolContext
+from wren.tools.schedule import ScheduleTool
 
 TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse", **MENU_STYLES})
 
@@ -68,6 +73,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/memory", "view, edit or delete memories · /memory on|off|auto"),
     ("/remember", "have the model remember something across sessions"),
     ("/mcp", "MCP servers: status and tools"),
+    ("/schedule", "scheduled runs: list, run now, pause or delete"),
+    ("/loop", "repeat a prompt at an interval: /loop 10m <prompt>"),
     ("/hooks", "list active hooks and built-in policies"),
     ("/model", "show or switch the model"),
     ("/theme", "dark / light / auto-detected colors"),
@@ -91,7 +98,13 @@ HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc i
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="wren", description="A coding agent for your terminal.")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["schedule"]:
+        from wren.cli.schedule_cmd import schedule_main
+
+        return schedule_main(argv[1:])
+    parser = argparse.ArgumentParser(prog="wren", description="A coding agent for your terminal.",
+                                     epilog="wren schedule --help: run prompts on a cron schedule")
     parser.add_argument("-p", "--print", dest="prompt", metavar="PROMPT",
                         help="run a single request non-interactively and exit ('-' reads stdin)")
     parser.add_argument("--output-format", choices=["text", "json"], default="text",
@@ -175,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         mcp=mcp,
     )
     agent.auto_memory = settings.memory_auto
+    if not args.prompt:  # scheduled jobs are made in sessions, not by (scheduled) headless runs
+        agent.tools["schedule"] = ScheduleTool()
     agent.resolve_model = lambda name: _provider_for(config.model(name))
     if state:
         agent.restore(state)
@@ -246,6 +261,15 @@ def _trust_project_mcp(project: ProjectMcp, args: argparse.Namespace, ui: RichUI
         shell_hooks.trust(project)
         return True
     return False
+
+
+def parse_interval(text: str) -> int | None:
+    """"30m", "2h", "1d" -> seconds (at least a minute); None if it isn't one."""
+    m = re.fullmatch(r"(\d+)([smhd])", text.strip())
+    if not m:
+        return None
+    seconds = int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    return seconds if seconds >= 60 else None
 
 
 def _provider_for(model: ModelConfig) -> tuple[Provider, ModelConfig]:
@@ -479,6 +503,10 @@ class Repl:
                 self.show_agents()
             case "/mcp":
                 self.show_mcp()
+            case "/schedule":
+                self.schedule_command()
+            case "/loop":
+                self.loop_command(arg)
             case "/todos":
                 todos = self.agent.conv.todos
                 if todos:
@@ -714,6 +742,68 @@ class Repl:
             self.console.print(f"  [bold]{t.name}[/] [dim]· {escape(' · '.join(notes))}[/]")
             self.console.print(f"    {escape(_one_line(t.description, 100))}")
         self.console.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
+
+    # --- schedules -------------------------------------------------------------
+
+    def schedule_command(self) -> None:
+        store, scheduler = Schedules(), Scheduler()
+        state = "running" if scheduler.installed() else "[yellow]not installed[/] (wren schedule install)"
+        self.console.print(f"[bold]Scheduled runs[/] · scheduler {state}")
+        print_jobs(self.console, store)
+        jobs = store.jobs()
+        if not jobs:
+            self.console.print("[dim]ask me to schedule something, or: wren schedule add CRON PROMPT[/]")
+            return
+        job_id = pick("Which job?", [(j.id, f"{j.id} · {j.cron}") for j in jobs])
+        if job_id is None:
+            return
+        job = store.get(job_id)
+        action = pick("Do what with it?", [
+            ("logs", "Show recent runs"), ("run", "Run it now, in the background"),
+            ("pause", "Resume it" if job.paused else "Pause it"), ("delete", "Delete it")], default="logs")
+        if action == "logs":
+            runs = store.runs(job_id, 5)
+            for entry in runs:
+                print_run(self.console, entry)
+            if not runs:
+                self.console.print("[dim]no runs yet[/]")
+        elif action == "run":
+            launch_detached(store)(job)
+            self.console.print(f"[dim]started; see /schedule → logs, or {store.dir / job_id / 'output.log'}[/]")
+        elif action == "pause":
+            store.set_paused(job_id, not job.paused)
+            self.console.print(f"[dim]{job_id} {'resumed' if job.paused else 'paused'}[/]")
+        elif action == "delete" and confirm(f"Delete {job_id}?"):
+            store.remove(job_id)
+            self.console.print("[dim]deleted[/]")
+
+    def loop_command(self, arg: str) -> None:
+        """Run a prompt now and then every interval, until Ctrl-C."""
+        interval, _, prompt = arg.partition(" ")
+        seconds = parse_interval(interval)
+        if seconds is None or not prompt.strip():
+            self.ui.error("usage: /loop <interval> <prompt>, e.g. /loop 10m check the deploy "
+                          "(s, m, h or d; at least 1m)")
+            return
+        self.console.print(f"[dim]running every {interval}, Ctrl-C stops[/]")
+        run = 0
+        try:
+            while True:
+                run += 1
+                self.console.print(Rule(f"loop run {run} · {datetime.now():%H:%M}", style="dim"))
+                run_prompt(self.agent, prompt.strip())
+                self.ui.usage_line(self.agent.estimated_context(), self.agent.model.context_window,
+                                   self.agent.usage.output_tokens, self.agent.cost)
+                if self.agent.status == "interrupted":
+                    break
+                deadline = time.monotonic() + seconds
+                with self.console.status("") as status:
+                    while (left := deadline - time.monotonic()) > 0:
+                        status.update(f"next run in {int(left) // 60}:{int(left) % 60:02d} · Ctrl-C stops")
+                        time.sleep(min(1.0, left))
+        except KeyboardInterrupt:
+            pass
+        self.console.print(f"[dim]loop stopped after {run} run{'s' if run != 1 else ''}[/]")
 
     def show_mcp(self) -> None:
         mcp = self.agent.mcp
