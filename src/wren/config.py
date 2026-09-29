@@ -8,6 +8,7 @@ own base_url and collect the API key named by `api_key_env`.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -197,10 +198,31 @@ class HookSpec:
 
 
 @dataclass
+class McpServerConfig:
+    """An MCP server to connect to: a local command (stdio) or a URL (Streamable HTTP)."""
+
+    name: str
+    command: str | None = None
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    # Seconds a tool call may take.
+    timeout: float = 120
+    # Where it was configured: "user" or the project's .mcp.json.
+    source: str = "user"
+
+    @property
+    def transport(self) -> str:
+        return "http" if self.url else "stdio"
+
+
+@dataclass
 class Config:
     default_model: str = "kimi"
     models: dict[str, ModelConfig] = field(default_factory=dict)
     hooks: list[HookSpec] = field(default_factory=list)
+    mcp: list[McpServerConfig] = field(default_factory=list)
 
     def model(self, name: str | None = None) -> ModelConfig:
         """Look a model up by its config name, or by its model id with an
@@ -237,13 +259,63 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
         default_model=raw.get("default_model", Config.default_model),
         models={name: _model_config(name, spec) for name, spec in model_defs.items()},
         hooks=parse_hooks(raw.get("hooks", {}), source="user"),
+        mcp=parse_mcp_servers(raw.get("mcp", {}), source="user"),
     )
+
+
+_MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+_MCP_KEYS = {"type", "command", "args", "env", "url", "headers", "timeout", "enabled"}
+_ENV_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
+
+
+def parse_mcp_servers(raw: dict[str, Any], source: str) -> list[McpServerConfig]:
+    """[mcp.<name>] tables, or .mcp.json's "mcpServers", -> configs.
+
+    Values may reference environment variables as ${VAR} or ${VAR:-default},
+    so tokens can stay out of the file."""
+    servers = []
+    for name, spec in raw.items():
+        where = f"mcp server {name!r} ({source})"
+        if not _MCP_NAME.match(name):
+            raise ConfigError(f"{where}: names may only use letters, digits, '-' and '_'")
+        if not isinstance(spec, dict):
+            raise ConfigError(f"{where}: must be a table")
+        if unknown := set(spec) - _MCP_KEYS:
+            raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
+        if spec.get("enabled", True) is False:
+            continue
+        kind = spec.get("type", "http" if "url" in spec else "stdio")
+        if kind == "sse":
+            raise ConfigError(f"{where}: the legacy SSE transport isn't supported; use its "
+                              "Streamable HTTP URL (type = \"http\")")
+        if kind not in ("stdio", "http"):
+            raise ConfigError(f"{where}: type must be 'stdio' or 'http', got {kind!r}")
+        if kind == "stdio" and not isinstance(spec.get("command"), str):
+            raise ConfigError(f"{where}: needs a 'command' (or a 'url')")
+        if kind == "http" and not isinstance(spec.get("url"), str):
+            raise ConfigError(f"{where}: needs a 'url'")
+        timeout = spec.get("timeout", McpServerConfig.timeout)
+        if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
+            raise ConfigError(f"{where}: 'timeout' must be a positive number of seconds")
+        servers.append(McpServerConfig(
+            name=name,
+            command=_expand(spec["command"]) if kind == "stdio" else None,
+            args=[_expand(str(a)) for a in spec.get("args", [])] if kind == "stdio" else [],
+            env={k: _expand(str(v)) for k, v in spec.get("env", {}).items()},
+            url=_expand(spec["url"]) if kind == "http" else None,
+            headers={k: _expand(str(v)) for k, v in spec.get("headers", {}).items()},
+            timeout=float(timeout),
+            source=source,
+        ))
+    return servers
+
+
+def _expand(value: str) -> str:
+    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
 
 
 def parse_hooks(raw: dict[str, Any], source: str) -> list[HookSpec]:
     """[[hooks.<Event>]] tables -> HookSpecs, validated."""
-    import re
-
     specs = []
     for event, entries in raw.items():
         if event not in HOOK_EVENTS:

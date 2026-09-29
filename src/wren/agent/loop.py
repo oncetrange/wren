@@ -58,11 +58,13 @@ from wren.llm.types import (
     ToolUseBlock,
     Usage,
 )
+from wren.mcp_servers import McpServers
 from wren.memory import Memories
 from wren.memory import prompt_section as memory_section
 from wren.skills import Skill, prompt_section
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.tools.base import validate_args
+from wren.tools.mcp import mcp_tools
 from wren.tools.memory import MemoryTool
 from wren.tools.skill import SkillTool
 
@@ -106,6 +108,7 @@ class Agent:
         system: str | None = None,
         hooks: Hooks | None = None,
         memory: Memories | None = None,
+        mcp: McpServers | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -126,6 +129,11 @@ class Agent:
         # Save memories before context is lost (compaction, session end).
         self.auto_memory = False
         self._memory_upto = 0  # messages already reviewed for memories
+        # MCP servers' tools, as mcp__<server>__<tool>.
+        self.mcp = mcp
+        if mcp is not None:
+            for tool in mcp_tools(mcp):
+                self.tools.setdefault(tool.name, tool)
         # Subagents: the task tool hands a self-contained job to a fresh agent.
         if agent_types:
             self.tools["task"] = TaskTool(self, agent_types)
@@ -136,7 +144,8 @@ class Agent:
         self.final_check = final_check
         self.system = system or build_system_prompt(
             ctx.cwd, prompt_section(self.skills),
-            memory=memory_section(self.memory) if self.memory else "")
+            memory=memory_section(self.memory) if self.memory else "",
+            mcp=mcp.instructions() if mcp else "")
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -551,7 +560,8 @@ class Agent:
             return self._error(call, f"invalid arguments for {call.name}: not a JSON object "
                                      f"({len(raw)} characters, starting {raw[:80]!r}). "
                                      "Call it again with valid JSON arguments.")
-        problem = validate_args(tool.input_schema, call.input)
+        problem = validate_args(tool.input_schema, call.input) if tool.strict_args else (
+            None if isinstance(call.input, dict) else "arguments must be a JSON object")
         if problem:
             return self._error(call, f"invalid arguments for {call.name}: {problem}")
         return tool
