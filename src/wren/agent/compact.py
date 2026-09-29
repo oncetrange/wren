@@ -34,6 +34,7 @@ from wren.llm.types import (
     ToolResultBlock,
     ToolSpec,
     ToolUseBlock,
+    Usage,
     block_to_dict,
 )
 
@@ -143,9 +144,11 @@ def _is_masked(text: str) -> bool:
 # --- L2 + L3: anchored summary with an archive ------------------------------
 
 
-def summarize(provider: Provider, system: str, span: list[Message], tools: list[ToolSpec]) -> str:
+def summarize(provider: Provider, system: str, span: list[Message],
+              tools: list[ToolSpec]) -> tuple[str, Usage]:
     """Summarize `span` (which ends with a user message). If it starts with a
-    previous summary note, that summary is updated instead of rewritten."""
+    previous summary note, that summary is updated instead of rewritten.
+    Returns the summary and the request's usage."""
     request = [Message(m.role, list(m.content)) for m in span]
     anchored = bool(span) and any(isinstance(b, TextBlock) and is_summary_note(b.text)
                                   for b in span[0].content)
@@ -161,9 +164,9 @@ def summarize(provider: Provider, system: str, span: list[Message], tools: list[
         if isinstance(event, Completed):
             response = event.response
     summary = response.message.text().strip() if response else ""
-    if not summary:
+    if not summary or response is None:
         raise LLMError("compaction failed: the model returned no summary")
-    return summary
+    return summary, response.usage
 
 
 def summary_note(summary: str, archive: Path | None, todos: str = "") -> Message:
