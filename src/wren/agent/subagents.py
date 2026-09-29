@@ -56,7 +56,7 @@ _BOOKKEEPING = threading.Lock()
 DEFAULT_MAX_TURNS = 30
 # Never given to a subagent: no nesting, and the task list and plan approval
 # belong to the conversation with the user.
-EXCLUDED_TOOLS = frozenset({"task", "todo_write", "exit_plan_mode"})
+EXCLUDED_TOOLS = frozenset({"task", "todo_write", "exit_plan_mode", "schedule"})
 
 SUBAGENT_BASE = """\
 You are a subagent of Wren, a coding agent working in the user's terminal. The main agent \
