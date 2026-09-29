@@ -1,5 +1,7 @@
 """Layered context management: masking (L1), anchored summaries (L2), archives (L3)."""
 
+import json
+
 import pytest
 from conftest import RecordingUI, ScriptedProvider, call, reply
 
@@ -135,6 +137,23 @@ def test_compaction_keeps_recent_turns_and_archives(project):
 
     state = load_session(agent.log.path)
     assert [m.to_dict() for m in state.messages] == [m.to_dict() for m in agent.messages]
+
+
+def test_compaction_request_counts_toward_usage(project):
+    agent = make_agent(project, reading(12) + [reply("done")], mask_at=0, compact_at=10_000,
+                       price=Price(1.0, 2.0))
+    agent.run("read everything")
+    assert agent.provider.summaries == 1
+    entries = [json.loads(l) for l in agent.log.path.read_text().splitlines()]
+    usage = [e for e in entries if e["kind"] == "usage"]
+    compaction = [e for e in usage if e.get("purpose") == "compaction"]
+    assert len(compaction) == 1 and compaction[0]["usage"]["input_tokens"] == 10
+    # Totals include it (and a resumed session agrees); it isn't a turn.
+    assert agent.usage.input_tokens == sum(e["usage"]["input_tokens"] for e in usage)
+    assert agent.turns == len(usage) - 1
+    assert agent.cost == pytest.approx(sum(e["cost"] for e in usage))
+    state = load_session(agent.log.path)
+    assert state.usage == agent.usage and state.cost == pytest.approx(agent.cost)
 
 
 def test_second_compaction_updates_the_summary(project):

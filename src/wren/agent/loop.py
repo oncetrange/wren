@@ -287,10 +287,11 @@ class Agent:
         self.ui.notice(f"compacting conversation (~{before // 1000}k tokens)…")
         self.ui.model_started()
         try:
-            summary = summarize(self.provider, self.system, span,
-                                [t.spec() for t in self.tools.values()])
+            summary, usage = summarize(self.provider, self.system, span,
+                                       [t.spec() for t in self.tools.values()])
         finally:
             self.ui.model_finished()
+        self.record_side_usage(usage, purpose="compaction")
         archive = self._archive(span)
         note = summary_note(summary, archive, format_todos(self.conv.todos))
         self.conv.compacted(summary, note, kept_from)
