@@ -1,15 +1,14 @@
 """Long-term memory: the stores, the memory tool, the prompt and extraction."""
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.subagents import builtin_agent_types
 from wren.config import ModelConfig
-from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock, Response, Usage
+from wren.llm.types import Message, Response, TextBlock, ToolResultBlock, ToolUseBlock, Usage
 from wren.memory import DISABLED, INDEX, InvalidMemory, Memories, Memory, project_dir, prompt_section
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 @pytest.fixture

@@ -1,11 +1,10 @@
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
 from wren.agent.loop import Agent
-from wren.agent.permissions import Decision, Permissions
+from wren.agent.permissions import Permissions
 from wren.tools.files import EditFile, ReadFile
 from wren.tools.shell import Bash
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 READ, EDIT, BASH = ReadFile(), EditFile(), Bash()
 LS = {"command": "ls"}

@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -22,14 +22,15 @@ from rich.panel import Panel
 
 from wren import __version__
 from wren.agent import shell_hooks
-from wren.agent.subagents import discover_agent_types
+from wren.agent.events import EventName
 from wren.agent.loop import Agent
-from wren.agent.permissions import LABELS, Permissions
+from wren.agent.permissions import LABELS, Mode, Permissions
 from wren.agent.plans import reminder
 from wren.agent.predict import Predictor
 from wren.agent.remember import REMEMBER_REQUEST
-from wren.agent.todos import format_todos, progress
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
+from wren.agent.subagents import TaskTool, discover_agent_types
+from wren.agent.todos import format_todos, progress
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.cli.completion import STYLES as MENU_STYLES
 from wren.cli.completion import SlashMenu
@@ -47,7 +48,7 @@ from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
 from wren.memory import Memories
-from wren.settings import Settings
+from wren.settings import Settings, Theme
 from wren.skills import discover
 from wren.skills import expand as expand_skill
 from wren.tools import ToolContext
@@ -256,7 +257,7 @@ def _trust_project_hooks(project: shell_hooks.ProjectHooks, args: argparse.Names
     return False
 
 
-def _mode(args: argparse.Namespace) -> str:
+def _mode(args: argparse.Namespace) -> Mode:
     return "auto" if args.yolo else "plan" if args.plan else args.mode
 
 
@@ -364,7 +365,7 @@ class Repl:
     def _prediction_ready(self) -> None:
         """From the predictor's thread: show the guess if the prompt is waiting."""
         app = self.session.app
-        if app.is_running:
+        if app.is_running and app.loop is not None:
             app.loop.call_soon_threadsafe(self._show_prediction)
 
     def _show_prediction(self) -> None:
@@ -614,11 +615,12 @@ class Repl:
 
     def pick_theme(self) -> None:
         detected = detect_background()
-        theme = pick("Color theme", [
+        options: list[tuple[Theme, str]] = [
             ("auto", f"auto (detected: {detected or 'unknown, using dark'})"),
             ("dark", "dark terminal background"),
             ("light", "light terminal background"),
-        ], default=self.settings.theme)
+        ]
+        theme: Theme | None = pick("Color theme", options, default=self.settings.theme)
         if theme is None:
             return
         self.settings.theme = theme
@@ -644,7 +646,7 @@ class Repl:
 
     def show_agents(self) -> None:
         task = self.agent.tools.get("task")
-        if task is None:
+        if not isinstance(task, TaskTool):
             self.console.print("[dim]subagents are off[/]")
             return
         for t in sorted(task.types.values(), key=lambda t: t.name):
@@ -657,7 +659,7 @@ class Repl:
         self.console.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
 
     def show_hooks(self) -> None:
-        labels = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",
+        labels: dict[EventName, str] = {"session_start": "SessionStart", "prompt": "UserPromptSubmit",
                   "pre_tool": "PreToolUse", "post_tool": "PostToolUse", "stop": "Stop",
                   "notification": "Notification", "session_end": "SessionEnd"}
         for event, label in labels.items():
@@ -677,10 +679,11 @@ class Repl:
 
     def switch_model(self, name: str) -> None:
         if not name:
-            name = pick("Model", [(m.name, f"{m.name}  {m.model}") for m in self.config.models.values()],
-                        default=self.agent.model.name)
-            if name is None:
+            picked = pick("Model", [(m.name, f"{m.name}  {m.model}") for m in self.config.models.values()],
+                          default=self.agent.model.name)
+            if picked is None:
                 return
+            name = picked
         try:
             model = self.config.model(name)
             self.agent.set_model(create_provider(model), model)

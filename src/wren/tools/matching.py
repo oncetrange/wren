@@ -49,7 +49,7 @@ def find_loose(file_lines: list[str], old: str) -> list[LooseMatch]:
         if file_lines[start + first].strip() != keys[first]:
             continue
         window = file_lines[start:start + len(old_lines)]
-        if all(f.strip() == k for f, k in zip(window, keys)):
+        if all(f.strip() == k for f, k in zip(window, keys, strict=False)):
             shift = _shift(window, old_lines)
             if shift is not None:
                 matches.append(LooseMatch(start, start + len(old_lines), *shift))
@@ -59,7 +59,7 @@ def find_loose(file_lines: list[str], old: str) -> list[LooseMatch]:
 def _shift(file_block: list[str], old_block: list[str]) -> tuple[str, str] | None:
     """The (old_prefix, new_prefix) swap that turns every old line's
     indentation into the file line's, or None if there is no single one."""
-    pairs = [(_indent(o), _indent(f)) for f, o in zip(file_block, old_block) if f.strip()]
+    pairs = [(_indent(o), _indent(f)) for f, o in zip(file_block, old_block, strict=False) if f.strip()]
     old_ws, file_ws = pairs[0]
     common = _common_suffix(old_ws, file_ws)
     old_prefix, new_prefix = old_ws[: len(old_ws) - common], file_ws[: len(file_ws) - common]

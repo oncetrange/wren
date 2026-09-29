@@ -96,7 +96,7 @@ class SlashMenu:
             return [("", f" {name}  ")]
 
         def size(i: int) -> int:
-            return sum(len(t) for _, t in cell(i))
+            return sum(len(fragment[1]) for fragment in cell(i))
 
         start = 0  # scroll until the selected item fits
         while start < sel and sum(size(i) for i in range(start, sel + 1)) > room:
@@ -138,7 +138,7 @@ class SlashMenu:
         @kb.add("tab", filter=is_open)
         def _(event) -> None:
             buf = event.current_buffer
-            buf.text = self.selected(buf.text) + " "
+            buf.text = (self.selected(buf.text) or buf.text) + " "
             buf.cursor_position = len(buf.text)
 
         @kb.add("enter", filter=is_open)

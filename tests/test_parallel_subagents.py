@@ -2,16 +2,15 @@
 
 import threading
 
+from conftest import RecordingUI, reply
+
 from wren.agent import loop
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.subagents import builtin_agent_types
 from wren.config import ModelConfig
 from wren.llm.base import Provider
-from wren.llm.types import (Completed, Message, Response, TextDelta, ToolResultBlock,
-                            ToolUseBlock, Usage)
-
-from conftest import RecordingUI, reply
+from wren.llm.types import Completed, Message, Response, TextDelta, ToolResultBlock, ToolUseBlock, Usage
 
 
 class Router(Provider):

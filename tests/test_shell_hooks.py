@@ -3,14 +3,13 @@
 import json
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
 from wren.agent import shell_hooks
 from wren.agent.loop import Agent
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.session import SessionLog
 from wren.config import ConfigError, HookSpec, parse_hooks
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 def make(ctx, model, turns, hooks, mode="ask", decisions=()):

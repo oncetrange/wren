@@ -1,12 +1,12 @@
 """End-of-request safeguards: the final instruction check and the turn-budget warning."""
 
+from conftest import RecordingUI, ScriptedProvider, call, reply
+
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.plans import is_reminder
 from wren.config import ModelConfig
 from wren.llm.types import TextBlock
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 def make(ctx, turns, final_check=True, max_turns=100):

@@ -1,8 +1,22 @@
+import io
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, reply
+from rich.console import Console
 
-from wren.skills import SkillError, discover, parse_skill, prompt_section
+from wren.agent.loop import Agent
+from wren.agent.permissions import Permissions
+from wren.agent.plans import WREN_DIR_GITIGNORE
+from wren.cli.main import BUILTIN_NAMES, run_prompt
+from wren.cli.ui import RichUI
+from wren.config import ModelConfig
+from wren.llm.types import Message, Response, ToolUseBlock
+from wren.skills import SkillError, discover, expand, parse_skill, prompt_section
+from wren.tools import ToolContext
 
 
 def write_skill(root: Path, name: str, description="Does a thing. Use when asked.", body="Step 1.",
@@ -73,28 +87,6 @@ def test_discovery_precedence_and_warnings(tmp_path, monkeypatch):
 
 # --- invocation ------------------------------------------------------------------
 
-import io
-import json
-import os
-import subprocess
-import sys
-
-from rich.console import Console
-
-from wren.agent.loop import Agent
-from wren.agent.permissions import Permissions
-from wren.agent.plans import WREN_DIR_GITIGNORE
-from wren.cli.main import BUILTIN_NAMES, run_prompt
-from wren.cli.ui import RichUI
-from wren.config import ModelConfig
-from wren.skills import expand
-from wren.tools import ToolContext
-
-from wren.llm.types import Message, Response, ToolUseBlock
-
-from conftest import RecordingUI, ScriptedProvider, reply
-
-
 def load(skill_name, id="t1"):
     return Response(Message("assistant", [ToolUseBlock(id, "skill", {"name": skill_name})]), "tool_use")
 
@@ -155,7 +147,9 @@ def test_builtin_commands_win(skills):
 def test_slash_menu_matches():
     from wren.cli.completion import matches
     entries = [("/release", "cut a release"), ("/resume", "switch"), ("/help", "")]
-    names = lambda text: [n for n, _ in matches(text, entries)]
+
+    def names(text):
+        return [n for n, _ in matches(text, entries)]
     assert names("/re") == ["/release", "/resume"]
     assert names("/release 1") == [] and names("hello") == [] and names("") == []
 

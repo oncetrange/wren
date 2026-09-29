@@ -1,14 +1,13 @@
 import threading
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.predict import Predictor, clean, predict_next_prompt
 from wren.config import ModelConfig, Price
-from wren.llm.types import Message, Response, TextBlock, ToolUseBlock, Usage
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
+from wren.llm.types import Message, TextBlock, ToolUseBlock
 
 
 @pytest.mark.parametrize("raw,expected", [

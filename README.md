@@ -277,5 +277,9 @@ steps and compactions back to Pier. Session logs are kept under the trial's `age
 ## Development
 
 ```bash
-uv run pytest
+uv run pytest        # tests (a fake API server, no keys or network needed)
+uv run ruff check    # lint
+uv run pyright       # type check
 ```
+
+CI runs all three on every pull request, on Python 3.12 and 3.13.

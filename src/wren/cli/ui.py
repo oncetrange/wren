@@ -9,10 +9,10 @@ from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.rule import Rule
 from rich.markup import escape
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text

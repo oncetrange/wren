@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from wren.agent.events import (
+    EventName,
     Notification,
     PostToolUse,
     PreToolUse,
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from wren.agent.loop import Agent
 
 # Our event names for each user-facing hook event.
-EVENTS = {
+EVENTS: dict[str, EventName] = {
     "SessionStart": "session_start",
     "UserPromptSubmit": "prompt",
     "PreToolUse": "pre_tool",

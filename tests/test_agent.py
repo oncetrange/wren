@@ -1,8 +1,8 @@
+from conftest import RecordingUI, ScriptedProvider, call, reply
+
 from wren.agent.loop import Agent
 from wren.agent.permissions import Decision, Permissions
 from wren.llm.types import Message, Response, TextBlock, ToolResultBlock, ToolUseBlock, Usage
-
-from conftest import RecordingUI, ScriptedProvider, call, reply
 
 
 def results(message: Message) -> list[ToolResultBlock]:

@@ -23,8 +23,32 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
+    "ruff>=0.16.9",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["deep-swe", "jobs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",   # long lines are judged in review, not by a hard limit
+    "E701",   # one-line protocol-style methods (def f(self) -> None: ...)
+    "E702",
+    "E741",   # `l` in short comprehensions
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wren"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
