@@ -137,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             name = state.model
         model = config.model(name)
         provider = create_provider(model)
+        if ignored := model.ignored_options():
+            ui.notice(f"model {model.name!r}: {', '.join(ignored)} not used with the "
+                      f"{model.provider} provider")
     except ConfigError as e:
         ui.error(str(e))
         return 1

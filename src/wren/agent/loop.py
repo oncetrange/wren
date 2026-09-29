@@ -43,6 +43,7 @@ from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import CONFIG_DIR, ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
+    INVALID_JSON_KEY,
     Completed,
     ContentBlock,
     LLMError,
@@ -546,6 +547,11 @@ class Agent:
         tool = self.tools.get(call.name)
         if tool is None:
             return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}")
+        if INVALID_JSON_KEY in call.input:
+            raw = str(call.input[INVALID_JSON_KEY])
+            return self._error(call, f"invalid arguments for {call.name}: not a JSON object "
+                                     f"({len(raw)} characters, starting {raw[:80]!r}). "
+                                     "Call it again with valid JSON arguments.")
         problem = validate_args(tool.input_schema, call.input)
         if problem:
             return self._error(call, f"invalid arguments for {call.name}: {problem}")

@@ -23,6 +23,11 @@ class ThinkingBlock:
     redacted_data: str | None = None
 
 
+# In a ToolUseBlock's input: the model's arguments weren't a JSON object; the
+# raw text is kept under this key so the call can be refused and replayed.
+INVALID_JSON_KEY = "__wren_invalid_json__"
+
+
 @dataclass
 class ToolUseBlock:
     id: str

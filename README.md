@@ -42,8 +42,10 @@ Project-specific instructions are read from `WREN.md` or `AGENTS.md` in the work
 | `qwen` | qwen3-coder-plus | DashScope, Anthropic-compatible | `$DASHSCOPE_API_KEY` |
 | `kimi` (default) | kimi-k2.7-code (thinking always on) | Moonshot, Anthropic-compatible | `$MOONSHOT_API_KEY` |
 | `claude` | claude-opus-5 | Anthropic | `$ANTHROPIC_API_KEY` |
+| `qwen-openai` | qwen3-coder-plus | DashScope, OpenAI-compatible | `$DASHSCOPE_API_KEY` |
+| `deepseek` | deepseek-chat (no price set) | DeepSeek, OpenAI-compatible | `$DEEPSEEK_API_KEY` |
 
-Override builtins or add any Anthropic-compatible model in `~/.wren/config.toml`:
+Override builtins or add any Anthropic- or OpenAI-compatible model in `~/.wren/config.toml`:
 
 ```toml
 default_model = "kimi"
@@ -59,7 +61,22 @@ auth = "bearer"                    # send the key as Authorization: Bearer
 prompt_cache = false
 thinking = { type = "enabled", budget_tokens = 8000 }
 price = { input = 0.6, output = 2.5 }   # USD per million tokens, enables cost display
+
+[models.ollama]                    # any OpenAI-compatible chat completions endpoint
+provider = "openai"
+model = "qwen3-coder:30b"
+base_url = "http://localhost:11434/v1"
+api_key_env = ""                   # no key needed (default: $OPENAI_API_KEY)
+context_window = 65536
+reasoning_effort = "medium"        # optional, sent as is
+extra_body = { enable_thinking = true }   # optional vendor-specific request fields
+replay_reasoning = true            # send reasoning back with tool calls (DeepSeek/Kimi thinking)
 ```
+
+With `provider = "openai"`, wren speaks Chat Completions: tool results become `tool` messages,
+tool errors are marked with `Error:`, reasoning streams as thinking, and cached prompt tokens are
+read from the usage report (caching itself is automatic). For OpenAI's own endpoint the output
+limit goes in `max_completion_tokens`; set `max_tokens_param` to override.
 
 Models are only read from the user config, never from the project directory, so a repository can't redirect your API key to its own endpoint.
 
@@ -67,7 +84,7 @@ Models are only read from the user config, never from the project directory, so 
 
 ```
 src/wren/
-├── llm/      provider-neutral message types + one adapter per API (Anthropic for now)
+├── llm/      provider-neutral message types + one adapter per API (Anthropic, OpenAI chat completions)
 ├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
