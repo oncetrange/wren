@@ -165,6 +165,10 @@ class Agent:
         self._results: list[ToolResultBlock] = []
         # Whether a tool that can modify files ran successfully in this request.
         self.changed = False
+        # Failed calls in this request (by call and result) and the current run of
+        # failures, for noticing when the model is going in circles.
+        self.failure_counts: dict[str, int] = {}
+        self.failure_streak = 0
         # Given hooks (a subagent's) come ready-made; otherwise start with wren's own.
         if hooks is None:
             hooks = Hooks()
@@ -181,7 +185,8 @@ class Agent:
         self.cancel: threading.Event | None = None
         # Context from session-start handlers, added to the next prompt.
         self._session_context: list[str] = []
-        self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system)
+        self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system,
+                        mask_at=model.mask_at, compact_at=model.compact_threshold)
 
     @property
     def messages(self) -> list[Message]:
@@ -196,6 +201,7 @@ class Agent:
         final_text = ""
         self.status = "done"
         self.changed = warned = False
+        self.failure_counts, self.failure_streak = {}, 0
         stopped_by: set[str] = set()
         stop_blocks = 0
         try:
@@ -389,7 +395,8 @@ class Agent:
         self._memory_upto = 0
         self.ctx.read_files.clear()
         self.log.record("session_start", model=self.model.name, cwd=str(self.ctx.cwd),
-                        system=self.system)
+                        system=self.system, mask_at=self.model.mask_at,
+                        compact_at=self.model.compact_threshold)
 
     def set_model(self, provider: Provider, model: ModelConfig) -> None:
         # Thinking blocks are signed by the model that produced them and other

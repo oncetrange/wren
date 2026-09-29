@@ -40,6 +40,14 @@ sure the work is saved the way the user asked (e.g. committed if they asked for 
 then give your final summary."""
 
 
+REPEATED_FAILURE = """This exact call has failed {n} times with the same result. Repeating it \
+won't help: re-read the error and the code it refers to, and try a different approach."""
+
+FAILURE_STREAK = """Your last {n} tool calls all failed. Stop and reconsider before the next \
+one: re-read the relevant code and error messages, check your assumptions, and change \
+approach instead of retrying variations of the same thing."""
+
+
 def reminder(*parts: str) -> str:
     """Wrap reminder text for the model (hidden in transcripts)."""
     return f"{REMINDER_TAG}\n" + "\n\n".join(parts) + "\n</wren-reminder>"

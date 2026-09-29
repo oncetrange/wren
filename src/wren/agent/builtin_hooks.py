@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
-from wren.agent.plans import FINAL_CHECK, PLAN_MODE_OFF, PLAN_MODE_ON, UNFINISHED_TODOS, reminder
+from wren.agent.plans import (
+    FAILURE_STREAK,
+    FINAL_CHECK,
+    PLAN_MODE_OFF,
+    PLAN_MODE_ON,
+    REPEATED_FAILURE,
+    UNFINISHED_TODOS,
+    reminder,
+)
 from wren.agent.todos import format_todos
 
 
@@ -35,6 +46,32 @@ def finished_jobs(e: PostToolUse | PromptSubmit) -> Verdict | None:
                                     + "\nRead their final output with bash_output if needed."))
 
 
+# Say it when a failure repeats this often, and again at twice that.
+REPEATS, STREAK = 3, 5
+
+
+def repeated_failures(e: PostToolUse) -> Verdict | None:
+    """Point out loops: the same call failing the same way, or a run of failures.
+
+    Rerunning a failing test while fixing it isn't a loop (its output changes),
+    so a call counts as repeated only with identical input and output."""
+    agent = e.agent
+    if not e.output.is_error:
+        agent.failure_streak = 0
+        return None
+    agent.failure_streak += 1
+    key = hashlib.sha256(json.dumps([e.call.name, e.call.input, e.output.content], sort_keys=True,
+                                    default=str).encode()).hexdigest()
+    agent.failure_counts[key] = n = agent.failure_counts.get(key, 0) + 1
+    if n in (REPEATS, 2 * REPEATS):
+        agent.log.record("reminder", reason="repeated_failure", tool=e.call.name, count=n)
+        return Verdict(context=reminder(REPEATED_FAILURE.format(n=n)))
+    if agent.failure_streak in (STREAK, 2 * STREAK):
+        agent.log.record("reminder", reason="failure_streak", count=agent.failure_streak)
+        return Verdict(context=reminder(FAILURE_STREAK.format(n=agent.failure_streak)))
+    return None
+
+
 def unfinished_todos(e: Stop) -> Verdict | None:
     """Once per request: finishing with open task-list items is often a slip."""
     if "unfinished_todos" in e.blocked_by or e.agent.permissions.mode == "plan":
@@ -53,6 +90,7 @@ def final_check(e: Stop) -> Verdict | None:
 def register_builtins(hooks: Hooks) -> None:
     hooks.on("pre_tool", "plan_guard", plan_guard)
     hooks.on("post_tool", "finished_jobs", finished_jobs)
+    hooks.on("post_tool", "repeated_failures", repeated_failures)
     hooks.on("prompt", "plan_reminder", plan_reminder)
     hooks.on("prompt", "finished_jobs", finished_jobs)
     hooks.on("stop", "unfinished_todos", unfinished_todos)
