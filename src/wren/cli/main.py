@@ -22,7 +22,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 
-from wren import __version__
+from wren import __version__, mentions
 from wren.agent import shell_hooks
 from wren.agent.events import EventName
 from wren.agent.loop import Agent
@@ -93,6 +93,7 @@ HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc i
   Enter submits · Shift+Enter (see /keys), Esc Enter or Ctrl-J inserts a newline
   Shift+Tab switches mode: ask before edits → accept edits → plan (read-only)
   Typing / lists commands and skills in the bottom line: ↑/↓ choose, Tab completes, Enter runs
+  @path attaches a file (@path#L10-20 some lines, @dir/ a listing); typing @ completes paths
   After an answer, a predicted next prompt shows as grey text: Tab or → accepts it
   Ctrl-C interrupts the agent
   ↑/↓ and Enter in pickers, Esc cancels"""
@@ -282,12 +283,22 @@ def _provider_for(model: ModelConfig) -> tuple[Provider, ModelConfig]:
 
 
 def run_prompt(agent: Agent, text: str) -> str:
-    """Run a prompt, expanding `/skill-name arguments` into the skill."""
+    """Run a prompt, expanding `/skill-name arguments` into the skill and
+    attaching the files it @-mentions."""
+    attachments = []
     if invoked := expand_skill(text, agent.skills, BUILTIN_NAMES):
         skill, arguments = invoked
         agent.log.record("skill", name=skill.name, by="user")
-        return agent.run(text, attachments=[skill.invocation(arguments)])
-    return agent.run(text)
+        attachments.append(skill.invocation(arguments))
+    if found := mentions.find(text, agent.ctx.cwd):
+        files, shown = mentions.attach(found, agent.ctx)
+        attachments += files
+        show = getattr(agent.ui, "attached", None)
+        for label, summary in shown:
+            if show:
+                show(label, summary)
+        agent.log.record("mentions", paths=[label for label, _ in shown])
+    return agent.run(text, attachments=attachments or None)
 
 
 def _result_json(agent: Agent, result: str, seconds: float) -> dict:
@@ -411,7 +422,7 @@ class Repl:
             self.agent.permissions.cycle()
             event.app.invalidate()
 
-        self.menu = SlashMenu(self.completions)
+        self.menu = SlashMenu(self.completions, mentions.FileIndex(self.agent.ctx.cwd))
         self.predictor = Predictor(self.agent, on_ready=self._prediction_ready)
         self.session = session = PromptSession(
             history=FileHistory(str(CONFIG_DIR / "history")),
