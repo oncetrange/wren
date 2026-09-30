@@ -85,7 +85,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic, OpenAI chat completions)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory, MCP tools
+├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory, web_search, web_fetch, MCP tools
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
@@ -202,6 +202,24 @@ and report concrete problems with path:line, most serious first.
 The file format is Claude Code's, so `~/.claude/agents` and `.claude/agents` are read too (wren's
 own directories win on name clashes, and a definition named `explore` or `general` replaces the
 built-in one). See `examples/agents/reviewer.md`.
+
+## Web access
+
+`web_search` searches the web and `web_fetch` reads a page as text (HTML reduced to headings,
+lists, tables, code and links; long pages in parts). Both ask for approval, `web_fetch` per
+domain, since a URL can carry out anything the model has read. Searching uses Brave or Tavily
+when `$BRAVE_API_KEY` or `$TAVILY_API_KEY` is set, otherwise DuckDuckGo's HTML page (no key, but
+best-effort). To choose, or to turn web access off:
+
+```toml
+[web]
+search = "tavily"                  # brave, tavily or duckduckgo
+api_key_env = "MY_TAVILY_KEY"      # default: BRAVE_API_KEY / TAVILY_API_KEY
+# enabled = false                  # no web tools (or run with --no-web)
+```
+
+The `general` subagent gets the web tools too; `explore` doesn't. Benchmark runs through the Pier
+adapter have no web access: the tasks come from public repositories whose real fixes are online.
 
 ## MCP servers
 

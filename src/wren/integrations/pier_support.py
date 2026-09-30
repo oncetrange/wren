@@ -37,7 +37,8 @@ def model_config_toml(model: ModelConfig) -> str:
     """A config.toml defining just this model, for wren in the task container.
     It holds no secrets: the key stays in the environment variable it names."""
     fields = {k: v for k, v in dataclasses.asdict(model).items() if k != "name"}
-    lines = [f"[models.{_toml_key(model.name)}]"]
+    # No web access: tasks come from public repositories, whose real fix is a search away.
+    lines = ["[web]", "enabled = false", "", f"[models.{_toml_key(model.name)}]"]
     lines += [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in _drop_none(fields).items()]
     return "\n".join(lines) + "\n"
 
