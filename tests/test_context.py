@@ -188,3 +188,22 @@ def test_tiered_price():
     large = Usage(input_tokens=1000, cache_read_tokens=60_000, output_tokens=1000)
     assert p.cost(small) == pytest.approx((10_000 * 1.0 + 1000 * 5.0) / 1e6)
     assert p.cost(large) == pytest.approx((1000 * 2.0 + 60_000 * 0.4 + 1000 * 10.0) / 1e6)
+
+
+def test_masking_drops_old_thinking_but_keeps_recent_turns():
+    from wren.agent.compact import mask_old_tool_traffic
+    from wren.llm.types import ThinkingBlock, ToolResultBlock, ToolUseBlock
+
+    messages = [Message("user", [TextBlock("go")])]
+    for i in range(10):
+        messages.append(Message("assistant", [ThinkingBlock("pondering " * 200, signature="sig"),
+                                              ToolUseBlock(f"t{i}", "glob", {"pattern": "*"})]))
+        messages.append(Message("user", [ToolResultBlock(f"t{i}", "x")]))
+    messages.append(Message("assistant", [ThinkingBlock("only thoughts")]))  # nothing else: kept
+    out, freed = mask_old_tool_traffic(messages, keep_turns=3)
+    thinking = [i for i, m in enumerate(out) for b in m.content if isinstance(b, ThinkingBlock)]
+    # Turns before the last three lose their thinking; their tool calls stay.
+    assert thinking == [17, 19, 21]
+    assert freed == 8 * len("pondering " * 200)
+    assert all(any(isinstance(b, ToolUseBlock) for b in m.content) for m in out[1:21:2])
+    assert messages[1].content[0].thinking.startswith("pondering")  # input not mutated

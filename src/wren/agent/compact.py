@@ -7,7 +7,10 @@ L1  Masking: once the prompt passes `mask_at` tokens, large tool outputs
     is lost for good. The model's own messages, tool call arguments included,
     are never masked: models imitate their earlier turns, and on a DeepSWE run
     masked edit arguments were copied into new edits, writing the placeholder
-    into source files.
+    into source files. Their thinking in those old turns is dropped, though:
+    it is often the largest part of a thinking model's history (47% on one
+    DeepSWE run), nothing imitates it, and APIs only need the thinking of the
+    latest turns, which stay.
 L2  Anchored summary: once the prompt passes `compact_at`, everything but the
     last KEEP_TURNS turns is summarized. A previous summary is updated rather
     than rewritten, so details don't drift away over repeated compactions.
@@ -31,6 +34,7 @@ from wren.llm.types import (
     LLMError,
     Message,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolSpec,
     ToolUseBlock,
@@ -120,8 +124,15 @@ def mask_old_tool_traffic(messages: list[Message], keep_turns: int = KEEP_TURNS,
         if i >= cutoff:
             out.append(m)
             continue
+        thinking = [b for b in m.content if isinstance(b, ThinkingBlock)]
+        if thinking and len(thinking) < len(m.content):  # never leave a message empty
+            freed += sum(len(b.thinking) + len(b.redacted_data or "") for b in thinking)
+        else:
+            thinking = []
         blocks = []
         for b in m.content:
+            if isinstance(b, ThinkingBlock) and thinking:
+                continue
             if isinstance(b, ToolResultBlock) and len(b.content) > min_chars and not _is_masked(b.content):
                 call = calls.get(b.tool_use_id)
                 placeholder = _result_placeholder(call, len(b.content))
