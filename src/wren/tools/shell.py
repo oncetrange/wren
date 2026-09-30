@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, truncate
+from wren.tools.jobs import start_in_background
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
@@ -22,7 +23,10 @@ class Bash(Tool):
         "stdout/stderr and exit code. The working directory persists between calls (cd sticks), "
         "other shell state such as variables does not. "
         "Commands are non-interactive: stdin is closed, so avoid anything that prompts. "
-        "Use read_file/grep/glob instead of cat/grep/find for reading and searching files."
+        "Use read_file/grep/glob instead of cat/grep/find for reading and searching files. "
+        "For commands that keep running (dev servers, watchers, long builds), set "
+        "run_in_background: the call returns a job id at once, bash_output reads the job's "
+        "output and kill_job stops it."
     )
     input_schema = {
         "type": "object",
@@ -31,6 +35,10 @@ class Bash(Tool):
             "timeout": {
                 "type": "integer",
                 "description": f"Timeout in seconds (default {DEFAULT_TIMEOUT}, max {MAX_TIMEOUT})",
+            },
+            "run_in_background": {
+                "type": "boolean",
+                "description": "Start it as a background job instead of waiting for it",
             },
         },
         "required": ["command"],
@@ -52,6 +60,9 @@ class Bash(Tool):
         return f"bash:{program}"
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
+        if args.get("run_in_background"):
+            env = {**os.environ, "PAGER": "cat", "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0"}
+            return start_in_background(args["command"], ctx, env)
         timeout = min(max(args.get("timeout", DEFAULT_TIMEOUT), 1), MAX_TIMEOUT)
         cwd_file = Path(tempfile.mkstemp(prefix="wren-cwd-")[1])
         env = {**os.environ, "PAGER": "cat", "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",

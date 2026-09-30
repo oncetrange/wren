@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from wren.agent.events import Hooks, PreToolUse, PromptSubmit, Stop, Verdict
-from wren.agent.plans import FINAL_CHECK, PLAN_MODE_OFF, PLAN_MODE_ON, UNFINISHED_TODOS
+from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
+from wren.agent.plans import FINAL_CHECK, PLAN_MODE_OFF, PLAN_MODE_ON, UNFINISHED_TODOS, reminder
 from wren.agent.todos import format_todos
 
 
@@ -25,6 +25,16 @@ def plan_reminder(e: PromptSubmit) -> Verdict | None:
     return None
 
 
+def finished_jobs(e: PostToolUse | PromptSubmit) -> Verdict | None:
+    """Tell the model when background jobs it started have ended (once per job)."""
+    done = e.agent.ctx.jobs.newly_finished()
+    if not done:
+        return None
+    lines = [f"- {j.id} (`{j.command[:80]}`) {j.status}" for j in done]
+    return Verdict(context=reminder("Background jobs finished:\n" + "\n".join(lines)
+                                    + "\nRead their final output with bash_output if needed."))
+
+
 def unfinished_todos(e: Stop) -> Verdict | None:
     """Once per request: finishing with open task-list items is often a slip."""
     if "unfinished_todos" in e.blocked_by or e.agent.permissions.mode == "plan":
@@ -42,6 +52,8 @@ def final_check(e: Stop) -> Verdict | None:
 
 def register_builtins(hooks: Hooks) -> None:
     hooks.on("pre_tool", "plan_guard", plan_guard)
+    hooks.on("post_tool", "finished_jobs", finished_jobs)
     hooks.on("prompt", "plan_reminder", plan_reminder)
+    hooks.on("prompt", "finished_jobs", finished_jobs)
     hooks.on("stop", "unfinished_todos", unfinished_todos)
     hooks.on("stop", "final_check", final_check)

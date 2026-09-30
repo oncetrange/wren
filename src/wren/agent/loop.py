@@ -360,6 +360,7 @@ class Agent:
 
     def end_session(self) -> None:
         self.hooks.run("session_end", SessionEnd(self))
+        self.ctx.jobs.kill_all()  # background commands don't outlive the session
 
     def notify(self, message: str) -> None:
         """Fire notification: the agent is waiting for the user."""

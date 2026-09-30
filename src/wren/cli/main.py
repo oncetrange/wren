@@ -74,6 +74,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/memory", "view, edit or delete memories · /memory on|off|auto"),
     ("/remember", "have the model remember something across sessions"),
     ("/mcp", "MCP servers: status and tools"),
+    ("/jobs", "background commands: output, or stop one"),
     ("/schedule", "scheduled runs: list, run now, pause or delete"),
     ("/loop", "repeat a prompt at an interval: /loop 10m <prompt>"),
     ("/hooks", "list active hooks and built-in policies"),
@@ -469,8 +470,10 @@ class Repl:
         mode = self.agent.permissions.mode
         icon = {"ask": "⏵", "accept_edits": "⏵⏵", "plan": "⏸", "auto": "⏵⏵⏵"}[mode]
         color = {"ask": "ansigray", "accept_edits": "ansigreen", "plan": "ansicyan", "auto": "ansired"}[mode]
+        running = len(self.agent.ctx.jobs.running())
+        jobs = f" · {running} background job{'s' if running != 1 else ''} (/jobs)" if running else ""
         return HTML(f"  <{color}>{icon} {LABELS[mode]}</{color}>"
-                    f"<ansigray> · shift+tab to switch · {self.agent.model.name}</ansigray>")
+                    f"<ansigray> · shift+tab to switch · {self.agent.model.name}{jobs}</ansigray>")
 
     def command(self, text: str) -> str | None:
         name, _, arg = text.partition(" ")
@@ -508,6 +511,8 @@ class Repl:
                 self.show_agents()
             case "/mcp":
                 self.show_mcp()
+            case "/jobs":
+                self.jobs_command()
             case "/schedule":
                 self.schedule_command()
             case "/loop":
@@ -809,6 +814,28 @@ class Repl:
         except KeyboardInterrupt:
             pass
         self.console.print(f"[dim]loop stopped after {run} run{'s' if run != 1 else ''}[/]")
+
+    def jobs_command(self) -> None:
+        jobs = self.agent.ctx.jobs
+        if not jobs.jobs:
+            self.console.print("[dim]no background jobs; the model starts them with bash run_in_background[/]")
+            return
+        for job in jobs.jobs.values():
+            color = "green" if job.running else "dim"
+            self.console.print(f"  [bold]{job.id}[/] [{color}]{job.status}[/] [dim]· {job.runtime} ·[/] "
+                               f"{escape(job.command if len(job.command) <= 80 else job.command[:79] + '…')}")
+        job_id = pick("Which job?", [(j.id, f"{j.id} · {j.status}") for j in jobs.jobs.values()])
+        if job_id is None:
+            return
+        job = jobs.jobs[job_id]
+        options = [("tail", "Show its latest output")] + ([("kill", "Stop it")] if job.running else [])
+        action = pick("Do what?", options, default="tail")
+        if action == "tail":
+            text = job.log.read_text(errors="replace")[-4000:]
+            self.console.print(escape(text.rstrip()) or "[dim](no output)[/]")
+        elif action == "kill":
+            jobs.kill(job)
+            self.console.print(f"[dim]{job_id} {job.status}[/]")
 
     def show_mcp(self) -> None:
         mcp = self.agent.mcp

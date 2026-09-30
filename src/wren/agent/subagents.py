@@ -447,7 +447,10 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
     with _BOOKKEEPING:
         parent.log.record("subagent", agent=kind.name, description=description,
                           log=str(log.path) if log.path else None)
-    report = child.run(prompt)
+    try:
+        report = child.run(prompt)
+    finally:
+        child.ctx.jobs.kill_all()  # its background commands end with it
     if isinstance(ui, ProgressUI):
         ui.done(child.status)
 
