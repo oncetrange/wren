@@ -129,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="clear old tool outputs past this prompt size (0: never); overrides the model's")
     parser.add_argument("--compact-at", type=int, metavar="TOKENS",
                         help="summarize the conversation past this prompt size; overrides the model's")
+    parser.add_argument("--time-limit", type=float, metavar="MINUTES",
+                        help="stop after this long, reminding the model to save its work as the limit "
+                             "nears (set it a little under a harness's own timeout)")
     parser.add_argument("--no-subagents", action="store_true", help="don't offer the task tool")
     parser.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
                         help="use long-term memory: the model reads and keeps memories across "
@@ -202,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
         mcp=mcp,
     )
     agent.auto_memory = settings.memory_auto
+    if args.time_limit:
+        agent.set_time_limit(args.time_limit)
     if not args.prompt:  # scheduled jobs are made in sessions, not by (scheduled) headless runs
         agent.tools["schedule"] = ScheduleTool()
     if config.web.enabled and not args.no_web:

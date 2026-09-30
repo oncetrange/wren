@@ -444,6 +444,7 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         hooks=hooks,
     )
     child.cancel = progress.cancel if progress else None
+    child.time_limit, child.deadline = parent.time_limit, parent.deadline  # the same clock
     with _BOOKKEEPING:
         parent.log.record("subagent", agent=kind.name, description=description,
                           log=str(log.path) if log.path else None)

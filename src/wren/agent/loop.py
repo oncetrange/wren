@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
@@ -34,7 +35,15 @@ from wren.agent.events import (
     denial,
 )
 from wren.agent.permissions import Decision, Permissions
-from wren.agent.plans import TURN_BUDGET, PlanDecision, is_reminder, reminder, save_plan
+from wren.agent.plans import (
+    TIME_CHECK,
+    TIME_UP,
+    TURN_BUDGET,
+    PlanDecision,
+    is_reminder,
+    reminder,
+    save_plan,
+)
 from wren.agent.prompt import build_system_prompt
 from wren.agent.remember import extract_memories
 from wren.agent.session import SessionLog, SessionState
@@ -139,6 +148,11 @@ class Agent:
             self.tools["task"] = TaskTool(self, agent_types)
         self.checkpoints = checkpoints
         self.max_turns = max_turns
+        # A wall-clock limit (set_time_limit): the model is reminded to save its
+        # work as it nears, and the run stops when it passes.
+        self.time_limit: float | None = None  # seconds
+        self.deadline: float | None = None  # time.monotonic()
+        self._time_notes: set[str] = set()  # reminders already given
         # Before finishing a request that changed things, ask the model once to
         # check the request's explicit instructions (on by default when headless).
         self.final_check = final_check
@@ -252,6 +266,10 @@ class Agent:
                 if self.final_check and not warned and 0 < left <= max(3, self.max_turns // 10):
                     warned = True
                     self._add_user([TextBlock(reminder(TURN_BUDGET.format(left=left)))])
+                if self._out_of_time():
+                    self.ui.notice(f"stopped at the {(self.time_limit or 0) / 60:.0f}-minute time limit")
+                    self.status = "time_limit"
+                    return final_text
             self.ui.notice(f"stopped after {self.max_turns} turns")
             self.status = "max_turns"
         except KeyboardInterrupt:
@@ -428,6 +446,29 @@ class Agent:
         saved = extract_memories(self, reason)
         self._memory_upto = len(self.messages)
         return saved
+
+    def set_time_limit(self, minutes: float) -> None:
+        """Limit the wall-clock time of everything from now on (for headless runs
+        whose harness stops them)."""
+        self.time_limit = minutes * 60
+        self.deadline = time.monotonic() + self.time_limit
+        self.log.record("time_limit", minutes=minutes)
+
+    def _out_of_time(self) -> bool:
+        """Past the deadline: True. Nearing it: remind the model (once each)."""
+        if self.deadline is None or self.time_limit is None:
+            return False
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            return True
+        minutes, total = max(round(left / 60), 1), round(self.time_limit / 60)
+        if left <= max(180, self.time_limit * 0.1) and "up" not in self._time_notes:
+            self._time_notes.update(("up", "check"))
+            self._add_user([TextBlock(reminder(TIME_UP.format(left=minutes)))])
+        elif left <= self.time_limit * 0.25 and "check" not in self._time_notes:
+            self._time_notes.add("check")
+            self._add_user([TextBlock(reminder(TIME_CHECK.format(left=minutes, total=total)))])
+        return False
 
     def record_side_usage(self, usage: Usage, purpose: str) -> None:
         """Account for a request outside the conversation (e.g. a prediction):

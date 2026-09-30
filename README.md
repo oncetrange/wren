@@ -342,6 +342,11 @@ it when `--max-turns` is nearly used up (`--no-final-check` disables both; `--fi
 them interactively). `-m` also accepts a model id such as `moonshot/kimi-k2.7-code`, and
 `WREN_MODEL` sets the default.
 
+`--time-limit MINUTES` bounds a run's wall-clock time: with a quarter of it left the model is
+reminded to save its progress (e.g. commit what works), near the end to wrap up, and at the limit
+wren stops (`status: time_limit`). Set it a little under a harness's own timeout, so the work is
+committed before the harness kills the run.
+
 For experiments, `--mask-at TOKENS` and `--compact-at TOKENS` override the model's context
 thresholds and `--no-subagents` removes the task tool; the thresholds used are recorded at the
 start of the session log.
@@ -366,7 +371,7 @@ config, without keys; pass the key with `--ae KEY_ENV=...` as above. Pier import
 from the wren installed alongside it (`--with`), so update that install to get adapter changes.
 
 The same experiment options are agent kwargs: `--ak mask_at=24000`, `--ak compact_at=100000`,
-`--ak no_subagents=true`.
+`--ak no_subagents=true`, and `--ak time_limit=MINUTES` (a little under the agent timeout).
 
 Inside each task container the adapter installs wren from this repository at the given git ref,
 runs it headless with network access limited to the model's API host, and reports tokens, cost,
