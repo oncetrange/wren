@@ -3,9 +3,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from wren.llm.types import ToolSpec
+
+if TYPE_CHECKING:
+    from wren.tools.jobs import Jobs
 
 MAX_OUTPUT_CHARS = 30_000
 
@@ -18,6 +21,8 @@ class ToolContext:
     read_files: dict[Path, int] = field(default_factory=dict)
     # Where the bash tool's shell currently is; `cd` persists across calls.
     shell_cwd: Path | None = None
+    # Commands running in the background (see tools/jobs.py).
+    jobs: Jobs = field(default_factory=lambda: _jobs())
 
     @property
     def bash_cwd(self) -> Path:
@@ -93,6 +98,12 @@ class Tool(ABC):
     def preview(self, args: dict[str, Any], ctx: ToolContext) -> str | None:
         """A diff shown before asking permission, if the tool can compute one."""
         return None
+
+
+def _jobs() -> Jobs:
+    from wren.tools.jobs import Jobs
+
+    return Jobs()
 
 
 def validate_args(schema: dict[str, Any], args: Any) -> str | None:

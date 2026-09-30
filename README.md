@@ -21,7 +21,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/schedule`, `/loop`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/jobs`, `/schedule`, `/loop`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 Mention files with `@`: `explain @src/app.py`, `@src/app.py#L40-80` for some lines, `@docs/` for
 a directory listing, `@"name with spaces.md"`. Typing `@` completes paths in the bottom line (↑/↓,
@@ -91,7 +91,7 @@ Models are only read from the user config, never from the project directory, so 
 ```
 src/wren/
 ├── llm/      provider-neutral message types + one adapter per API (Anthropic, OpenAI chat completions)
-├── tools/    read_file, write_file, edit_file, bash, grep, glob, todo_write, exit_plan_mode, skill, task, memory, web_search, web_fetch, MCP tools
+├── tools/    read_file, write_file, edit_file, bash, bash_output, kill_job, grep, glob, todo_write, exit_plan_mode, skill, task, memory, web_search, web_fetch, MCP tools
 ├── skills.py  skill discovery (Agent Skills format)
 ├── agent/    the loop, lifecycle events + hooks, conversation state + restore points,
 │             compaction, permissions, plan mode, system prompt, JSONL session log/replay
@@ -208,6 +208,15 @@ and report concrete problems with path:line, most serious first.
 The file format is Claude Code's, so `~/.claude/agents` and `.claude/agents` are read too (wren's
 own directories win on name clashes, and a definition named `explore` or `general` replaces the
 built-in one). See `examples/agents/reviewer.md`.
+
+## Background commands
+
+For commands that keep running (a dev server, a watcher, a long build) the model runs `bash` with
+`run_in_background`: it gets a job id right away, reads new output with `bash_output` (optionally
+waiting for the job to finish or for a line like "listening on" to appear) and stops the job with
+`kill_job`. It is told when a job ends. Jobs run in their own process group and are stopped when
+wren exits (a subagent's when the subagent finishes); `/jobs` lists them, shows their output or
+stops one, and the bottom line counts the running ones.
 
 ## Web access
 
