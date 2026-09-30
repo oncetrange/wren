@@ -5,12 +5,15 @@ Kept free of Pier imports so it can be tested without installing Pier.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 import shlex
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
-from wren.config import ConfigError, ModelConfig, load_config
+from wren.config import CONFIG_FILE, ConfigError, ModelConfig, load_config
 
 REPO_ARCHIVE = "https://github.com/oncetrange/wren/archive/{ref}.tar.gz"
 WREN_BIN = "$HOME/.local/bin/wren"
@@ -21,14 +24,48 @@ STDERR_FILE = "wren.log"
 WREN_HOME = f"{LOG_DIR}/wren"  # session logs land here and are synced back with the agent logs
 
 
-def resolve_model(model_name: str | None) -> ModelConfig:
-    """Map a Pier model name ("moonshot/kimi-k2.7-code") to a builtin wren model.
-
-    Only builtins are considered: the container has no user config file.
-    """
+def resolve_model(model_name: str | None, config_file: Path = CONFIG_FILE) -> ModelConfig:
+    """Map a Pier model name ("moonshot/kimi-k2.7-code", "tokenplan") to a wren model:
+    a builtin or one from the user config on this machine. The container gets its
+    definition from `model_config_toml`."""
     if not model_name:
         raise ConfigError("wren needs a model: pass -m, e.g. -m moonshot/kimi-k2.7-code")
-    return load_config(Path("/nonexistent/config.toml")).model(model_name)
+    return load_config(config_file).model(model_name)
+
+
+def model_config_toml(model: ModelConfig) -> str:
+    """A config.toml defining just this model, for wren in the task container.
+    It holds no secrets: the key stays in the environment variable it names."""
+    fields = {k: v for k, v in dataclasses.asdict(model).items() if k != "name"}
+    lines = [f"[models.{_toml_key(model.name)}]"]
+    lines += [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in _drop_none(fields).items()]
+    return "\n".join(lines) + "\n"
+
+
+def _drop_none(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _drop_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_none(v) for v in value]
+    return value
+
+
+def _toml_key(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)  # JSON string escapes are valid TOML basic strings
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
+    raise TypeError(f"can't write {value!r} as TOML")
 
 
 def model_hosts(model: ModelConfig) -> list[str]:
@@ -61,6 +98,7 @@ def run_command(instruction: str, model: ModelConfig, extra_flags: str = "") -> 
             f"--yolo --no-checkpoints --output-format json {extra_flags}").strip()
     return (
         f"mkdir -p {WREN_HOME}; "
+        f"printf '%s' {shlex.quote(model_config_toml(model))} > {WREN_HOME}/config.toml; "
         f"{wren} > {LOG_DIR}/{RESULT_FILE} 2> {LOG_DIR}/{STDERR_FILE} < /dev/null; "
         "code=$?; "
         f"if [ -s {LOG_DIR}/{RESULT_FILE} ]; then cat {LOG_DIR}/{RESULT_FILE}; exit 0; fi; "

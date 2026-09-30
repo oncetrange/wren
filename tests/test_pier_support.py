@@ -1,22 +1,29 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from wren.config import ConfigError
+from wren.config import ConfigError, load_config
 from wren.integrations import pier_support as support
+
+NO_CONFIG = Path("/nonexistent/config.toml")
+
+
+def resolve(name, config_file=NO_CONFIG):
+    return support.resolve_model(name, config_file)
 
 
 def test_resolve_model_by_pier_name():
-    assert support.resolve_model("moonshot/kimi-k2.7-code").name == "kimi"
-    assert support.resolve_model("kimi").name == "kimi"
+    assert resolve("moonshot/kimi-k2.7-code").name == "kimi"
+    assert resolve("kimi").name == "kimi"
     with pytest.raises(ConfigError):
-        support.resolve_model("openai/gpt-x")
+        resolve("openai/gpt-x")
 
 
 def test_model_hosts():
-    assert support.model_hosts(support.resolve_model("kimi")) == ["api.moonshot.cn"]
-    assert support.model_hosts(support.resolve_model("claude")) == ["api.anthropic.com"]
+    assert support.model_hosts(resolve("kimi")) == ["api.moonshot.cn"]
+    assert support.model_hosts(resolve("claude")) == ["api.anthropic.com"]
 
 
 def test_install_commands_pin_ref():
@@ -30,7 +37,7 @@ def fake_wren(tmp_path, body: str) -> str:
     stub = tmp_path / "wren"
     stub.write_text(f"#!/bin/bash\n{body}\n")
     stub.chmod(0o755)
-    cmd = support.run_command("fix it; don't `rm` anything", support.resolve_model("kimi"), "--max-turns 5")
+    cmd = support.run_command("fix it; don't `rm` anything", resolve("kimi"), "--max-turns 5")
     return (cmd.replace(support.WREN_BIN, str(stub))
                .replace(support.LOG_DIR, str(tmp_path / "logs")))
 
@@ -65,3 +72,40 @@ def test_read_run(tmp_path):
     run = support.read_run(tmp_path)
     assert run["peak_context_tokens"] == 100 and run["compactions"] == 1
     assert support.read_run(tmp_path / "missing") is None
+
+
+USER_CONFIG = """
+[models.tokenplan]
+model = "qwen3.8-flash"
+base_url = "https://token-plan.example.com/apps/anthropic"
+api_key_env = "PLAN_API_KEY"
+thinking = { type = "enabled", budget_tokens = 8000 }
+price = { tiers = [{ up_to = 32000, input = 0.1, output = 0.4 }, { input = 0.2, output = 0.8 }] }
+extra_body = { "enable-x" = true, note = "a \\"quoted\\" value" }
+"""
+
+
+def test_user_models_resolve_and_travel_to_the_container(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(USER_CONFIG)
+    model = resolve("qwen3.8-flash", config)          # by model id, as Pier passes it
+    assert model.name == "tokenplan" and resolve("tokenplan", config) == model
+    assert support.model_hosts(model) == ["token-plan.example.com"]
+    shipped = tmp_path / "shipped.toml"
+    shipped.write_text(support.model_config_toml(model))
+    assert "PLAN_API_KEY" in shipped.read_text()
+    assert load_config(shipped).models["tokenplan"] == model   # round-trips exactly
+
+
+def test_run_command_writes_the_model_config(tmp_path):
+    (tmp_path / "logs").mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(USER_CONFIG)
+    stub = tmp_path / "wren"
+    stub.write_text("#!/bin/bash\necho '{}'\n")
+    stub.chmod(0o755)
+    cmd = support.run_command("go", resolve("tokenplan", config))
+    cmd = cmd.replace(support.WREN_BIN, str(stub)).replace(support.LOG_DIR, str(tmp_path / "logs"))
+    assert subprocess.run(["bash", "-c", cmd], capture_output=True).returncode == 0
+    written = tmp_path / "logs" / "wren" / "config.toml"
+    assert load_config(written).models["tokenplan"].base_url == "https://token-plan.example.com/apps/anthropic"
