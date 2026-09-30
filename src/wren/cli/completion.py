@@ -1,4 +1,4 @@
-"""Slash-command completion without changing the layout.
+"""Slash-command and @-file completion without changing the layout.
 
 Terminals can't draw over earlier output and give it back, and growing the
 prompt area near the bottom of the screen scrolls everything up for good. So
@@ -11,12 +11,17 @@ completion uses the space that is always there:
 ↑/↓ change the selection, Tab completes it (→ also accepts the ghost text),
 Enter runs it. When no command is being typed, the ghost text instead shows a
 predicted next prompt (see agent/predict.py) while it matches what was typed;
-Tab or → accepts it. Matching and selection live in `SlashMenu`; only `toolbar` and
+Tab or → accepts it.
+
+An `@` starting a word (at the cursor) completes a file or directory path from
+the project the same way: Tab or Enter puts the chosen path in, a directory
+without the trailing space so its contents can follow. Matching and selection live in `SlashMenu`; only `toolbar` and
 the ghost text are about how it is shown, so a full-screen UI could reuse the rest.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from prompt_toolkit import PromptSession
@@ -27,8 +32,17 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 
+from wren.mentions import FileIndex
+
 STYLES = {"menu.selected": "reverse", "menu.meta": "ansigray", "menu.hint": "ansigray"}
 HINT = "  ↑↓ Tab ↵"
+MENTION_AT_CURSOR = re.compile(r"(?:^|\s)@([^\s@\"]*)$")
+
+
+def mention_prefix(text_before_cursor: str) -> str | None:
+    """The partial path of an @-mention being typed at the cursor, if any."""
+    m = MENTION_AT_CURSOR.search(text_before_cursor)
+    return m.group(1) if m else None
 
 
 def matches(text: str, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -39,19 +53,32 @@ def matches(text: str, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 class SlashMenu:
-    def __init__(self, entries: Callable[[], list[tuple[str, str]]]):
+    def __init__(self, entries: Callable[[], list[tuple[str, str]]], files: FileIndex | None = None):
         self.entries = entries
+        self.files = files
         self.index = 0
         self._last_text = ""
+        self._completed: tuple[str, list[str]] = ("\0", [])  # (prefix, paths), cached
         # Predicted next prompt, offered as ghost text when no command is typed.
         self.prediction: str | None = None
 
     def items(self, text: str | None = None) -> list[tuple[str, str]]:
+        """What the menu offers. `text` is what's before the cursor (default: the buffer's)."""
         if text is None:
-            text = get_app().current_buffer.text
+            text = get_app().current_buffer.document.text_before_cursor
         if text != self._last_text:  # typing resets the selection
             self._last_text, self.index = text, 0
-        return matches(text, self.entries())
+        if commands := matches(text, self.entries()):
+            return commands
+        prefix = mention_prefix(text)
+        if prefix is None or self.files is None:
+            return []
+        if self._completed[0] != prefix:
+            self._completed = (prefix, self.files.complete(prefix))
+        return [("@" + p, "") for p in self._completed[1]]
+
+    def mentioning(self, text: str) -> bool:
+        return not matches(text, self.entries()) and mention_prefix(text) is not None
 
     def selected(self, text: str | None = None) -> str | None:
         items = self.items(text)
@@ -63,6 +90,12 @@ class SlashMenu:
         session.default_buffer.on_text_changed += self._update_ghost
 
     def _update_ghost(self, buf: Buffer) -> None:
+        text = buf.document.text_before_cursor
+        if self.mentioning(text):
+            chosen, typed = self.selected(text), "@" + (mention_prefix(text) or "")
+            ghost = chosen[len(typed):] if chosen and chosen.startswith(typed) else ""
+            buf.suggestion = Suggestion(ghost) if ghost and buf.document.is_cursor_at_the_end else None
+            return
         text = buf.text
         name = self.selected(text)
         if name is None and self.prediction and not text.startswith("/"):
@@ -138,12 +171,18 @@ class SlashMenu:
         @kb.add("tab", filter=is_open)
         def _(event) -> None:
             buf = event.current_buffer
+            if self.mentioning(buf.document.text_before_cursor):
+                self._insert_mention(buf)
+                return
             buf.text = (self.selected(buf.text) or buf.text) + " "
             buf.cursor_position = len(buf.text)
 
         @kb.add("enter", filter=is_open)
         def _(event) -> None:
             buf = event.current_buffer
+            if self.mentioning(buf.document.text_before_cursor):
+                self._insert_mention(buf)  # picks the file; Enter again sends
+                return
             buf.text = self.selected(buf.text)
             buf.validate_and_handle()
 
@@ -155,3 +194,15 @@ class SlashMenu:
             buf.insert_text(buf.suggestion.text)
 
         return kb
+
+    def _insert_mention(self, buf: Buffer) -> None:
+        """Replace the partial @-mention before the cursor with the selected path."""
+        before = buf.document.text_before_cursor
+        chosen = self.selected(before)
+        if chosen is None:
+            return
+        typed = len(mention_prefix(before) or "") + 1  # with the @
+        if " " in chosen:
+            chosen = f'@"{chosen[1:]}"'
+        buf.delete_before_cursor(typed)
+        buf.insert_text(chosen if chosen.endswith("/") else chosen + " ")

@@ -212,6 +212,11 @@ class RichUI:
 
     # --- misc --------------------------------------------------------------
 
+    def attached(self, label: str, summary: str) -> None:
+        """A file @-mentioned in the prompt, and what was attached."""
+        style = "yellow" if summary.startswith("not attached") else "dim"
+        self.console.print(Text(f"  @ {label} · {summary}", style=style))
+
     def hook_ran(self, name: str, status: str) -> None:
         self._stop_spin()
         style = "dim" if status.startswith("ok") else "yellow"
