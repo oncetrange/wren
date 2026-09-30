@@ -58,6 +58,7 @@ from wren.skills import discover
 from wren.skills import expand as expand_skill
 from wren.tools import ToolContext
 from wren.tools.schedule import ScheduleTool
+from wren.tools.web import SearchConfig, WebFetch, WebSearch
 
 TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse", **MENU_STYLES})
 
@@ -120,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the project's .wren/hooks.toml without asking (needed with -p)")
     parser.add_argument("--trust-project-mcp", action="store_true",
                         help="start the project's .mcp.json servers without asking (needed with -p)")
+    parser.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
     parser.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
                         help="use long-term memory: the model reads and keeps memories across "
                              "sessions (default: on, off with -p)")
@@ -190,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     agent.auto_memory = settings.memory_auto
     if not args.prompt:  # scheduled jobs are made in sessions, not by (scheduled) headless runs
         agent.tools["schedule"] = ScheduleTool()
+    if config.web.enabled and not args.no_web:
+        search = SearchConfig(config.web.search, config.web.api_key_env)
+        agent.tools.update({"web_search": WebSearch(search), "web_fetch": WebFetch()})
     agent.resolve_model = lambda name: _provider_for(config.model(name))
     if state:
         agent.restore(state)

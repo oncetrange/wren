@@ -46,6 +46,7 @@ from wren.skills import prompt_section
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.tools.mcp import McpTool
 from wren.tools.readonly import is_read_only_command
+from wren.tools.web import WEB_TOOLS
 
 if TYPE_CHECKING:
     from wren.agent.loop import Agent, AgentUI
@@ -418,9 +419,11 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
                              f"using {parent.model.name}")
 
     skills = parent.skills if kind.allows("skill") else {}
-    # MCP tools can do anything, so read-only subagents don't get them.
+    # MCP and web tools, configured for the session, as the parent has them. They reach
+    # outside the machine (and MCP tools can do anything), so read-only subagents don't get them.
     mcp = [] if kind.read_only else [t for t in parent.tools.values()
-                                     if isinstance(t, McpTool) and kind.allows(t.name)]
+                                     if (isinstance(t, McpTool) or t.name in WEB_TOOLS)
+                                     and kind.allows(t.name)]
     progress = parent._progress  # set when running alongside other subagents
     ui = progress.child_ui(f"{description} ({kind.name})") if progress else SubagentUI(parent.ui)
     log = _log(parent)

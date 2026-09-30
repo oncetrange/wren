@@ -218,11 +218,22 @@ class McpServerConfig:
 
 
 @dataclass
+class WebConfig:
+    """[web]: the web_search and web_fetch tools."""
+
+    enabled: bool = True
+    # "brave", "tavily" or "duckduckgo"; None picks by which API key is set.
+    search: str | None = None
+    api_key_env: str | None = None
+
+
+@dataclass
 class Config:
     default_model: str = "kimi"
     models: dict[str, ModelConfig] = field(default_factory=dict)
     hooks: list[HookSpec] = field(default_factory=list)
     mcp: list[McpServerConfig] = field(default_factory=list)
+    web: WebConfig = field(default_factory=WebConfig)
 
     def model(self, name: str | None = None) -> ModelConfig:
         """Look a model up by its config name, or by its model id with an
@@ -260,7 +271,16 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
         models={name: _model_config(name, spec) for name, spec in model_defs.items()},
         hooks=parse_hooks(raw.get("hooks", {}), source="user"),
         mcp=parse_mcp_servers(raw.get("mcp", {}), source="user"),
+        web=_web_config(raw.get("web", {})),
     )
+
+
+def _web_config(raw: dict[str, Any]) -> WebConfig:
+    if unknown := set(raw) - {"enabled", "search", "api_key_env"}:
+        raise ConfigError(f"[web]: unknown keys {sorted(unknown)}")
+    if raw.get("search") not in (None, "brave", "tavily", "duckduckgo"):
+        raise ConfigError(f"[web]: search must be brave, tavily or duckduckgo, got {raw['search']!r}")
+    return WebConfig(**raw)
 
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
