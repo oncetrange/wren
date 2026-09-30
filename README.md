@@ -323,6 +323,11 @@ pier run -p deep-swe/tasks --env modal --n-tasks 10 --sample-seed 0 \
     --ak version=main --ak max_turns=150
 ```
 
+`-m` takes a builtin model or one from your `~/.wren/config.toml` (by name or model id): the
+adapter reads the definition on your machine and writes just that model into the container's
+config, without keys; pass the key with `--ae KEY_ENV=...` as above. Pier imports the adapter
+from the wren installed alongside it (`--with`), so update that install to get adapter changes.
+
 Inside each task container the adapter installs wren from this repository at the given git ref,
 runs it headless with network access limited to the model's API host, and reports tokens, cost,
 steps and compactions back to Pier. Session logs are kept under the trial's `agent/wren/` logs.
