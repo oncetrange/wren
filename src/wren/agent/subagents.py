@@ -26,11 +26,9 @@ overriding earlier ones with the same name, built-ins included) in
 
 from __future__ import annotations
 
-import contextlib
 import re
 import threading
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,6 +37,7 @@ from wren.agent.events import Hooks, PreToolUse, Verdict
 from wren.agent.permissions import Decision
 from wren.agent.prompt import build_system_prompt
 from wren.agent.session import SESSIONS_DIR, SessionLog
+from wren.agent.ui import AgentUI
 from wren.config import CONFIG_DIR, ConfigError
 from wren.frontmatter import FrontmatterError, read_frontmatter
 from wren.llm.types import ToolSpec
@@ -48,7 +47,7 @@ from wren.tools.mcp import McpTool
 from wren.tools.readonly import is_read_only_command
 
 if TYPE_CHECKING:
-    from wren.agent.loop import Agent, AgentUI
+    from wren.agent.loop import Agent
 
 SUBAGENTS_DIR = SESSIONS_DIR / "subagents"
 # Guards the parent's accounting when subagents finish on several threads.
@@ -229,49 +228,38 @@ def read_only_guard(e: PreToolUse) -> Verdict | None:
     return None
 
 
-class SubagentUI:
+class SubagentUI(AgentUI):
     """Shows a subagent's tool calls nested under the task call; its text isn't streamed."""
 
     def __init__(self, ui: AgentUI):
         self.ui = ui
 
-    @contextlib.contextmanager
-    def _nested(self) -> Iterator[None]:
-        nested = getattr(self.ui, "nested", None)
-        with nested() if nested else contextlib.nullcontext():
-            yield
-
     def model_started(self) -> None: self.ui.model_started()
-    def text_delta(self, text: str) -> None: pass
-    def thinking_delta(self, text: str) -> None: pass
     def tool_call_started(self, name: str) -> None: self.ui.tool_call_started(name)
     def model_finished(self) -> None: self.ui.model_finished()
 
     def tool_started(self, name: str, label: str) -> None:
-        with self._nested():
+        with self.ui.nested():
             self.ui.tool_started(name, label)
 
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None):
-        with self._nested():
+    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
+        with self.ui.nested():
             return self.ui.confirm(tool, args, label, preview)
 
-    def review_plan(self, plan: str):
-        return None  # subagents have no exit_plan_mode
-
     def tool_finished(self, name: str, output: ToolOutput) -> None:
-        with self._nested():
+        with self.ui.nested():
             self.ui.tool_finished(name, output)
 
     def hook_ran(self, name: str, status: str) -> None:
-        with self._nested():
+        with self.ui.nested():
             self.ui.hook_ran(name, status)
 
     def notice(self, text: str) -> None:
-        with self._nested():
+        with self.ui.nested():
             self.ui.notice(text)
 
     def error(self, text: str) -> None:
-        with self._nested():
+        with self.ui.nested():
             self.ui.error(text)
 
 
@@ -298,43 +286,34 @@ class Progress:
         self._show(None)
 
     def _show(self, lines: list[str] | None) -> None:
-        if show := getattr(self.ui, "progress", None):
-            show(lines)
+        self.ui.progress(lines)
 
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-class ProgressUI:
+class ProgressUI(AgentUI):
     """A concurrently running subagent's UI: its activity goes to one status
-    line; only notices and errors are printed. It never asks for approval,
-    since only read-only subagents run concurrently."""
+    line; only notices and errors are printed. It never asks for approval
+    (the default refuses), since only read-only subagents run concurrently."""
 
     def __init__(self, progress: Progress, row: int, label: str):
-        self.progress, self.row, self.label = progress, row, label
+        self.board, self.row, self.label = progress, row, label
 
-    def model_started(self) -> None: self.progress.update(self.row, "thinking")
-    def text_delta(self, text: str) -> None: pass
-    def thinking_delta(self, text: str) -> None: pass
-    def tool_call_started(self, name: str) -> None: self.progress.update(self.row, f"preparing {name}")
-    def model_finished(self) -> None: pass
+    def model_started(self) -> None: self.board.update(self.row, "thinking")
+    def tool_call_started(self, name: str) -> None: self.board.update(self.row, f"preparing {name}")
     def tool_started(self, name: str, label: str) -> None:
-        self.progress.update(self.row, f"{name} {label.splitlines()[0] if label else ''}".strip())
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
-        return Decision(allow=False)
-    def review_plan(self, plan: str) -> None: return None
-    def tool_finished(self, name: str, output: ToolOutput) -> None: pass
-    def hook_ran(self, name: str, status: str) -> None: pass
-    def done(self, status: str) -> None: self.progress.update(self.row, status)
+        self.board.update(self.row, f"{name} {label.splitlines()[0] if label else ''}".strip())
+    def done(self, status: str) -> None: self.board.update(self.row, status)
 
     def notice(self, text: str) -> None:
-        with self.progress.lock:
-            self.progress.ui.notice(f"{self.label}: {text}")
+        with self.board.lock:
+            self.board.ui.notice(f"{self.label}: {text}")
 
     def error(self, text: str) -> None:
-        with self.progress.lock:
-            self.progress.ui.error(f"{self.label}: {text}")
+        with self.board.lock:
+            self.board.ui.error(f"{self.label}: {text}")
 
 
 class TaskTool(Tool):

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from wren.agent.permissions import Decision
+from wren.agent.ui import AgentUI
 from wren.config import ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
@@ -46,7 +47,7 @@ def call(name: str, id: str = "t1", **input: Any) -> Response:
     return Response(Message("assistant", [ToolUseBlock(id, name, input)]), "tool_use", Usage(10, 5))
 
 
-class RecordingUI:
+class RecordingUI(AgentUI):
     def __init__(self, decisions: list[Decision] | None = None, plan_decisions=None):
         self.decisions = list(decisions or [])
         self.plan_decisions = list(plan_decisions or [])

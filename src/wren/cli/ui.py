@@ -20,6 +20,7 @@ from rich.text import Text
 from wren.agent.compact import is_summary_note
 from wren.agent.permissions import Decision
 from wren.agent.plans import PlanDecision, is_reminder
+from wren.agent.ui import AgentUI
 from wren.cli.markdown import MarkdownStream
 from wren.cli.pickers import ask_text, pick
 from wren.cli.terminal import distinguish_shift_enter
@@ -33,7 +34,7 @@ def fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-class RichUI:
+class RichUI(AgentUI):
     def __init__(self, console: Console | None = None, interactive: bool | None = None,
                  background: str = "dark"):
         self.console = console or Console(highlight=False)

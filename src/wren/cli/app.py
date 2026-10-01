@@ -160,10 +160,8 @@ def run_prompt(agent: Agent, text: str, reserved: AbstractSet[str] = frozenset()
     if found := mentions.find(text, agent.ctx.cwd):
         files, shown = mentions.attach(found, agent.ctx)
         attachments += files
-        show = getattr(agent.ui, "attached", None)
         for label, summary in shown:
-            if show:
-                show(label, summary)
+            agent.ui.attached(label, summary)
         agent.log.record("mentions", paths=[label for label, _ in shown])
     return agent.run(text, attachments=attachments or None)
 
