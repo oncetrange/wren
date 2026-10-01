@@ -9,7 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from wren.agent.builtin_hooks import register_builtins
 from wren.agent.compact import (
@@ -39,7 +39,6 @@ from wren.agent.plans import (
     TIME_CHECK,
     TIME_UP,
     TURN_BUDGET,
-    PlanDecision,
     is_reminder,
     reminder,
     save_plan,
@@ -49,6 +48,7 @@ from wren.agent.remember import extract_memories
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.subagents import AgentType, Progress, TaskTool
 from wren.agent.todos import format_todos
+from wren.agent.ui import AgentUI
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import CONFIG_DIR, ModelConfig
 from wren.llm.base import Provider
@@ -82,21 +82,6 @@ TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 MAX_STOP_BLOCKS = 3
 # Most tool calls (read-only subagents) run at the same time.
 MAX_CONCURRENT = 4
-
-
-class AgentUI(Protocol):
-    def model_started(self) -> None: ...
-    def text_delta(self, text: str) -> None: ...
-    def thinking_delta(self, text: str) -> None: ...
-    def tool_call_started(self, name: str) -> None: ...
-    def model_finished(self) -> None: ...
-    def tool_started(self, name: str, label: str) -> None: ...
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision: ...
-    def review_plan(self, plan: str) -> PlanDecision | None: ...
-    def tool_finished(self, name: str, output: ToolOutput) -> None: ...
-    def hook_ran(self, name: str, status: str) -> None: ...
-    def notice(self, text: str) -> None: ...
-    def error(self, text: str) -> None: ...
 
 
 class Agent:
