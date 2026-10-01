@@ -15,6 +15,7 @@ from wren.agent.permissions import Decision, Permissions
 from wren.cli.main import parse_interval
 from wren.cli.schedule_cmd import schedule_main
 from wren.config import ModelConfig
+from wren.credentials import read_env_file
 from wren.cron import Cron, CronError, describe_next
 from wren.llm.types import Message, Response, ToolResultBlock, ToolUseBlock, Usage
 from wren.schedules import (
@@ -27,7 +28,6 @@ from wren.schedules import (
     crontab_line,
     execute,
     launchd_plist,
-    load_env_file,
     tick,
 )
 from wren.tools.schedule import ScheduleTool
@@ -139,7 +139,7 @@ def test_command_flags(tmp_path):
 def test_env_file(store):
     store.home.mkdir(parents=True)
     (store.home / "env").write_text("# keys\nexport A=1\nB = 'two'\n\nnot a line\n")
-    assert load_env_file(store.home) == {"A": "1", "B": "two"}
+    assert read_env_file(store.home) == {"A": "1", "B": "two"}
 
 
 def test_execute_runs_wren_headless_and_records(store, tmp_path, monkeypatch):

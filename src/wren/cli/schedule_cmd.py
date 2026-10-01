@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from wren.config import ConfigError, load_config
+from wren.credentials import read_env_file
 from wren.schedules import (
     MODES,
     Job,
@@ -20,7 +21,6 @@ from wren.schedules import (
     describe_job,
     execute,
     launch_detached,
-    load_env_file,
     now,
     tick,
 )
@@ -146,7 +146,7 @@ def check_keys(console: Console, store: Schedules) -> None:
         needed = {config.model(n).key_env for n in names} - {""}
     except (ConfigError, ScheduleError):
         return
-    available = load_env_file(store.home)
+    available = read_env_file(store.home)
     missing = sorted(k for k in needed if k not in available)
     if missing:
         console.print(f"[yellow]scheduled runs don't see your shell's environment: put "

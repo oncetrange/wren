@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import re
 import shlex
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from wren.config import CONFIG_FILE, ConfigError, ModelConfig, load_config
+from wren.config_edit import toml_key, toml_value
 
 REPO_ARCHIVE = "https://github.com/oncetrange/wren/archive/{ref}.tar.gz"
 WREN_BIN = "$HOME/.local/bin/wren"
@@ -38,8 +38,8 @@ def model_config_toml(model: ModelConfig) -> str:
     It holds no secrets: the key stays in the environment variable it names."""
     fields = {k: v for k, v in dataclasses.asdict(model).items() if k != "name"}
     # No web access: tasks come from public repositories, whose real fix is a search away.
-    lines = ["[web]", "enabled = false", "", f"[models.{_toml_key(model.name)}]"]
-    lines += [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in _drop_none(fields).items()]
+    lines = ["[web]", "enabled = false", "", f"[models.{toml_key(model.name)}]"]
+    lines += [f"{toml_key(k)} = {toml_value(v)}" for k, v in _drop_none(fields).items()]
     return "\n".join(lines) + "\n"
 
 
@@ -49,24 +49,6 @@ def _drop_none(value: Any) -> Any:
     if isinstance(value, list):
         return [_drop_none(v) for v in value]
     return value
-
-
-def _toml_key(key: str) -> str:
-    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return repr(value)
-    if isinstance(value, str):
-        return json.dumps(value)  # JSON string escapes are valid TOML basic strings
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    if isinstance(value, dict):
-        return "{" + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
-    raise TypeError(f"can't write {value!r} as TOML")
 
 
 def model_hosts(model: ModelConfig) -> list[str]:

@@ -61,11 +61,12 @@ class AnthropicProvider(Provider):
             "max_tokens": self.cfg.max_tokens,
             "system": _system_param(system, self.cfg.prompt_cache),
             "messages": _messages_param(messages, self.cfg.prompt_cache),
-            "tools": [
+        }
+        if tools:  # an empty list is left out rather than sent
+            params["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
-            ],
-        }
+            ]
         if self.cfg.thinking:
             params["thinking"] = _thinking_param(self.cfg.thinking)
         try:
