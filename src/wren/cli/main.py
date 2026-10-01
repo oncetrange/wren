@@ -40,6 +40,7 @@ from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
 from wren.cli.pickers import confirm, pick
 from wren.cli.schedule_cmd import print_jobs, print_run
+from wren.cli.setup_cmd import NoUsableModel, default_model, run_setup
 from wren.cli.terminal import (
     detect_background,
     distinguish_shift_enter,
@@ -48,6 +49,7 @@ from wren.cli.terminal import (
 )
 from wren.cli.ui import RichUI, fmt_tokens
 from wren.config import CONFIG_DIR, CONFIG_FILE, Config, ConfigError, ModelConfig, load_config
+from wren.credentials import load_env_file
 from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
@@ -103,12 +105,18 @@ HELP = "[bold]Commands[/]\n" + "\n".join(f"  {name:<15} {desc}" for name, desc i
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    load_env_file()  # keys saved by `wren setup`; the shell's own variables win
+    if argv[:1] == ["setup"]:
+        from wren.cli.setup_cmd import setup_main
+
+        return setup_main(argv[1:])
     if argv[:1] == ["schedule"]:
         from wren.cli.schedule_cmd import schedule_main
 
         return schedule_main(argv[1:])
     parser = argparse.ArgumentParser(prog="wren", description="A coding agent for your terminal.",
-                                     epilog="wren schedule --help: run prompts on a cron schedule")
+                                     epilog="wren setup: choose a model and save its API key · "
+                                            "wren schedule --help: run prompts on a cron schedule")
     parser.add_argument("-p", "--print", dest="prompt", metavar="PROMPT",
                         help="run a single request non-interactively and exit ('-' reads stdin)")
     parser.add_argument("--output-format", choices=["text", "json"], default="text",
@@ -166,7 +174,23 @@ def main(argv: list[str] | None = None) -> int:
         name = args.model
         if name is None and state and state.model in config.models:
             name = state.model
-        model = config.model(name)
+        if name is None and not os.environ.get("WREN_MODEL"):
+            try:
+                model, note = default_model(config)
+            except NoUsableModel as e:
+                if args.prompt or not ui.interactive:
+                    raise ConfigError(str(e)) from None
+                ui.console.print("[bold]Welcome to wren.[/] First, a model to talk to.")
+                chosen = run_setup(ui.console)
+                if chosen is None:
+                    ui.error("no model set up; run `wren setup` when you're ready")
+                    return 1
+                config = load_config()
+                model, note = config.models[chosen], None
+            if note:
+                ui.notice(note)
+        else:
+            model = config.model(name)
         if args.mask_at is not None or args.compact_at is not None:  # for experiments
             model = dataclasses.replace(
                 model, mask_at=model.mask_at if args.mask_at is None else args.mask_at,
@@ -904,7 +928,9 @@ class Repl:
 
     def switch_model(self, name: str) -> None:
         if not name:
-            picked = pick("Model", [(m.name, f"{m.name}  {m.model}") for m in self.config.models.values()],
+            picked = pick("Model", [(m.name, f"{m.name}  {m.model}" + ("" if m.has_key() else
+                                                  f"  (no key: ${m.key_env}; wren setup saves one)"))
+                                    for m in self.config.models.values()],
                           default=self.agent.model.name)
             if picked is None:
                 return

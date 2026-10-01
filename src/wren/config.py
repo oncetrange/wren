@@ -104,6 +104,10 @@ class ModelConfig:
             return self.api_key_env
         return "OPENAI_API_KEY" if self.provider == "openai" else "ANTHROPIC_API_KEY"
 
+    def has_key(self) -> bool:
+        """Whether its API key is available (or it needs none)."""
+        return self.key_env == "" or bool(os.environ.get(self.key_env))
+
     def api_key(self) -> str:
         """The API key ("" for a model configured without one)."""
         if self.key_env == "":
@@ -111,7 +115,8 @@ class ModelConfig:
         key = os.environ.get(self.key_env)
         if not key:
             raise ConfigError(
-                f"model {self.name!r} needs an API key: set ${self.key_env}"
+                f"model {self.name!r} needs an API key: set ${self.key_env}, or run `wren setup` "
+                "to save one"
             )
         return key
 

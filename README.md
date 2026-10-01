@@ -11,6 +11,11 @@ uv tool install wren-agent      # or: pipx install wren-agent
 This installs the `wren` command (Python 3.12+, macOS or Linux). From a checkout, for development:
 `uv tool install -e .`.
 
+The first time you run `wren` without a model it can use, it asks which one you want (a builtin
+below, any Anthropic- or OpenAI-compatible endpoint, or a local Ollama model), takes the API key
+with hidden input, checks that the model answers, and makes it the default. Run `wren setup` to do
+that again or add another model.
+
 ## Usage
 
 ```bash
@@ -53,6 +58,10 @@ Project-specific instructions are read from `WREN.md` or `AGENTS.md` in the work
 | `claude` | claude-opus-5 | Anthropic | `$ANTHROPIC_API_KEY` |
 | `qwen-openai` | qwen3-coder-plus | DashScope, OpenAI-compatible | `$DASHSCOPE_API_KEY` |
 | `deepseek` | deepseek-chat (no price set) | DeepSeek, OpenAI-compatible | `$DEEPSEEK_API_KEY` |
+
+API keys come from the environment, or from `~/.wren/env` (`KEY=value` lines, readable only by
+you; `wren setup` writes it). A variable set in your shell wins over the file. When the default
+model has no key but another model does, wren uses that one and says so.
 
 Override builtins or add any Anthropic- or OpenAI-compatible model in `~/.wren/config.toml`:
 

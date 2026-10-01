@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from wren.config import CONFIG_DIR
+from wren.credentials import read_env_file
 from wren.cron import Cron, CronError
 
 LATE_LIMIT = timedelta(minutes=5)
@@ -265,7 +266,7 @@ def execute(store: Schedules, job: Job, notify_fn: Callable[[str, str], None] | 
             store.record(job.id, entry)
             return entry
         started = datetime.now()
-        env = {**load_env_file(store.home), **os.environ, "WREN_HOME": str(store.home)}
+        env = {**read_env_file(store.home), **os.environ, "WREN_HOME": str(store.home)}
         try:
             proc = subprocess.run(command(job), cwd=job.cwd, env=env, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, timeout=timeout)
@@ -301,22 +302,6 @@ def _result_entry(stdout: str, stderr: str, code: int, started: datetime) -> dic
     if entry["status"] != "done":
         entry["error"] = "\n".join(stderr.strip().splitlines()[-5:])
     return entry
-
-
-def load_env_file(home: Path) -> dict[str, str]:
-    """KEY=value lines from ~/.wren/env (comments and `export` allowed)."""
-    try:
-        text = (home / "env").read_text()
-    except OSError:
-        return {}
-    env = {}
-    for line in text.splitlines():
-        line = line.strip().removeprefix("export ").strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env[key.strip()] = value.strip().strip("'\"")
-    return env
 
 
 def notify(title: str, message: str) -> None:
