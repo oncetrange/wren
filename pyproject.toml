@@ -1,9 +1,25 @@
 [project]
-name = "wren"
-version = "0.1.0"
+# The PyPI name; the command is `wren` and the import package `wren`.
+name = "wren-agent"
+dynamic = ["version"]
 description = "A coding agent for the terminal"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "oncetrange", email = "oncetrange@outlook.com" }
+]
+keywords = ["coding agent", "llm", "cli", "anthropic", "openai", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
 ]
 requires-python = ">=3.12"
 dependencies = [
@@ -15,12 +31,26 @@ dependencies = [
     "rich>=15.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/oncetrange/wren"
+Repository = "https://github.com/oncetrange/wren"
+Issues = "https://github.com/oncetrange/wren/issues"
+
 [project.scripts]
 wren = "wren.cli.main:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/wren/__init__.py"  # the one place the version is written
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wren"]  # not found by name: the project is wren-agent
+
+[tool.hatch.build.targets.sdist]
+exclude = [".wren", ".github", "uv.lock", "examples"]
 
 [dependency-groups]
 dev = [

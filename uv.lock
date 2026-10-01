@@ -993,8 +993,7 @@ wheels = [
 ]
 
 [[package]]
-name = "wren"
-version = "0.1.0"
+name = "wren-agent"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

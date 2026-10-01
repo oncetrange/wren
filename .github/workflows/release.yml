@@ -1,0 +1,52 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish that version to PyPI. Run it by hand
+# ("Run workflow") to publish the current main to TestPyPI first.
+# Publishing uses PyPI trusted publishing: no API token is stored anywhere.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run pyright
+      - run: uv run pytest -q
+      - name: Tag matches the version
+        if: github.event_name == 'push'
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/wren/__init__.py)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME but version $version"; exit 1; }
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v6
+      - name: Publish to PyPI
+        if: github.event_name == 'push'
+        run: uv publish --trusted-publishing always
+      - name: Publish to TestPyPI
+        if: github.event_name != 'push'
+        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/
