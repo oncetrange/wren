@@ -11,7 +11,8 @@ from rich.console import Console
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.plans import WREN_DIR_GITIGNORE
-from wren.cli.main import BUILTIN_NAMES, run_prompt
+from wren.cli.app import run_prompt
+from wren.cli.commands import BUILTIN_NAMES
 from wren.cli.ui import RichUI
 from wren.config import ModelConfig
 from wren.llm.types import Message, Response, ToolUseBlock

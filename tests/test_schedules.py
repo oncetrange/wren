@@ -12,7 +12,7 @@ from fake_anthropic import FakeAnthropic, text_turn
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Decision, Permissions
-from wren.cli.main import parse_interval
+from wren.cli.commands import parse_interval
 from wren.cli.schedule_cmd import schedule_main
 from wren.config import ModelConfig
 from wren.credentials import read_env_file

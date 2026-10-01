@@ -60,7 +60,7 @@ def test_headless_skips_untrusted_project_hooks(tmp_path):
 
 
 def test_interactive_trust_prompt(tmp_path, monkeypatch):
-    from wren.cli.main import _trust_project_hooks
+    from wren.cli.app import trust_project_hooks as _trust_project_hooks
     monkeypatch.setattr(shell_hooks, "CONFIG_DIR", tmp_path / "home")
     write_hooks(tmp_path)
     project = shell_hooks.load_project_hooks(tmp_path)

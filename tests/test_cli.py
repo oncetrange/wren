@@ -34,7 +34,7 @@ def test_confirm_defaults():
 def test_shift_enter_inserts_newline():
     from prompt_toolkit import PromptSession
 
-    from wren.cli.main import _key_bindings
+    from wren.cli.keys import newline_bindings as _key_bindings
 
     register_shift_enter()
     text = run_keys("a\x1b[13;2ub\x1b\rc\r",
@@ -52,7 +52,7 @@ def test_parse_osc11():
 def test_modified_enter_sequences_insert_newline(seq):
     from prompt_toolkit import PromptSession
 
-    from wren.cli.main import _key_bindings
+    from wren.cli.keys import newline_bindings as _key_bindings
 
     register_shift_enter()
     text = run_keys(f"a{seq}b\x1b[27;6;65~\r",

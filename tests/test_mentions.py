@@ -11,8 +11,8 @@ from prompt_toolkit.output import DummyOutput
 from wren import mentions
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
+from wren.cli.app import run_prompt
 from wren.cli.completion import SlashMenu, mention_prefix
-from wren.cli.main import run_prompt
 from wren.config import ModelConfig
 from wren.llm.types import TextBlock
 from wren.mentions import FileIndex
