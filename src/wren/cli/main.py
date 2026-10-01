@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -124,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trust-project-mcp", action="store_true",
                         help="start the project's .mcp.json servers without asking (needed with -p)")
     parser.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
+    parser.add_argument("--mask-at", type=int, metavar="TOKENS",
+                        help="clear old tool outputs past this prompt size (0: never); overrides the model's")
+    parser.add_argument("--compact-at", type=int, metavar="TOKENS",
+                        help="summarize the conversation past this prompt size; overrides the model's")
+    parser.add_argument("--no-subagents", action="store_true", help="don't offer the task tool")
     parser.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
                         help="use long-term memory: the model reads and keeps memories across "
                              "sessions (default: on, off with -p)")
@@ -158,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
         if name is None and state and state.model in config.models:
             name = state.model
         model = config.model(name)
+        if args.mask_at is not None or args.compact_at is not None:  # for experiments
+            model = dataclasses.replace(
+                model, mask_at=model.mask_at if args.mask_at is None else args.mask_at,
+                compact_at=model.compact_at if args.compact_at is None else args.compact_at)
         provider = create_provider(model)
         if ignored := model.ignored_options():
             ui.notice(f"model {model.name!r}: {', '.join(ignored)} not used with the "
@@ -187,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         max_turns=args.max_turns,
         final_check=bool(args.prompt) if args.final_check is None else args.final_check,
         skills=skills,
-        agent_types=agent_types,
+        agent_types={} if args.no_subagents else agent_types,
         memory=memories if (not args.prompt if args.memory is None else args.memory) else None,
         mcp=mcp,
     )

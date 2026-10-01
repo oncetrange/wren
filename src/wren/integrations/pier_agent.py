@@ -8,7 +8,8 @@
         -m moonshot/kimi-k2.7-code --ae MOONSHOT_API_KEY=$MOONSHOT_API_KEY
 
 Agent kwargs (--ak): version=<git ref of wren to install, default main>,
-max_turns=<model calls per task, default 150>.
+max_turns=<model calls per task, default 150>, and for experiments mask_at=<tokens>,
+compact_at=<tokens>, no_subagents=true.
 """
 
 from __future__ import annotations
@@ -27,7 +28,13 @@ if TYPE_CHECKING:
 
 
 class WrenAgent(BaseInstalledAgent):
-    CLI_FLAGS = [CliFlag(kwarg="max_turns", cli="--max-turns", type="int", default=150)]
+    # Agent kwargs (--ak) for experiments, e.g. --ak mask_at=24000 --ak no_subagents=true.
+    CLI_FLAGS = [
+        CliFlag(kwarg="max_turns", cli="--max-turns", type="int", default=150),
+        CliFlag(kwarg="mask_at", cli="--mask-at", type="int"),
+        CliFlag(kwarg="compact_at", cli="--compact-at", type="int"),
+        CliFlag(kwarg="no_subagents", cli="--no-subagents", type="bool"),
+    ]
 
     @staticmethod
     def name() -> str:

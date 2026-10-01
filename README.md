@@ -342,6 +342,10 @@ it when `--max-turns` is nearly used up (`--no-final-check` disables both; `--fi
 them interactively). `-m` also accepts a model id such as `moonshot/kimi-k2.7-code`, and
 `WREN_MODEL` sets the default.
 
+For experiments, `--mask-at TOKENS` and `--compact-at TOKENS` override the model's context
+thresholds and `--no-subagents` removes the task tool; the thresholds used are recorded at the
+start of the session log.
+
 ## Benchmarks (Pier / Harbor)
 
 wren ships a Pier/Harbor installed-agent adapter, so it runs on
@@ -360,6 +364,9 @@ pier run -p deep-swe/tasks --env modal --n-tasks 10 --sample-seed 0 \
 adapter reads the definition on your machine and writes just that model into the container's
 config, without keys; pass the key with `--ae KEY_ENV=...` as above. Pier imports the adapter
 from the wren installed alongside it (`--with`), so update that install to get adapter changes.
+
+The same experiment options are agent kwargs: `--ak mask_at=24000`, `--ak compact_at=100000`,
+`--ak no_subagents=true`.
 
 Inside each task container the adapter installs wren from this repository at the given git ref,
 runs it headless with network access limited to the model's API host, and reports tokens, cost,
