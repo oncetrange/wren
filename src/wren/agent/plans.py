@@ -40,6 +40,13 @@ sure the work is saved the way the user asked (e.g. committed if they asked for 
 then give your final summary."""
 
 
+TIME_CHECK = """Time check: about {left} minutes are left of this run's {total}-minute limit. \
+Make sure the progress so far is saved the way the user asked (e.g. commit what works now; you \
+can keep improving it and commit again), then carry on."""
+
+TIME_UP = """About {left} minutes are left before you are stopped. Wrap up now: save the work \
+the way the user asked (e.g. commit it), then give your final summary."""
+
 REPEATED_FAILURE = """This exact call has failed {n} times with the same result. Repeating it \
 won't help: re-read the error and the code it refers to, and try a different approach."""
 

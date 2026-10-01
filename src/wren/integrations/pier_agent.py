@@ -9,7 +9,8 @@
 
 Agent kwargs (--ak): version=<git ref of wren to install, default main>,
 max_turns=<model calls per task, default 150>, and for experiments mask_at=<tokens>,
-compact_at=<tokens>, no_subagents=true.
+compact_at=<tokens>, no_subagents=true, and time_limit=<minutes> (a little under
+the agent timeout, so wren reminds the model to commit before it is stopped).
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ class WrenAgent(BaseInstalledAgent):
         CliFlag(kwarg="mask_at", cli="--mask-at", type="int"),
         CliFlag(kwarg="compact_at", cli="--compact-at", type="int"),
         CliFlag(kwarg="no_subagents", cli="--no-subagents", type="bool"),
+        # Minutes; set it a few minutes under Pier's agent timeout so the model saves its work.
+        CliFlag(kwarg="time_limit", cli="--time-limit", type="int"),
     ]
 
     @staticmethod
