@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 
 class SkillTool(Tool):
+    subagents = "never"
     name = "skill"
     description = (
         "Load a skill: task-specific instructions (and the files that come with them) listed "

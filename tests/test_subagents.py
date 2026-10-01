@@ -294,3 +294,22 @@ def test_unknown_model_falls_back(ctx):
     agent.run("go")
     assert result_of(agent).content == "report"
     assert any(e[0] == "notice" and "can't use model 'missing'" in e[1] for e in agent.ui.events)
+
+
+def test_subagent_tools_follow_each_tools_rule(ctx, tmp_path):
+    from wren.schedules import Schedules
+    from wren.tools.schedule import ScheduleTool
+    from wren.tools.web import WebFetch, WebSearch
+
+    parent = Agent(ScriptedProvider([]), ModelConfig(name="fake", model="f"), ctx, RecordingUI(),
+                   agent_types=builtin_agent_types(),
+                   extra_tools=[ScheduleTool(Schedules(tmp_path)), WebSearch(), WebFetch()])
+    kinds = builtin_agent_types()
+    general = {t.name for t in subagents.subagent_tools(parent, kinds["general"])}
+    explore = {t.name for t in subagents.subagent_tools(parent, kinds["explore"])}
+    assert {"read_file", "edit_file", "bash", "bash_output", "web_search", "web_fetch"} <= general
+    assert not general & {"task", "todo_write", "exit_plan_mode", "schedule"}       # "never"
+    assert explore == {"read_file", "grep", "glob", "bash"}                         # "writers" too
+    # The parent's instances are shared, not copied.
+    assert next(t for t in subagents.subagent_tools(parent, kinds["general"]) if t.name == "web_fetch") \
+        is parent.tools["web_fetch"]

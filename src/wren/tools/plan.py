@@ -8,6 +8,7 @@ from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput
 class ExitPlanMode(Tool):
     """Presents the plan for approval. The agent handles the call itself,
     since it needs the user; `run` is never reached through the agent."""
+    subagents = "never"
 
     name = "exit_plan_mode"
     description = (

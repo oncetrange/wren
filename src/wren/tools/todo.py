@@ -7,6 +7,7 @@ from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput
 
 
 class TodoWrite(Tool):
+    subagents = "never"
     name = "todo_write"
     description = (
         "Maintain your task list for the current request. Use it for work with three or more "

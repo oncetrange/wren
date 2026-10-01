@@ -7,6 +7,7 @@ from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput
 
 
 class MemoryTool(Tool):
+    subagents = "never"
     name = "memory"
     description = (
         "Your long-term memory across sessions (see Memory in the system prompt). Actions:\n"

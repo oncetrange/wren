@@ -118,7 +118,15 @@ class Agent:
         hooks: Hooks | None = None,
         memory: Memories | None = None,
         mcp: McpServers | None = None,
+        extra_tools: list[Tool] | None = None,
+        auto_memory: bool = False,
+        time_limit: float | None = None,
+        resolve_model: Callable[[str], tuple[Provider, ModelConfig]] | None = None,
     ):
+        """`tools` replaces the default tools; `extra_tools` adds to them (e.g. web
+        search). `time_limit` is in minutes (see set_time_limit); `auto_memory`
+        reviews the conversation for memories before compacting; `resolve_model`
+        looks up other configured models by name, for subagents that name one."""
         self.provider = provider
         self.model = model
         self.ctx = ctx
@@ -136,13 +144,15 @@ class Agent:
         if self.memory is not None:
             self.tools["memory"] = MemoryTool(self.memory)
         # Save memories before context is lost (compaction, session end).
-        self.auto_memory = False
+        self.auto_memory = auto_memory
         self._memory_upto = 0  # messages already reviewed for memories
         # MCP servers' tools, as mcp__<server>__<tool>.
         self.mcp = mcp
         if mcp is not None:
             for tool in mcp_tools(mcp):
                 self.tools.setdefault(tool.name, tool)
+        for tool in extra_tools or []:
+            self.tools[tool.name] = tool
         # Subagents: the task tool hands a self-contained job to a fresh agent.
         if agent_types:
             self.tools["task"] = TaskTool(self, agent_types)
@@ -191,7 +201,7 @@ class Agent:
         # One summary per subagent run in this session (see agent/subagents.py).
         self.subagent_runs: list[dict[str, Any]] = []
         # Looks up another configured model by name, for subagents that name one.
-        self.resolve_model: Callable[[str], tuple[Provider, ModelConfig]] | None = None
+        self.resolve_model = resolve_model
         # Set while calls run concurrently: where subagents report their progress.
         self._progress: Progress | None = None
         # Set from another thread to stop this agent at its next step (a subagent
@@ -201,6 +211,8 @@ class Agent:
         self._session_context: list[str] = []
         self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system,
                         mask_at=model.mask_at, compact_at=model.compact_threshold)
+        if time_limit:
+            self.set_time_limit(time_limit)
 
     @property
     def messages(self) -> list[Message]:

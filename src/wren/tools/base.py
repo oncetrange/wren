@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from wren.llm.types import ToolSpec
 
@@ -69,6 +69,11 @@ class Tool(ABC):
     edits_files: ClassVar[bool] = False
     # Check arguments against input_schema before running (MCP tools leave it to their server).
     strict_args: ClassVar[bool] = True
+    # Whether subagents get this tool (the parent's instance): "inherit" (if their
+    # type allows it), "writers" (only subagents that may change things: the tool
+    # reaches outside the machine) or "never" (it belongs to the conversation with
+    # the user, like the task list, or would let subagents nest).
+    subagents: ClassVar[Literal["inherit", "writers", "never"]] = "inherit"
 
     @abstractmethod
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput: ...
