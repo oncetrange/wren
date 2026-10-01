@@ -5,8 +5,11 @@ A multi-model coding agent for the terminal, built from scratch on the raw model
 ## Install
 
 ```bash
-uv tool install -e .     # installs the `wren` command
+uv tool install wren-agent      # or: pipx install wren-agent
 ```
+
+This installs the `wren` command (Python 3.12+, macOS or Linux). From a checkout, for development:
+`uv tool install -e .`.
 
 ## Usage
 
@@ -386,3 +389,7 @@ uv run pyright       # type check
 ```
 
 CI runs all three on every pull request, on Python 3.12 and 3.13.
+
+Releases: bump `__version__` in `src/wren/__init__.py`, merge, then push a matching tag
+(`git tag v0.2.0 && git push origin v0.2.0`); the release workflow checks, builds and publishes
+to PyPI with trusted publishing. Running the workflow by hand publishes to TestPyPI instead.
