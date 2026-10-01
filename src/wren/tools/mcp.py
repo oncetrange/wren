@@ -26,6 +26,7 @@ class McpTool(Tool):
     the arguments against its own schema, which may use JSON Schema features
     wren's minimal check doesn't know."""
 
+    subagents = "writers"
     strict_args = False
     name = ""  # set per instance
     description = ""

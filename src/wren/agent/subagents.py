@@ -43,10 +43,9 @@ from wren.config import CONFIG_DIR, ConfigError
 from wren.frontmatter import FrontmatterError, read_frontmatter
 from wren.llm.types import ToolSpec
 from wren.skills import prompt_section
-from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
+from wren.tools import Tool, ToolContext, ToolError, ToolOutput
 from wren.tools.mcp import McpTool
 from wren.tools.readonly import is_read_only_command
-from wren.tools.web import WEB_TOOLS
 
 if TYPE_CHECKING:
     from wren.agent.loop import Agent, AgentUI
@@ -55,9 +54,6 @@ SUBAGENTS_DIR = SESSIONS_DIR / "subagents"
 # Guards the parent's accounting when subagents finish on several threads.
 _BOOKKEEPING = threading.Lock()
 DEFAULT_MAX_TURNS = 30
-# Never given to a subagent: no nesting, and the task list and plan approval
-# belong to the conversation with the user.
-EXCLUDED_TOOLS = frozenset({"task", "todo_write", "exit_plan_mode", "schedule"})
 
 SUBAGENT_BASE = """\
 You are a subagent of Wren, a coding agent working in the user's terminal. The main agent \
@@ -105,7 +101,7 @@ class AgentType:
     source: str = "built-in"
 
     def allows(self, tool: str) -> bool:
-        return tool not in EXCLUDED_TOOLS and (self.tools is None or tool in self.tools)
+        return self.tools is None or tool in self.tools
 
 
 def builtin_agent_types() -> dict[str, AgentType]:
@@ -343,6 +339,7 @@ class ProgressUI:
 
 class TaskTool(Tool):
     name = "task"
+    subagents = "never"  # no nesting
     description = (
         "Delegate a self-contained task to a subagent. It works in its own context with its own "
         "tools and returns only its final report, so its searching and reading don't fill "
@@ -419,11 +416,8 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
                              f"using {parent.model.name}")
 
     skills = parent.skills if kind.allows("skill") else {}
-    # MCP and web tools, configured for the session, as the parent has them. They reach
-    # outside the machine (and MCP tools can do anything), so read-only subagents don't get them.
-    mcp = [] if kind.read_only else [t for t in parent.tools.values()
-                                     if (isinstance(t, McpTool) or t.name in WEB_TOOLS)
-                                     and kind.allows(t.name)]
+    tools = subagent_tools(parent, kind)
+    mcp = any(isinstance(t, McpTool) for t in tools)
     progress = parent._progress  # set when running alongside other subagents
     ui = progress.child_ui(f"{description} ({kind.name})") if progress else SubagentUI(parent.ui)
     log = _log(parent)
@@ -435,7 +429,7 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         ui,
         permissions=parent.permissions,
         log=log,
-        tools=[t for t in default_tools() if kind.allows(t.name)] + mcp,
+        tools=tools,
         max_turns=kind.max_turns,
         skills=skills,
         system=build_system_prompt(parent.ctx.cwd, prompt_section(skills),
@@ -476,6 +470,14 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
     partial = f"\n\nIts last message:\n{report}" if report.strip() else ""
     return ToolOutput(f"The subagent stopped before finishing: {why}.{partial}", is_error=True,
                       summary=f"{kind.name} stopped: {why} · {stats}")
+
+
+def subagent_tools(parent: Agent, kind: AgentType) -> list[Tool]:
+    """The parent's tools a subagent of this type gets (see Tool.subagents). Its skill
+    tool, if any, is made from the skills it is given."""
+    return [t for t in parent.tools.values()
+            if t.subagents != "never" and not (t.subagents == "writers" and kind.read_only)
+            and kind.allows(t.name)]
 
 
 def _log(parent: Agent) -> SessionLog:

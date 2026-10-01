@@ -12,6 +12,7 @@ class ScheduleTool(Tool):
     """Scheduled runs: prompts that run headless on a cron schedule, in this
     directory. Creating or deleting one always asks the user, whatever the
     permission mode, since a job keeps running while nobody watches."""
+    subagents = "never"
 
     name = "schedule"
     description = (

@@ -36,7 +36,7 @@ from wren.memory import Memories
 from wren.settings import Settings
 from wren.skills import discover
 from wren.skills import expand as expand_skill
-from wren.tools import ToolContext
+from wren.tools import Tool, ToolContext
 from wren.tools.schedule import ScheduleTool
 from wren.tools.web import SearchConfig, WebFetch, WebSearch
 
@@ -84,16 +84,11 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
             agent_types={} if args.no_subagents else agent_types,
             memory=memories if (not args.prompt if args.memory is None else args.memory) else None,
             mcp=mcp,
+            extra_tools=extra_tools(args, config),
+            auto_memory=settings.memory_auto,
+            time_limit=args.time_limit,
+            resolve_model=lambda name: _provider_for(config.model(name)),
         )
-        agent.auto_memory = settings.memory_auto
-        if args.time_limit:
-            agent.set_time_limit(args.time_limit)
-        if not args.prompt:  # scheduled jobs are made in sessions, not by (scheduled) headless runs
-            agent.tools["schedule"] = ScheduleTool()
-        if config.web.enabled and not args.no_web:
-            search = SearchConfig(config.web.search, config.web.api_key_env)
-            agent.tools.update({"web_search": WebSearch(search), "web_fetch": WebFetch()})
-        agent.resolve_model = lambda name: _provider_for(config.model(name))
         if state:
             agent.restore(state)
             ui.render_history(agent.messages, agent.tools, agent.ctx)
@@ -108,6 +103,16 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
         raise
     agent.start_session("resume" if state else "startup")
     return Session(agent, config, memories, mcp)
+
+
+def extra_tools(args: argparse.Namespace, config: Config) -> list[Tool]:
+    """Tools beyond the defaults, as the command line and config allow."""
+    tools: list[Tool] = []
+    if not args.prompt:  # scheduled jobs are made in sessions, not by (scheduled) headless runs
+        tools.append(ScheduleTool())
+    if config.web.enabled and not args.no_web:
+        tools += [WebSearch(SearchConfig(config.web.search, config.web.api_key_env)), WebFetch()]
+    return tools
 
 
 def choose_model(args: argparse.Namespace, config: Config, state: SessionState | None,

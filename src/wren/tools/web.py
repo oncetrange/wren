@@ -162,6 +162,7 @@ def _strip_tags(text: str) -> str:
 
 
 class WebSearch(Tool):
+    subagents = "writers"
     name = "web_search"
     description = (
         "Search the web. Returns titles, URLs and snippets; read a page with web_fetch. Use it for "
@@ -198,6 +199,7 @@ class WebSearch(Tool):
 
 
 class WebFetch(Tool):
+    subagents = "writers"
     name = "web_fetch"
     description = (
         f"Fetch a web page (http or https) and return its text; HTML is reduced to readable text "
