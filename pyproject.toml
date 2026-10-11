@@ -51,7 +51,7 @@ path = "src/wren/__init__.py"  # the one place the version is written
 packages = ["src/wren"]  # not found by name: the project is wren-agent
 
 [tool.hatch.build.targets.sdist]
-exclude = [".wren", ".github", "uv.lock", "examples"]
+exclude = [".wren", ".github", "uv.lock", "examples", "bench"]
 
 [dependency-groups]
 dev = [
@@ -62,6 +62,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # tests import bench/ as well as src/wren
 
 [tool.ruff]
 line-length = 110
