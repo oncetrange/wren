@@ -3,6 +3,8 @@ that sends prompts or runs slash commands (see commands.py)."""
 
 from __future__ import annotations
 
+import sys
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -19,6 +21,7 @@ from wren.cli.completion import STYLES as MENU_STYLES
 from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
 from wren.cli.terminal import distinguish_shift_enter, register_shift_enter
+from wren.cli.typeahead import TypeAhead
 from wren.cli.ui import RichUI
 from wren.config import CONFIG_DIR, Config
 from wren.llm.types import LLMError
@@ -85,10 +88,24 @@ class Repl:
                 except (KeyboardInterrupt, EOFError):
                     self.console.print("[dim]cancelled[/]")
                 continue
-            run_prompt(self.agent, text, commands.BUILTIN_NAMES)
+            self.run(text)
             self.usage_line()
             if self.settings.suggestions and self.agent.status == "done":
                 self.predictor.start()
+
+    def run(self, text: str) -> None:
+        """Send a prompt. Meanwhile, what the user types goes to the agent on Enter;
+        whatever didn't reach the model comes back in the next input line."""
+        if not (self.ui.interactive and sys.stdin.isatty()):
+            run_prompt(self.agent, text, commands.BUILTIN_NAMES)
+            return
+        ahead = TypeAhead(self.agent.steer)
+        with self.ui.typing_ahead(ahead, lambda: self.agent.queued):
+            run_prompt(self.agent, text, commands.BUILTIN_NAMES)
+        left = self.agent.unsent() + ([ahead.draft.strip()] if ahead.draft.strip() else [])
+        if left:
+            self.prefill = "\n".join(left)
+            self.console.print("[dim]not sent to wren; it's back in the input line[/]")
 
     def command(self, text: str) -> str | None:
         name, _, arg = text.partition(" ")

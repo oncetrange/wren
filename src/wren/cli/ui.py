@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.padding import Padding
@@ -24,6 +24,7 @@ from wren.agent.ui import AgentUI
 from wren.cli.markdown import MarkdownStream
 from wren.cli.pickers import ask_text, pick
 from wren.cli.terminal import distinguish_shift_enter
+from wren.cli.typeahead import TypeAhead
 from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from wren.tools import Tool, ToolContext, ToolOutput
 
@@ -46,6 +47,23 @@ class RichUI(AgentUI):
         self._previewed = False
         # Inside a subagent's run: its tool calls print as compact, indented lines.
         self._depth = 0
+        # While a prompt runs in the REPL: what the user is typing meanwhile, and
+        # how many messages are waiting for the model (see typing_ahead).
+        self.typeahead: TypeAhead | None = None
+        self.queued: Callable[[], int] = lambda: 0
+
+    @contextlib.contextmanager
+    def typing_ahead(self, ahead: TypeAhead, queued: Callable[[], int]) -> Iterator[None]:
+        self.typeahead, self.queued = ahead, queued
+        try:
+            with ahead:
+                yield
+        finally:
+            self.typeahead, self.queued = None, lambda: 0
+
+    def _keyboard(self) -> contextlib.AbstractContextManager[None]:
+        """Around anything that reads the keyboard while a prompt runs."""
+        return self.typeahead.paused() if self.typeahead else contextlib.nullcontext()
 
     @contextlib.contextmanager
     def nested(self) -> Iterator[None]:
@@ -91,8 +109,11 @@ class RichUI(AgentUI):
             line.stylize("dim")
         line.truncate(self.console.width * 2 - 4 * self._depth, overflow="ellipsis")
         self.console.print(self._indent(line))
+        if self.typeahead is not None and not self._depth:
+            self._spin(Text(f"Running {name}…", style="dim"))
 
     def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
+        self._stop_spin()
         if preview:
             self._print_diff(preview)
             self._previewed = True
@@ -111,7 +132,7 @@ class RichUI(AgentUI):
             f"· [green]p[/]: always in this project · [red]n[/]o · or type what to do instead"
         )
         try:
-            with distinguish_shift_enter():
+            with self._keyboard(), distinguish_shift_enter():
                 answer = ask_text().strip()
         except EOFError:
             answer = "n"
@@ -132,20 +153,22 @@ class RichUI(AgentUI):
                                  title_align="left", border_style="cyan", padding=(0, 1)))
         if not self.interactive:
             return None
-        choice = pick("Approve this plan?", [
-            ("accept_edits", "Yes, and auto-accept edits"),
-            ("ask", "Yes, and ask before each edit"),
-            ("revise", "No, keep planning"),
-        ], default="accept_edits")
-        if choice in ("accept_edits", "ask"):
-            return PlanDecision(True, mode=choice)
-        if choice == "revise":
-            self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
-            with distinguish_shift_enter():
-                return PlanDecision(False, feedback=ask_text().strip())
-        return PlanDecision(False)
+        with self._keyboard():
+            choice = pick("Approve this plan?", [
+                ("accept_edits", "Yes, and auto-accept edits"),
+                ("ask", "Yes, and ask before each edit"),
+                ("revise", "No, keep planning"),
+            ], default="accept_edits")
+            if choice in ("accept_edits", "ask"):
+                return PlanDecision(True, mode=choice)
+            if choice == "revise":
+                self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
+                with distinguish_shift_enter():
+                    return PlanDecision(False, feedback=ask_text().strip())
+            return PlanDecision(False)
 
     def tool_finished(self, name: str, output: ToolOutput) -> None:
+        self._stop_spin()
         style = "red" if output.is_error else "dim"
         summary = output.summary or ("error" if output.is_error else "done")
         # A subagent's successful calls are one line each; errors and diffs still show.
@@ -215,6 +238,13 @@ class RichUI(AgentUI):
 
     # --- misc --------------------------------------------------------------
 
+    def steered(self, text: str) -> None:
+        self._stop_spin()
+        self._end_stream()
+        line = Text("› " + text, style="bold")
+        line.append("  (sent while wren worked)", style="dim")
+        self.console.print(line)
+
     def attached(self, label: str, summary: str) -> None:
         """A file @-mentioned in the prompt, and what was attached."""
         style = "yellow" if summary.startswith("not attached") else "dim"
@@ -275,13 +305,35 @@ class RichUI(AgentUI):
     def _spin(self, message: str | Text) -> None:
         if not self.console.is_terminal:
             return
+        shown = _WithTyping(self, message) if self.typeahead is not None else message
         if self._status is None:
-            self._status = self.console.status(message, spinner="dots")
+            self._status = self.console.status(shown, spinner="dots")
             self._status.start()
         else:
-            self._status.update(message)
+            self._status.update(shown)
+
+    def typing_lines(self) -> list[Text]:
+        """Under the spinner while a prompt runs: messages waiting, and the one being typed."""
+        lines = []
+        if n := self.queued():
+            lines.append(Text(f"⏎ {n} message{'s' if n != 1 else ''} for wren after this step",
+                              style="dim"))
+        if self.typeahead is not None and self.typeahead.draft:
+            lines.append(Text("› " + self.typeahead.draft + "▏", style="bold"))
+        return lines
 
     def _stop_spin(self) -> None:
         if self._status is not None:
             self._status.stop()
             self._status = None
+
+
+class _WithTyping:
+    """A spinner message re-rendered on every refresh, so what is typed shows at once."""
+
+    def __init__(self, ui: RichUI, message: str | Text):
+        self.ui, self.message = ui, Text(message) if isinstance(message, str) else message
+
+    def __rich__(self) -> RenderableType:
+        lines = self.ui.typing_lines()
+        return Group(self.message, *lines) if lines else self.message
