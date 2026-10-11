@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import os
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -181,6 +184,23 @@ class RichUI(AgentUI):
         if output.is_error and name == "bash":
             tail = output.content.strip().splitlines()[-8:]
             self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4 + 4 * self._depth)))
+
+    def print_patch(self, patch: str) -> None:
+        """A whole `git diff --stat --patch`, colored, through a pager the way git
+        does it (`$PAGER` or less, which prints it as is when it fits the screen)."""
+        stat, sep, body = patch.partition("\ndiff --git ")
+        rendered: list[RenderableType] = [Text(stat.rstrip("\n"), style="bold")]
+        if sep:
+            rendered.append(Syntax("diff --git " + body.rstrip("\n"), "diff", theme=self.code_theme))
+        pager = os.environ.get("PAGER") or ("less" if shutil.which("less") else "")
+        if not (self.interactive and self.console.is_terminal and pager):
+            self.console.print(*rendered)
+            return
+        with self.console.capture() as captured:
+            self.console.print(*rendered)
+        env = {**os.environ, "LESS": os.environ.get("LESS", "FRX")}
+        with contextlib.suppress(OSError):
+            subprocess.run(pager, shell=True, input=captured.get(), text=True, env=env, check=False)
 
     def print_todos_text(self, text: str) -> None:
         styled = Text()

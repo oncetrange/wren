@@ -392,6 +392,13 @@ class Agent:
             return []
         return self.checkpoints.changed_files(point.commit)
 
+    def diff(self, point: RestorePoint, paths: tuple[str, ...] = ()) -> str:
+        """Changes to files since the snapshot taken before `point`, as a patch.
+        Raises CheckpointError."""
+        if point.commit is None or not (self.checkpoints and self.checkpoints.enabled):
+            return ""
+        return self.checkpoints.diff(point.commit, paths)
+
     def rewind(self, index: int) -> RestorePoint:
         """Go back to `self.conv.timeline[index]`: files and conversation as
         before that turn, or the history as before that compaction.

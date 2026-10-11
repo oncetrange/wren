@@ -79,3 +79,17 @@ def test_restore_in_empty_project(tmp_path: Path):
     cps.restore(snap)
     assert list(empty.iterdir()) == []
     cps.restore(cps.snapshot("again"))  # nothing tracked on either side
+
+
+def test_diff_against_a_snapshot(project: Path, tmp_path: Path):
+    cps = Checkpoints(project, root=tmp_path / "shadow")
+    first = cps.snapshot("before")
+    assert cps.diff(first) == ""
+    (project / "keep.py").write_text("v2\n")
+    (project / "gone.py").unlink()
+    (project / "new.py").write_text("hello\n")
+    patch = cps.diff(first)
+    assert "3 files changed" in patch
+    assert "-v1\n+v2" in patch and "-delete me" in patch and "+hello" in patch
+    only = cps.diff(first, ("keep.py",))
+    assert "1 file changed" in only and "new.py" not in only

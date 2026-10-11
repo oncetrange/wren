@@ -3,7 +3,7 @@
 import io
 
 import pytest
-from conftest import ScriptedProvider, reply
+from conftest import ScriptedProvider, call, reply
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -11,6 +11,7 @@ from rich.console import Console
 
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
+from wren.checkpoint import Checkpoints
 from wren.cli import commands, repl
 from wren.cli.repl import Repl
 from wren.cli.ui import RichUI
@@ -68,3 +69,25 @@ def test_registry():
 def test_commands_do_not_reach_the_model(session):
     _, out, agent = session("/cost\r/exit\r")
     assert "input 0" in out and not agent.provider.requests
+
+
+def test_diff_shows_what_changed_since_the_last_prompt_or_the_session(ctx, tmp_path_factory, monkeypatch):
+    tmp_path = tmp_path_factory.mktemp("home")   # outside the project, whose files are compared
+    monkeypatch.setattr(repl, "CONFIG_DIR", tmp_path)
+    (ctx.cwd / "a.txt").write_text("one\n")
+    out = io.StringIO()
+    ui = RichUI(Console(file=out, width=120, color_system=None), interactive=True)
+    turns = [call("write_file", "t1", path="b.txt", content="new\n"), reply("made b"),
+             call("bash", "t2", command="echo two > a.txt"), reply("changed a")]
+    agent = Agent(ScriptedProvider(turns), ModelConfig(name="fake", model="fake-1"), ctx, ui,
+                  Permissions(mode="auto"), checkpoints=Checkpoints(ctx.cwd, root=tmp_path / "shadow"))
+    r = Repl(agent, ui, load_config(tmp_path / "none.toml"), Settings(suggestions=False))
+    with create_pipe_input() as inp, create_app_session(input=inp, output=DummyOutput()):
+        inp.send_text("/diff\rmake b\rchange a\r/diff\r/diff all\r/diff all b.txt\r/exit\r")
+        r.loop()
+    text = out.getvalue()
+    assert "no prompt sent yet" in text
+    last, whole, narrowed = text.split("changes since")[1:4]
+    assert "before: change a" in last and "+two" in last and "b.txt" not in last
+    assert "start of this session" in whole and "2 files changed" in whole
+    assert "1 file changed" in narrowed and "a.txt" not in narrowed
