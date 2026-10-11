@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
+import httpx2
 import openai
 
 from wren.config import ModelConfig
@@ -45,6 +46,7 @@ from wren.llm.types import (
     ToolSpec,
     ToolUseBlock,
     Usage,
+    retryable_status,
 )
 
 OPENAI_URL = "https://api.openai.com/v1"
@@ -94,9 +96,12 @@ class OpenAIProvider(Provider):
             for chunk in self.client.chat.completions.create(**params):
                 yield from acc.add(chunk)
         except openai.APIStatusError as e:
-            raise LLMError(f"{self.cfg.name}: HTTP {e.status_code}: {e.message}") from e
+            raise LLMError(f"{self.cfg.name}: HTTP {e.status_code}: {e.message}",
+                           retryable=retryable_status(e.status_code)) from e
         except openai.APIConnectionError as e:
-            raise LLMError(f"{self.cfg.name}: connection failed: {e}") from e
+            raise LLMError(f"{self.cfg.name}: connection failed: {e}", retryable=True) from e
+        except httpx2.TransportError as e:  # dropped or timed out mid-stream, after the SDK let go
+            raise LLMError(f"{self.cfg.name}: connection lost: {e!r}", retryable=True) from e
         yield Completed(acc.response())
 
 

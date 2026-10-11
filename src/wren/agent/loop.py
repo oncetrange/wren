@@ -86,6 +86,9 @@ MAX_STOP_BLOCKS = 3
 MAX_CUT_OFFS = 3
 # Most tool calls (read-only subagents) run at the same time.
 MAX_CONCURRENT = 4
+# Seconds to wait before each retry of a model request that failed in a way
+# that may pass; on top of the SDK's own retries, which stop once a stream has begun.
+MODEL_RETRY_DELAYS = (5, 15, 45, 90)
 
 
 class Agent:
@@ -339,8 +342,8 @@ class Agent:
         self.ui.notice(f"compacting conversation (~{before // 1000}k tokens)…")
         self.ui.model_started()
         try:
-            summary, usage = summarize(self.provider, self.system, span,
-                                       [t.spec() for t in self.tools.values()])
+            summary, usage = self._retrying(lambda: summarize(
+                self.provider, self.system, span, [t.spec() for t in self.tools.values()]))
         finally:
             self.ui.model_finished()
         self.record_side_usage(usage, purpose="compaction")
@@ -504,6 +507,28 @@ class Agent:
     # --- model -------------------------------------------------------------
 
     def _call_model(self) -> Response:
+        return self._retrying(self._stream_model)
+
+    def _retrying[T](self, request: Callable[[], T]) -> T:
+        """Run a model request, retrying after a pause when it fails in a way that
+        may pass (a connection dropped or timed out mid-stream, an overloaded
+        server) rather than ending a run that may be hours in."""
+        for delay in MODEL_RETRY_DELAYS:
+            try:
+                return request()
+            except LLMError as e:
+                if not e.retryable:
+                    raise
+                self.log.record("error", error=str(e), retry_in=delay)
+                self.ui.notice(f"{e}; retrying in {delay}s")
+                if self.cancel is not None:
+                    self.cancel.wait(delay)
+                else:
+                    time.sleep(delay)
+                self._check_cancel()
+        return request()
+
+    def _stream_model(self) -> Response:
         self.ui.model_started()
         response: Response | None = None
         try:
@@ -525,7 +550,7 @@ class Agent:
         finally:
             self.ui.model_finished()
         if response is None:
-            raise LLMError("stream ended without a final message")
+            raise LLMError("stream ended without a final message", retryable=True)
 
         self.usage += response.usage
         self.turns += 1
