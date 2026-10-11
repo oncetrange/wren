@@ -1,0 +1,18 @@
+{
+ "_doc": "Settings for bench/evolve.py. A harness is a wren commit plus the agent kwargs it runs with. S is the mean of `metric` over tasks x k trials (a trial without a grade counts 0); C is mean policy tokens (input + output) per trial. delta: noise band, null = use bench/runs/calibration.json. Acceptance follows RRSI Algorithm 2: S' >= S* - delta; a gain above delta may grow tokens by at most beta0 + beta1 * gain (beta1 = 5: one more passing trial of 20 buys 25% more tokens); inside the band, w_s * gain - w_c * token change must be > 0 (w_s = 0: only a token saving gets in).",
+ "dataset": "deep-swe/tasks",
+ "env": "modal",
+ "model": "qwen3.8-flash",
+ "agent_env": ["PLAN_API_KEY"],
+ "agent_kwargs": {"time_limit": 170, "max_turns": 400},
+ "k": 2,
+ "n_concurrent": 10,
+ "metric": "reward",
+ "invalid_missing_frac": 0.2,
+ "delta": null,
+ "delta_z": 2.0,
+ "beta0": 0.10,
+ "beta1": 5.0,
+ "w_s": 0.0,
+ "w_c": 15.0
+}

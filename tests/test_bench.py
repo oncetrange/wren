@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from bench import evolve
+
+CFG = {"beta0": 0.10, "beta1": 5.0, "w_s": 0.0, "w_c": 15.0}
+
+
+def write_trial(job: Path, name: str, task: str, reward: float | None, tokens: int = 1000,
+                version: str = "abc", kwargs: dict | None = None) -> None:
+    d = job / name
+    d.mkdir(parents=True)
+    result = {
+        "task_id": {"path": f"deep-swe/tasks/{task}"},
+        "config": {"agent": {"model_name": "m", "kwargs": {"version": version, **(kwargs or {})}}},
+        "agent_result": {"n_input_tokens": tokens, "n_output_tokens": 0},
+        "verifier_result": None if reward is None else {"rewards": {"reward": reward, "partial": 0.5}},
+        "exception_info": None if reward is not None else {"exception_type": "RuntimeError"},
+    }
+    (d / "result.json").write_text(json.dumps(result))
+
+
+def test_collect_counts_missing_trials_as_zero(tmp_path: Path):
+    job = tmp_path / "job"
+    write_trial(job, "a__1", "a", 1)
+    write_trial(job, "a__2", "a", 1)
+    write_trial(job, "b__1", "b", None)          # crashed before grading
+    write_trial(job, "x__1", "x", 1)             # not in the split: ignored
+    per_task, harness = evolve.collect([job], ["a", "b", "c"])
+    ev = {"k": 2, "per_task": per_task}
+    agg = evolve.aggregate(ev, "reward")
+    # a: 1, 1 | b: ungraded + an absent slot | c: never ran -> 6 slots, 2 passes
+    assert agg["S"] == pytest.approx(2 / 6)
+    assert agg["missing"] == 4 and agg["n"] == 6
+    assert harness == {"sha": "abc", "kwargs": {}, "model": "m"}
+    assert evolve.aggregate(ev, "partial")["S"] == pytest.approx(1.0 / 6)
+
+
+def test_collect_refuses_mixed_harnesses(tmp_path: Path):
+    job = tmp_path / "job"
+    write_trial(job, "a__1", "a", 1, kwargs={"mask_at": 1})
+    write_trial(job, "a__2", "a", 1, kwargs={"mask_at": 2})
+    with pytest.raises(SystemExit):
+        evolve.collect([job], ["a"])
+
+
+def test_judge_floor_cost_rule_and_band():
+    inc = {"S": 0.50, "C": 100.0}
+    # A real gain pays for its tokens: +0.2 buys up to 10% + 5 * 0.2 = 110%.
+    assert evolve.judge({"S": 0.70, "C": 200.0}, inc, 0.50, 0.1, CFG)["admissible"]
+    assert not evolve.judge({"S": 0.70, "C": 220.0}, inc, 0.50, 0.1, CFG)["admissible"]
+    # Inside the band only a token saving gets in (w_s = 0).
+    assert evolve.judge({"S": 0.55, "C": 90.0}, inc, 0.50, 0.1, CFG)["admissible"]
+    assert not evolve.judge({"S": 0.55, "C": 100.0}, inc, 0.50, 0.1, CFG)["admissible"]
+    # Never below the best incumbent so far minus the band, however cheap.
+    v = evolve.judge({"S": 0.45, "C": 10.0}, inc, 0.60, 0.1, CFG)
+    assert not v["admissible"] and "floor" in v["reason"]
+
+
+def test_calibrate_from_repeated_and_single_measurements():
+    def ev(name: str, rewards: dict[str, list[float]]) -> dict:
+        return {"name": name, "k": 2, "per_task": {
+            t: [{"scores": {"reward": r}, "tokens": 1, "exception": None} for r in rs]
+            for t, rs in rewards.items()}}
+    a = ev("a", {"t1": [1, 0], "t2": [1, 1]})
+    b = ev("b", {"t1": [0, 0], "t2": [1, 1]})
+    cal = evolve.calibrate([a, b], "reward", z=2.0)
+    assert cal["method"] == "repeated measurements"
+    assert cal["S_per_eval"] == [0.75, 0.5]
+    assert cal["delta"] > 0
+    # One coin-flip task of two: the bootstrap's plug-in variance (0.25 per trial)
+    # is corrected to the unbiased 0.5, so sd_null = sqrt(2) * sqrt(0.5 / 2) / 2.
+    flip = ev("f", {"t1": [1, 0], "t2": [1, 1]})
+    assert evolve.calibrate([flip], "reward", z=1.0)["sd_null"] == pytest.approx(0.3536, abs=0.01)
+    # Tasks that always pass or always fail carry no trial noise.
+    steady = ev("s", {"t1": [1, 1], "t2": [0, 0]})
+    assert evolve.calibrate([steady], "reward", z=2.0)["delta"] == 0
