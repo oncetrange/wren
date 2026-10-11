@@ -30,10 +30,17 @@ list with todo_write. Otherwise continue with the next one."""
 
 FINAL_CHECK = """Before you finish, re-read the user's request and check that every explicit \
 instruction in it is satisfied: for example git operations they asked for (branch, commit), \
-tests to run, or where and in what form to deliver the work. Also remove scratch files and \
-build outputs you created that are not part of the requested change (and make sure none of \
-them were committed). Do whatever is missing. If everything is done, reply with your final \
-summary."""
+tests to run, or where and in what form to deliver the work. If you changed code after you \
+last ran the project's own tests, run them again now, the existing ones too and the way the \
+project runs them (see its CI configuration or test scripts), not only the tests you wrote or a \
+copy elsewhere; fix what broke. Also remove scratch files and build outputs you created that \
+are not part of the requested change (and make sure none of them were committed). Do whatever \
+is missing. If everything is done, reply with your final summary."""
+
+CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
+so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
+take the next step now with a tool call; if you were writing your final answer, finish it more \
+concisely."""
 
 TURN_BUDGET = """You have {left} model calls left before you are stopped. Wrap up: make \
 sure the work is saved the way the user asked (e.g. committed if they asked for a commit), \

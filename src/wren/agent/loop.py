@@ -36,6 +36,7 @@ from wren.agent.events import (
 )
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.plans import (
+    CUT_OFF,
     TIME_CHECK,
     TIME_UP,
     TURN_BUDGET,
@@ -61,6 +62,7 @@ from wren.llm.types import (
     Response,
     TextBlock,
     TextDelta,
+    ThinkingBlock,
     ThinkingDelta,
     ToolCallStarted,
     ToolResultBlock,
@@ -80,6 +82,8 @@ from wren.tools.skill import SkillTool
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 # How often stop handlers may keep the model going within one request.
 MAX_STOP_BLOCKS = 3
+# Responses in a row cut off at max_tokens without acting, before the run gives up.
+MAX_CUT_OFFS = 3
 # Most tool calls (read-only subagents) run at the same time.
 MAX_CONCURRENT = 4
 
@@ -214,7 +218,7 @@ class Agent:
         self.changed = warned = False
         self.failure_counts, self.failure_streak = {}, 0
         stopped_by: set[str] = set()
-        stop_blocks = 0
+        stop_blocks = cut_offs = 0
         try:
             verdicts = self.hooks.run("prompt", PromptSubmit(self, prompt))
             if blocked := denial(verdicts):
@@ -233,21 +237,39 @@ class Agent:
                 response = self._call_model()
                 if not response.message.content:
                     self.ui.notice("model returned an empty response")
+                    self.status = "empty_response"
                     return final_text
+                calls = response.message.tool_uses()
+                final_text = response.message.text() or final_text
+                cut_off = response.stop_reason == "max_tokens" and not calls
+                if cut_off:
+                    # Thinking cut off mid-way may lack its signature, which APIs reject when
+                    # it's sent back; a turn without tool calls doesn't need it.
+                    response.message.content = [b for b in response.message.content
+                                                if not isinstance(b, ThinkingBlock)] or \
+                        [TextBlock("[response cut off at the output limit]")]
                 self._append(response.message)
                 self._billed_upto = len(self.messages)
-                final_text = response.message.text() or final_text
 
-                calls = response.message.tool_uses()
                 if response.stop_reason == "refusal":
                     self.ui.notice("the model declined to continue")
                     self.status = "refusal"
                     self._abandon_pending(calls, "Not executed: the response was a refusal.")
                     return final_text
+                if cut_off:
+                    cut_offs += 1
+                    if cut_offs > MAX_CUT_OFFS:
+                        self.ui.notice(f"stopped: {cut_offs} responses in a row were cut off at the "
+                                       "max_tokens limit before acting")
+                        self.status = "max_tokens"
+                        return final_text
+                    self.ui.notice("response was cut off at the max_tokens limit; asking the model to go on")
+                    self.log.record("reminder", reason="cut_off", count=cut_offs)
+                    self._add_user([TextBlock(reminder(CUT_OFF))])
+                    continue
+                cut_offs = 0
                 if not calls:
-                    if response.stop_reason == "max_tokens":
-                        self.ui.notice("response was cut off at the max_tokens limit")
-                    elif stop_blocks < MAX_STOP_BLOCKS:
+                    if stop_blocks < MAX_STOP_BLOCKS:
                         blocks = [v for v in self.hooks.run("stop", Stop(self, final_text, stopped_by))
                                   if v.decision == "block"]
                         if blocks:
