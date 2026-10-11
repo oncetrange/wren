@@ -8,12 +8,23 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
 def text_turn(text: str) -> dict:
     return {"blocks": [{"type": "text", "text": text}], "stop_reason": "end_turn"}
+
+
+def stalled_turn(seconds: float) -> dict:
+    """Starts the stream, then goes quiet for `seconds` (a read timeout on the client)."""
+    return {"stall": seconds}
+
+
+def error_event_turn(kind: str = "overloaded_error") -> dict:
+    """Starts the stream, then sends an error event, as an overloaded server does."""
+    return {"error": kind}
 
 
 def tool_turn(name: str, input: dict, text: str = "") -> dict:
@@ -42,9 +53,11 @@ class FakeAnthropic:
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
                 self.end_headers()
-                for event in _events(turn, n):
+                for event in _failing_events(turn, n) if "blocks" not in turn else _events(turn, n):
                     self.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
-                self.wfile.flush()
+                    self.wfile.flush()
+                if "stall" in turn:
+                    time.sleep(turn["stall"])
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -56,6 +69,12 @@ class FakeAnthropic:
     def __exit__(self, *exc) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def _failing_events(turn: dict, n: int):
+    yield next(_events({"blocks": [], "stop_reason": "end_turn"}, n))  # message_start
+    if "error" in turn:
+        yield {"type": "error", "error": {"type": turn["error"], "message": "try again later"}}
 
 
 def _events(turn: dict, n: int):

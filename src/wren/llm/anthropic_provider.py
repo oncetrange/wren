@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import anthropic
+import httpx2
 
 from wren.config import ModelConfig
 from wren.llm.base import Provider
@@ -26,6 +27,7 @@ from wren.llm.types import (
     ToolSpec,
     ToolUseBlock,
     Usage,
+    retryable_status,
 )
 
 _CACHE = {"type": "ephemeral"}
@@ -83,9 +85,12 @@ class AnthropicProvider(Provider):
                         yield ToolCallStarted(event.content_block.name)
                 final = stream.get_final_message()
         except anthropic.APIStatusError as e:
-            raise LLMError(f"{self.cfg.name}: HTTP {e.status_code}: {e.message}") from e
+            raise LLMError(f"{self.cfg.name}: HTTP {e.status_code}: {e.message}",
+                           retryable=retryable_status(e.status_code)) from e
         except anthropic.APIConnectionError as e:
-            raise LLMError(f"{self.cfg.name}: connection failed: {e}") from e
+            raise LLMError(f"{self.cfg.name}: connection failed: {e}", retryable=True) from e
+        except httpx2.TransportError as e:  # dropped or timed out mid-stream, after the SDK let go
+            raise LLMError(f"{self.cfg.name}: connection lost: {e!r}", retryable=True) from e
         yield Completed(_to_response(final))
 
 

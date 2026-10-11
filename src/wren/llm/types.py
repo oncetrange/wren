@@ -148,4 +148,16 @@ StreamEvent = TextDelta | ThinkingDelta | ToolCallStarted | Completed
 
 
 class LLMError(Exception):
-    """A provider request failed after the SDK's own retries."""
+    """A provider request failed after the SDK's own retries. `retryable` marks
+    failures that sending the same request again can fix: a dropped or timed-out
+    connection, an overloaded or failing server."""
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def retryable_status(status: int) -> bool:
+    """HTTP statuses worth another try. 200 is an error event in the middle of
+    a stream (e.g. overloaded), whose request had already succeeded."""
+    return status in (200, 408, 409, 429) or status >= 500
