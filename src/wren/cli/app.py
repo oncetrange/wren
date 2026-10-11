@@ -19,7 +19,7 @@ from rich.markup import escape
 from wren import mentions
 from wren.agent import shell_hooks
 from wren.agent.loop import Agent
-from wren.agent.permissions import Mode, Permissions
+from wren.agent.permissions import Mode, Permissions, load_project_rules, project_rules_file
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.agent.subagents import discover_agent_types
 from wren.checkpoint import Checkpoints
@@ -75,7 +75,7 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
             model,
             ToolContext(cwd=cwd),
             ui,
-            permissions=Permissions(mode=permission_mode(args), allow_auto=permission_mode(args) == "auto"),
+            permissions=permissions(args, config, cwd),
             log=SessionLog(path=state.path) if state else SessionLog(),
             checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
             max_turns=args.max_turns,
@@ -103,6 +103,13 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
         raise
     agent.start_session("resume" if state else "startup")
     return Session(agent, config, memories, mcp)
+
+
+def permissions(args: argparse.Namespace, config: Config, cwd: Path) -> Permissions:
+    """The mode asked for, and the rules from the user config and saved for this project."""
+    mode, saved = permission_mode(args), project_rules_file(cwd)
+    return Permissions(mode=mode, allow_auto=mode == "auto", cwd=cwd, project_file=saved,
+                       rules=config.permissions + load_project_rules(saved))
 
 
 def extra_tools(args: argparse.Namespace, config: Config) -> list[Tool]:

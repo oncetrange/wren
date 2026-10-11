@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,6 +90,16 @@ class Tool(ABC):
         """Granularity of an "always allow" decision."""
         return self.name
 
+    def rule_names(self, args: dict[str, Any]) -> tuple[str, ...]:
+        """What a permission rule can call this tool: its name, and the prefix of
+        its "always allow" key (`edit` for both file-writing tools)."""
+        return (self.name, self.permission_key(args).split(":", 1)[0])
+
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        """Whether a rule's `:pattern` covers this call. `allow` asks on behalf of
+        an allow rule, which must not match more than it says."""
+        return False
+
     def always_confirm(self, args: dict[str, Any]) -> bool:
         """Ask the user before this call whatever the permission mode or hooks say
         (and never remember the answer). For calls with lasting effects, like
@@ -109,6 +120,23 @@ def _jobs() -> Jobs:
     from wren.tools.jobs import Jobs
 
     return Jobs()
+
+
+def wildcard(pattern: str, text: str) -> bool:
+    """`*` matches anything (`/` included); everything else is literal."""
+    regex = ".*".join(re.escape(part) for part in pattern.split("*"))
+    return re.fullmatch(regex, text, re.DOTALL) is not None
+
+
+def path_matches(pattern: str, path: str, cwd: Path) -> bool:
+    """A path rule: the pattern is matched against the path relative to the
+    working directory (absolute when outside it), and also as a file name."""
+    resolved = (cwd / Path(path).expanduser()).resolve()
+    try:
+        shown = str(resolved.relative_to(cwd.resolve()))
+    except ValueError:
+        shown = str(resolved)
+    return wildcard(pattern, shown) or ("/" not in pattern and wildcard(pattern, resolved.name))
 
 
 def validate_args(schema: dict[str, Any], args: Any) -> str | None:

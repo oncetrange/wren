@@ -21,6 +21,7 @@ from rich.rule import Rule
 
 from wren.agent import shell_hooks
 from wren.agent.events import EventName
+from wren.agent.permissions import LABELS
 from wren.agent.plans import reminder
 from wren.agent.remember import REMEMBER_REQUEST
 from wren.agent.session import SessionLog, list_sessions
@@ -422,6 +423,23 @@ def _hooks(repl: Repl, arg: str) -> None:
             else:
                 repl.console.print(f"  [dim]{reg.name} · built-in[/]")
     repl.console.print(f"[dim]user hooks: {CONFIG_FILE} · project hooks: {shell_hooks.PROJECT_HOOKS}[/]")
+
+
+@command("/permissions", "permission mode, rules and what this session always allows")
+def _permissions(repl: Repl, arg: str) -> None:
+    p = repl.agent.permissions
+    repl.console.print(f"[bold]mode[/] {LABELS[p.mode]} [dim](Shift+Tab switches)[/]")
+    for kind, rules in (("deny", p.rules.deny), ("ask", p.rules.ask), ("allow", p.rules.allow)):
+        if rules:
+            repl.console.print(f"[bold]{kind}[/]")
+            for rule in rules:
+                repl.console.print(f"  {escape(rule)}")
+    if session := sorted(p.allowed - set(p.rules.allow)):
+        repl.console.print("[bold]allowed for this session[/]")
+        for key in session:
+            repl.console.print(f"  {escape(key)}")
+    repl.console.print(f"[dim]rules: [permissions] in {CONFIG_FILE} · saved for this project: "
+                       f"{p.project_file}[/]")
 
 
 # --- settings ----------------------------------------------------------------------

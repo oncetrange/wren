@@ -29,10 +29,11 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 
 from wren import __version__
-from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput
+from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, wildcard
 
 WEB_TOOLS = frozenset({"web_search", "web_fetch"})
 MAX_CHARS = 20_000
@@ -223,6 +224,9 @@ class WebFetch(Tool):
 
     def permission_key(self, args: dict[str, Any]) -> str:
         return f"web_fetch:{urllib.parse.urlsplit(args.get('url', '')).hostname or ''}"
+
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        return wildcard(pattern, urllib.parse.urlsplit(args.get("url", "")).hostname or "")
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         url = args["url"].strip()

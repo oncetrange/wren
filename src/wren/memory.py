@@ -22,7 +22,7 @@ from typing import Literal
 
 import yaml
 
-from wren.config import CONFIG_DIR
+from wren.config import CONFIG_DIR, project_home
 from wren.frontmatter import FrontmatterError, read_frontmatter
 
 Scope = Literal["user", "project"]
@@ -56,8 +56,7 @@ class Memory:
 
 def project_dir(cwd: Path, home: Path | None = None) -> Path:
     """~/.wren/projects/<cwd with separators as dashes>/memory"""
-    slug = re.sub(r"[^A-Za-z0-9._-]", "-", str(cwd)).strip("-") or "root"
-    return (home or CONFIG_DIR) / "projects" / slug / "memory"
+    return project_home(cwd, home) / "memory"
 
 
 class MemoryStore:

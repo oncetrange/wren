@@ -108,7 +108,7 @@ class RichUI(AgentUI):
             scope = "this exact command"
         self.console.print(
             f"  [bold]Allow?[/] [green]y[/]es · [green]a[/]lways for [bold]{escape(scope)}[/] "
-            f"· [red]n[/]o · or type what to do instead"
+            f"· [green]p[/]: always in this project · [red]n[/]o · or type what to do instead"
         )
         try:
             with distinguish_shift_enter():
@@ -120,6 +120,8 @@ class RichUI(AgentUI):
                 return Decision(allow=True)
             case "a" | "always":
                 return Decision(allow=True, remember=True)
+            case "p" | "project":
+                return Decision(allow=True, remember=True, persist=True)
             case "n" | "no":
                 return Decision(allow=False)
         return Decision(allow=False, feedback=answer)
