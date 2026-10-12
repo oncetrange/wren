@@ -4,7 +4,7 @@ import threading
 
 from conftest import RecordingUI, reply
 
-from wren.agent import loop
+from wren.agent import tool_runner
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.agent.subagents import builtin_agent_types
@@ -89,16 +89,16 @@ def test_interrupt_stops_every_running_subagent(ctx, monkeypatch):
                 return
             yield from super().stream(system=system, messages=messages, tools=tools)
 
-    real_wait = loop.wait
+    real_wait = tool_runner.wait
 
     def interrupted_wait(futures):
         started.wait()
-        agent._progress.cancel.set()
+        agent.progress.cancel.set()
         agent.cancel_seen.set()
         real_wait(futures)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(loop, "wait", interrupted_wait)
+    monkeypatch.setattr(tool_runner, "wait", interrupted_wait)
     agent = make(ctx, Blocking([tasks(("explore", "a?"), ("explore", "b?"))], {"a?": [], "b?": []}))
     agent.cancel_seen = threading.Event()
     agent.run("go")

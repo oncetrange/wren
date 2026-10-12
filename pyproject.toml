@@ -11,7 +11,7 @@ authors = [
 ]
 keywords = ["coding agent", "llm", "cli", "anthropic", "openai", "mcp"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: MacOS",
@@ -36,6 +36,8 @@ dependencies = [
 Homepage = "https://github.com/oncetrange/wren"
 Repository = "https://github.com/oncetrange/wren"
 Issues = "https://github.com/oncetrange/wren/issues"
+Documentation = "https://github.com/oncetrange/wren/tree/main/docs"
+Changelog = "https://github.com/oncetrange/wren/blob/main/CHANGELOG.md"
 
 [project.scripts]
 wren = "wren.cli.main:main"
