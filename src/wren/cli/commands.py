@@ -492,8 +492,14 @@ def _sandbox(repl: Repl, arg: str) -> None:
         repl.console.print("[bold]sandbox[/] off: commands ask for approval as the mode says "
                            "[dim](/sandbox on)[/]")
         return
-    net = "any" if sandbox.network else ("localhost only" if sandbox.platform == "darwin"
-                                         else "none (localhost is each command's own)")
+    if sandbox.network:
+        net = "any"
+    elif sandbox.allowed_hosts:
+        net = "only " + ", ".join(sandbox.allowed_hosts) + ", through a proxy"
+        if (proxy := sandbox.running_proxy) is not None and (refused := proxy.refused_since(0)):
+            net += f"; refused lately: {', '.join(refused[-8:])}"
+    else:
+        net = "localhost only" if sandbox.platform == "darwin" else "none (localhost is each command's own)"
     repl.console.print("[bold]sandbox[/] on: commands run without asking; leaving the sandbox, or "
                        "file edits beyond it, ask [dim](/sandbox off)[/]")
     rows = [("writable", ", ".join(map(str, sandbox.writable()))),
