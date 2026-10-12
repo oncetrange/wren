@@ -61,7 +61,8 @@ class Jobs:
         self._next = 1
         atexit.register(self.kill_all)  # in case the session ends without cleaning up
 
-    def start(self, command: str, cwd: Path, env: dict[str, str], sandbox: Sandbox | None = None) -> Job:
+    def start(self, command: str, cwd: Path, env: dict[str, str], sandbox: Sandbox | None = None,
+              read_only: bool = False) -> Job:
         if self._dir is None:
             self._dir = Path(tempfile.mkdtemp(prefix="wren-jobs-"))
         job_id = f"bg{self._next}"
@@ -70,7 +71,7 @@ class Jobs:
         with log.open("wb") as out:
             argv = ["bash", "-c", command]
             if sandbox is not None:
-                argv, env = sandbox.wrap(argv, cwd), sandbox.env(env)
+                argv, env = sandbox.wrap(argv, cwd, read_only), sandbox.env(env)
             proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                     stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         job = Job(job_id, command, proc, log)
@@ -126,7 +127,7 @@ class Jobs:
 
 def start_in_background(command: str, ctx: ToolContext, env: dict[str, str],
                         sandbox: Sandbox | None = None) -> ToolOutput:
-    job = ctx.jobs.start(command, ctx.bash_cwd, env, sandbox)
+    job = ctx.jobs.start(command, ctx.bash_cwd, env, sandbox, ctx.read_only_shell)
     deadline = time.monotonic() + STARTUP_WAIT
     while job.running and time.monotonic() < deadline:
         time.sleep(0.1)

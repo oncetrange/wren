@@ -141,6 +141,9 @@ class WriteFile(Tool):
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
 
+    def write_paths(self, args: dict[str, Any]) -> list[str]:
+        return [args.get("path", "")]
+
     def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
         return path_matches(pattern, args.get("path", ""), cwd)
 
@@ -200,6 +203,9 @@ class EditFile(Tool):
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
+
+    def write_paths(self, args: dict[str, Any]) -> list[str]:
+        return [args.get("path", "")]
 
     def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
         return path_matches(pattern, args.get("path", ""), cwd)

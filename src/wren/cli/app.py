@@ -77,7 +77,7 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
             model,
             ToolContext(cwd=cwd, sandbox=sandbox),
             ui,
-            permissions=permissions(args, config, cwd, sandboxed=sandbox is not None),
+            permissions=permissions(args, config, cwd, sandbox),
             log=SessionLog(path=state.path) if state else SessionLog(),
             checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
             max_turns=args.max_turns,
@@ -107,11 +107,17 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
     return Session(agent, config, memories, mcp)
 
 
-def permissions(args: argparse.Namespace, config: Config, cwd: Path, sandboxed: bool = False) -> Permissions:
+def permissions(args: argparse.Namespace, config: Config, cwd: Path,
+                sandbox: Sandbox | None = None) -> Permissions:
     """The mode asked for, and the rules from the user config and saved for this project."""
     mode, saved = permission_mode(args), project_rules_file(cwd)
     return Permissions(mode=mode, allow_auto=mode == "auto", cwd=cwd, project_file=saved,
-                       rules=config.permissions + load_project_rules(saved), sandboxed=sandboxed)
+                       rules=config.permissions + load_project_rules(saved), sandbox=sandbox)
+
+
+def new_sandbox(config: Config, cwd: Path) -> Sandbox:
+    """A sandbox as configured; its check() says whether it works here."""
+    return Sandbox(cwd, config.sandbox, secret_env=tuple(m.key_env for m in config.models.values()))
 
 
 def make_sandbox(args: argparse.Namespace, config: Config, cwd: Path, ui: RichUI) -> Sandbox | None:
@@ -119,7 +125,7 @@ def make_sandbox(args: argparse.Namespace, config: Config, cwd: Path, ui: RichUI
     can't be had and nobody would approve commands instead (headless, or auto mode)."""
     if not (config.sandbox.enabled if args.sandbox is None else args.sandbox):
         return None
-    sandbox = Sandbox(cwd, config.sandbox, secret_env=tuple(m.key_env for m in config.models.values()))
+    sandbox = new_sandbox(config, cwd)
     try:
         sandbox.check()
     except SandboxUnavailable as e:

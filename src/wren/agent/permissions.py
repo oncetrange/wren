@@ -15,10 +15,13 @@ import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from wren.config import ConfigError, PermissionRules, parse_permission_rules, project_home
 from wren.tools.base import Tool, wildcard
+
+if TYPE_CHECKING:
+    from wren.sandbox import Sandbox
 
 Mode = Literal["ask", "accept_edits", "plan", "auto"]
 
@@ -62,8 +65,9 @@ class Permissions:
     cwd: Path = field(default_factory=Path.cwd)
     # Where "always allow in this project" answers are saved; None: not offered.
     project_file: Path | None = None
-    # Commands run in a sandbox: running one outside it always needs approval.
-    sandboxed: bool = False
+    # The sandbox shell commands run in, if any. Commands inside it need no
+    # approval; leaving it, or writing files beyond it, always does.
+    sandbox: Sandbox | None = None
 
     def blocked(self, tool: Tool, args: dict[str, Any]) -> str | None:
         """Why the call may not run at all, or None."""
@@ -76,16 +80,20 @@ class Permissions:
         return None
 
     def must_ask(self, tool: Tool, args: dict[str, Any]) -> bool:
-        """An ask rule covers the call: ask whatever the mode, and don't remember the answer."""
-        return self.matching("ask", tool, args) is not None
+        """Ask whatever the mode, and don't remember the answer: an ask rule covers
+        the call, or it writes a file the sandbox wouldn't let a command write."""
+        return self.matching("ask", tool, args) is not None or self.writes_outside(tool, args)
 
     def needs_approval(self, tool: Tool, args: dict[str, Any]) -> bool:
         if tool.read_only:
             return False
+        if self.escapes(tool, args):  # in every mode, auto too
+            return self.mode == "plan" or (self.key(tool, args) not in self.allowed
+                                           and self.matching("allow", tool, args) is None)
+        if self.runs_sandboxed(tool, args):  # in plan mode too, where the sandbox is read-only
+            return False
         if self.mode == "plan":
             return True
-        if self.escapes(tool, args):  # in every other mode, auto too
-            return self.key(tool, args) not in self.allowed and self.matching("allow", tool, args) is None
         if self.mode == "auto" or (self.mode == "accept_edits" and tool.edits_files):
             return False
         return (tool.permission_key(args) not in self.allowed
@@ -93,7 +101,19 @@ class Permissions:
 
     def escapes(self, tool: Tool, args: dict[str, Any]) -> bool:
         """The call asks to run outside the sandbox there is."""
-        return self.sandboxed and tool.escapes_sandbox(args)
+        return self.sandbox is not None and tool.escapes_sandbox(args)
+
+    def runs_sandboxed(self, tool: Tool, args: dict[str, Any]) -> bool:
+        return self.sandbox is not None and tool.sandboxed and not tool.escapes_sandbox(args)
+
+    def writes_outside(self, tool: Tool, args: dict[str, Any]) -> bool:
+        """A file tool writes where a sandboxed command couldn't: outside the
+        project, or into .git/hooks or .git/config."""
+        return self.sandbox is not None and any(
+            not self.sandbox.allows_write(self.cwd / Path(p).expanduser()) for p in tool.write_paths(args))
+
+    def leaves_sandbox(self, tool: Tool, args: dict[str, Any]) -> bool:
+        return self.escapes(tool, args) or self.writes_outside(tool, args)
 
     def key(self, tool: Tool, args: dict[str, Any]) -> str:
         """What "always allow" remembers for this call: `unsandboxed:<program>`

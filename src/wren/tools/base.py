@@ -27,6 +27,10 @@ class ToolContext:
     jobs: Jobs = field(default_factory=lambda: _jobs())
     # Where shell commands run, if sandboxed (see sandbox.py).
     sandbox: Sandbox | None = None
+    # Run them read-only: in plan mode and in read-only subagents (set by the agent).
+    read_only_shell: bool = False
+    # Whether the model may ask to run a command outside the sandbox (not in read-only subagents).
+    can_leave_sandbox: bool = True
 
     @property
     def bash_cwd(self) -> Path:
@@ -71,6 +75,8 @@ class Tool(ABC):
     read_only: ClassVar[bool] = False
     # Writes files in the workspace (as opposed to running arbitrary commands).
     edits_files: ClassVar[bool] = False
+    # Runs inside the sandbox, when there is one (shell commands).
+    sandboxed: ClassVar[bool] = False
     # Check arguments against input_schema before running (MCP tools leave it to their server).
     strict_args: ClassVar[bool] = True
     # Whether subagents get this tool (the parent's instance): "inherit" (if their
@@ -102,6 +108,10 @@ class Tool(ABC):
         """Whether a rule's `:pattern` covers this call. `allow` asks on behalf of
         an allow rule, which must not match more than it says."""
         return False
+
+    def write_paths(self, args: dict[str, Any]) -> list[str]:
+        """Files the call writes, as given (for tools that write files themselves)."""
+        return []
 
     def escapes_sandbox(self, args: dict[str, Any]) -> bool:
         """The call asks to run outside the sandbox (only meaningful while there is one)."""

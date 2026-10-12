@@ -97,11 +97,14 @@ OUT = {"command": "uv sync", "sandbox": False}
 IN = {"command": "uv sync"}
 
 
-def test_leaving_asks_in_every_mode_and_is_remembered_on_its_own():
+def test_leaving_asks_in_every_mode_and_is_remembered_on_its_own(tmp_path):
+    sb = make(tmp_path)
     for mode in ("ask", "accept_edits", "auto", "plan"):
-        assert Permissions(mode=mode, sandboxed=True).needs_approval(BASH, OUT), mode
-    p = Permissions(mode="ask", sandboxed=True)
-    p.remember(BASH, IN)
+        assert Permissions(mode=mode, sandbox=sb).needs_approval(BASH, OUT), mode
+    p = Permissions(mode="plan", sandbox=sb)
+    p.remember(BASH, OUT)
+    assert p.needs_approval(BASH, OUT)                        # plan mode ignores "always"
+    p = Permissions(mode="ask", sandbox=sb)
     assert not p.needs_approval(BASH, IN) and p.needs_approval(BASH, OUT)
     p.remember(BASH, OUT)
     assert p.key(BASH, OUT) == "unsandboxed:uv" and not p.needs_approval(BASH, {**OUT, "command": "uv lock"})
@@ -110,9 +113,9 @@ def test_leaving_asks_in_every_mode_and_is_remembered_on_its_own():
     assert not Permissions(mode="auto").needs_approval(BASH, OUT)
 
 
-def test_rules_for_leaving():
+def test_rules_for_leaving(tmp_path):
     rules = PermissionRules(allow=["bash:uv", "unsandboxed:git fetch"], deny=["bash:rm"])
-    p = Permissions(mode="ask", sandboxed=True, rules=rules)
+    p = Permissions(mode="ask", sandbox=make(tmp_path), rules=rules)
     assert p.needs_approval(BASH, OUT)                        # bash:uv only covers it inside
     assert not p.needs_approval(BASH, {"command": "git fetch origin", "sandbox": False})
     assert p.blocked(BASH, {"command": "rm -rf x", "sandbox": False})
@@ -186,7 +189,7 @@ def test_the_agent_leaves_the_sandbox_only_with_approval(tmp_path, model):
         reply("done"),
     ])
     ui = RecordingUI()
-    Agent(provider, model, ctx, ui, Permissions(mode="auto", sandboxed=True)).run("go")
+    Agent(provider, model, ctx, ui, Permissions(mode="auto", sandbox=sb)).run("go")
     assert [e[1] for e in ui.events if e[0] == "confirm"] == ["bash"]   # asked, even in auto
     assert (sb.cwd / ".git" / "hooks" / "post-commit").read_text() == "hook\n"
     agent = Agent(ScriptedProvider([]), model, ctx, ui)

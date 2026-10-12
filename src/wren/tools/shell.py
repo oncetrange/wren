@@ -24,6 +24,7 @@ _SEPARATORS = re.compile(r"&&|\|\||[;|&\n`()]|\$\(")
 
 class Bash(Tool):
     name = "bash"
+    sandboxed = True
     description = (
         "Run a shell command with bash in the working directory and return its combined "
         "stdout/stderr and exit code. The working directory persists between calls (cd sticks), "
@@ -51,8 +52,7 @@ class Bash(Tool):
     }
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
-        command = args.get("command", "")
-        return f"{command} (outside the sandbox)" if self.escapes_sandbox(args) and ctx.sandbox else command
+        return args.get("command", "")
 
     def escapes_sandbox(self, args: dict[str, Any]) -> bool:
         return args.get("sandbox") is False
@@ -101,7 +101,8 @@ class Bash(Tool):
             output = self._run(script, timeout, env, cwd_file, ctx, sandbox)
         finally:
             cwd_file.unlink(missing_ok=True)
-        if sandbox is not None and output.is_error and (hint := sandbox.blocked_hint(output.content)):
+        if sandbox is not None and output.is_error and (
+                hint := sandbox.blocked_hint(output.content, ctx.read_only_shell, ctx.can_leave_sandbox)):
             output.content += f"\n{hint}"
         return output
 
@@ -110,7 +111,7 @@ class Bash(Tool):
         start_dir = ctx.bash_cwd
         argv = ["bash", "-c", script]
         if sandbox is not None:
-            argv, env = sandbox.wrap(argv, start_dir), sandbox.env(env)
+            argv, env = sandbox.wrap(argv, start_dir, ctx.read_only_shell), sandbox.env(env)
         proc = subprocess.Popen(
             argv,
             cwd=start_dir,
