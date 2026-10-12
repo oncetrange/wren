@@ -115,7 +115,8 @@ class RichUI(AgentUI):
         if self.typeahead is not None and not self._depth:
             self._spin(Text(f"Running {name}…", style="dim"))
 
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
+    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None,
+                key: str | None = None) -> Decision:
         self._stop_spin()
         if preview:
             self._print_diff(preview)
@@ -126,7 +127,7 @@ class RichUI(AgentUI):
             self.console.print("  [yellow]denied (no terminal to ask for approval; use --yolo)[/]")
             return Decision(allow=False)
 
-        key = tool.permission_key(args)
+        key = key or tool.permission_key(args)
         scope = key.removeprefix("bash:") if key.startswith("bash:") else key
         if len(scope) > 40:
             scope = "this exact command"

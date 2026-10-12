@@ -45,8 +45,16 @@ or something is still broken, say so plainly.
 
 
 def build_system_prompt(cwd: Path, skills: str = "", base: str = BASE_PROMPT, memory: str = "",
-                        mcp: str = "") -> str:
-    parts = [base, _environment(cwd)] + [s for s in (skills, memory, mcp) if s]
+                        mcp: str = "", sandbox: str = "") -> str:
+    """`sandbox` describes the sandbox bash runs in, if any (Sandbox.describe)."""
+    parts = [base, _environment(cwd)]
+    if sandbox:
+        parts.append(f"# Sandbox\nShell commands run in a sandbox: {sandbox}. Work within it: put "
+                     "scratch files in the temp directory, and expect downloads (package installs, "
+                     "git fetch) to fail. When something the task needs is blocked, run that command "
+                     "again with sandbox: false; the user is asked to approve it, so say why in a "
+                     "sentence first.\n")
+    parts += [s for s in (skills, memory, mcp) if s]
     for path in (CONFIG_DIR / "WREN.md", *(cwd / name for name in PROJECT_FILES)):
         if path.is_file():
             parts.append(f"# Instructions from {path}\n\n{path.read_text().strip()}\n")

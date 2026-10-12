@@ -18,9 +18,12 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wren.tools.base import MAX_OUTPUT_CHARS, Tool, ToolContext, ToolError, ToolOutput
+
+if TYPE_CHECKING:
+    from wren.sandbox import Sandbox
 
 MAX_WAIT = 120  # seconds bash_output may wait
 STARTUP_WAIT = 1.5  # seconds to watch a new job, so immediate failures show up
@@ -58,14 +61,17 @@ class Jobs:
         self._next = 1
         atexit.register(self.kill_all)  # in case the session ends without cleaning up
 
-    def start(self, command: str, cwd: Path, env: dict[str, str]) -> Job:
+    def start(self, command: str, cwd: Path, env: dict[str, str], sandbox: Sandbox | None = None) -> Job:
         if self._dir is None:
             self._dir = Path(tempfile.mkdtemp(prefix="wren-jobs-"))
         job_id = f"bg{self._next}"
         self._next += 1
         log = self._dir / f"{job_id}.log"
         with log.open("wb") as out:
-            proc = subprocess.Popen(["bash", "-c", command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            argv = ["bash", "-c", command]
+            if sandbox is not None:
+                argv, env = sandbox.wrap(argv, cwd), sandbox.env(env)
+            proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                     stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         job = Job(job_id, command, proc, log)
         self.jobs[job_id] = job
@@ -118,8 +124,9 @@ class Jobs:
         return done
 
 
-def start_in_background(command: str, ctx: ToolContext, env: dict[str, str]) -> ToolOutput:
-    job = ctx.jobs.start(command, ctx.bash_cwd, env)
+def start_in_background(command: str, ctx: ToolContext, env: dict[str, str],
+                        sandbox: Sandbox | None = None) -> ToolOutput:
+    job = ctx.jobs.start(command, ctx.bash_cwd, env, sandbox)
     deadline = time.monotonic() + STARTUP_WAIT
     while job.running and time.monotonic() < deadline:
         time.sleep(0.1)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from wren.llm.types import ToolSpec
 
 if TYPE_CHECKING:
+    from wren.sandbox import Sandbox
     from wren.tools.jobs import Jobs
 
 MAX_OUTPUT_CHARS = 30_000
@@ -24,6 +25,8 @@ class ToolContext:
     shell_cwd: Path | None = None
     # Commands running in the background (see tools/jobs.py).
     jobs: Jobs = field(default_factory=lambda: _jobs())
+    # Where shell commands run, if sandboxed (see sandbox.py).
+    sandbox: Sandbox | None = None
 
     @property
     def bash_cwd(self) -> Path:
@@ -98,6 +101,10 @@ class Tool(ABC):
     def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
         """Whether a rule's `:pattern` covers this call. `allow` asks on behalf of
         an allow rule, which must not match more than it says."""
+        return False
+
+    def escapes_sandbox(self, args: dict[str, Any]) -> bool:
+        """The call asks to run outside the sandbox (only meaningful while there is one)."""
         return False
 
     def always_confirm(self, args: dict[str, Any]) -> bool:

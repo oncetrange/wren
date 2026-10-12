@@ -242,9 +242,10 @@ class SubagentUI(AgentUI):
         with self.ui.nested():
             self.ui.tool_started(name, label)
 
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
+    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None,
+                key: str | None = None) -> Decision:
         with self.ui.nested():
-            return self.ui.confirm(tool, args, label, preview)
+            return self.ui.confirm(tool, args, label, preview, key=key)
 
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         with self.ui.nested():
@@ -404,7 +405,7 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         provider,
         model,
         # Its own read tracking: a file it read hasn't been seen by the parent.
-        ToolContext(cwd=parent.ctx.cwd),
+        ToolContext(cwd=parent.ctx.cwd, sandbox=parent.ctx.sandbox),
         ui,
         permissions=parent.permissions,
         log=log,

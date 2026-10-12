@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from wren.llm.types import Usage
+from wren.sandbox import SandboxConfig
 
 CONFIG_DIR = Path(os.environ.get("WREN_HOME", Path.home() / ".wren"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
@@ -278,6 +279,7 @@ class Config:
     mcp: list[McpServerConfig] = field(default_factory=list)
     web: WebConfig = field(default_factory=WebConfig)
     permissions: PermissionRules = field(default_factory=PermissionRules)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
     def model(self, name: str | None = None) -> ModelConfig:
         """Look a model up by its config name, or by its model id with an
@@ -317,7 +319,22 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
         mcp=parse_mcp_servers(raw.get("mcp", {}), source="user"),
         web=_web_config(raw.get("web", {})),
         permissions=parse_permission_rules(raw.get("permissions", {}), source=str(path)),
+        sandbox=_sandbox_config(raw.get("sandbox", {})),
     )
+
+
+def _sandbox_config(raw: dict[str, Any]) -> SandboxConfig:
+    if unknown := set(raw) - {"enabled", "network", "allow_write", "deny_read"}:
+        raise ConfigError(f"[sandbox]: unknown keys {sorted(unknown)}")
+    if raw.get("network", "deny") not in ("deny", "allow"):
+        raise ConfigError(f"[sandbox]: network must be \"deny\" or \"allow\", got {raw['network']!r}")
+    for key in ("allow_write", "deny_read"):
+        value = raw.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ConfigError(f"[sandbox]: {key} must be a list of paths")
+    if not isinstance(raw.get("enabled", False), bool):
+        raise ConfigError("[sandbox]: enabled must be true or false")
+    return SandboxConfig(**raw)
 
 
 def _web_config(raw: dict[str, Any]) -> WebConfig:

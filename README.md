@@ -139,6 +139,43 @@ hand. The file lives outside the repository on purpose: a cloned repository can'
 any permissions. `/permissions` shows the current mode, every rule in force, and what this
 session allows.
 
+## Sandbox
+
+`wren --sandbox` (or `enabled = true` under `[sandbox]` in `~/.wren/config.toml`) runs the model's
+shell commands, background jobs included, in an OS sandbox. On macOS this uses Seatbelt
+(`sandbox-exec`); on Linux it uses [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`). Inside the sandbox, a command:
+
+- can write only in the project directory and the temp directories. `.git/hooks` and
+  `.git/config` stay read-only, because either could make git run code later, outside the
+  sandbox. Commits work as usual.
+- can read everything except where credentials live: `~/.ssh`, `~/.aws`, `~/.gnupg`,
+  `~/.config/gh`, `~/.netrc`, `~/.wren/env` and the like.
+- has no network. On macOS, servers on localhost are still reachable. On Linux, each command
+  has its own localhost, so it can reach only servers it started itself.
+- doesn't see API keys and tokens (`*_API_KEY`, `*_TOKEN`, each model's key variable).
+
+```toml
+[sandbox]
+enabled = true
+allow_write = ["~/.cache/uv"]      # e.g. so `uv run` can use its cache
+deny_read = ["~/work/secrets"]
+network = "deny"                   # or "allow"
+```
+
+When a command fails in a way that looks like the sandbox's doing, the model is told what the
+sandbox allows. If the task really needs more, the model can run the command again with
+`sandbox: false`. That always asks you first, in every mode including `--yolo`, and is refused
+in headless runs. At the prompt, `a` or `p` remember it per program as `unsandboxed:<program>`,
+so allowing `uv` inside the sandbox never lets it out. Permission rules can use the same name,
+for example `allow = ["unsandboxed:git fetch"]`, and deny rules apply inside the sandbox and
+out.
+
+If the sandbox can't be set up, wren says why. Common causes are bwrap not being installed,
+or Ubuntu 24.04's AppArmor blocking the user namespaces bwrap needs. Interactively, commands
+then ask for approval as before. A headless or `--yolo` run refuses to start, since nobody
+would be asked. Benchmark runs leave the sandbox off: they already run in a container.
+
 ## Architecture
 
 ```

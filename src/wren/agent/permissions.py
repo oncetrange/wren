@@ -62,6 +62,8 @@ class Permissions:
     cwd: Path = field(default_factory=Path.cwd)
     # Where "always allow in this project" answers are saved; None: not offered.
     project_file: Path | None = None
+    # Commands run in a sandbox: running one outside it always needs approval.
+    sandboxed: bool = False
 
     def blocked(self, tool: Tool, args: dict[str, Any]) -> str | None:
         """Why the call may not run at all, or None."""
@@ -78,17 +80,29 @@ class Permissions:
         return self.matching("ask", tool, args) is not None
 
     def needs_approval(self, tool: Tool, args: dict[str, Any]) -> bool:
-        if tool.read_only or self.mode == "auto":
+        if tool.read_only:
             return False
         if self.mode == "plan":
             return True
-        if self.mode == "accept_edits" and tool.edits_files:
+        if self.escapes(tool, args):  # in every other mode, auto too
+            return self.key(tool, args) not in self.allowed and self.matching("allow", tool, args) is None
+        if self.mode == "auto" or (self.mode == "accept_edits" and tool.edits_files):
             return False
         return (tool.permission_key(args) not in self.allowed
                 and self.matching("allow", tool, args) is None)
 
-    def remember(self, tool: Tool, args: dict[str, Any], persist: bool = False) -> None:
+    def escapes(self, tool: Tool, args: dict[str, Any]) -> bool:
+        """The call asks to run outside the sandbox there is."""
+        return self.sandboxed and tool.escapes_sandbox(args)
+
+    def key(self, tool: Tool, args: dict[str, Any]) -> str:
+        """What "always allow" remembers for this call: `unsandboxed:<program>`
+        for leaving the sandbox, so allowing a command inside it never lets it out."""
         key = tool.permission_key(args)
+        return "unsandboxed:" + key.partition(":")[2] if self.escapes(tool, args) else key
+
+    def remember(self, tool: Tool, args: dict[str, Any], persist: bool = False) -> None:
+        key = self.key(tool, args)
         self.allowed.add(key)
         if persist and self.project_file is not None and key not in self.rules.allow:
             self.rules.allow.append(key)
@@ -100,6 +114,9 @@ class Permissions:
                  args: dict[str, Any]) -> str | None:
         """The first rule of this kind that covers the call."""
         names = tool.rule_names(args)
+        if self.escapes(tool, args):
+            # Only an `unsandboxed:` rule lets a call out; deny and ask rules see it as itself too.
+            names = ("unsandboxed",) if kind == "allow" else (*names, "unsandboxed")
         for rule in getattr(self.rules, kind):
             name, sep, pattern = rule.partition(":")
             if not any(wildcard(name, n) for n in names):
