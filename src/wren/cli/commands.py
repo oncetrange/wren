@@ -98,6 +98,34 @@ def _rewind(repl: Repl, arg: str) -> None:
         rewind(repl, index)
 
 
+@command("/diff", "file changes since the last prompt · /diff all: this session · then paths to narrow it")
+def _diff(repl: Repl, arg: str) -> None:
+    words = shlex.split(arg)
+    whole = bool(words) and words[0] == "all"
+    paths = tuple(words[1:] if whole else words)
+    cps = repl.agent.checkpoints
+    if cps is None or not cps.enabled:
+        reason = cps.disabled_reason if cps is not None else "--no-checkpoints"
+        repl.ui.error(f"no file snapshots to compare with ({reason})")
+        return
+    turns = [p for p in repl.agent.conv.timeline if p.kind == "turn" and p.commit is not None]
+    if not turns:
+        repl.console.print("[dim]no prompt sent yet in this session[/]")
+        return
+    point = turns[0] if whole else turns[-1]
+    try:
+        patch = repl.agent.diff(point, paths)
+    except CheckpointError as e:
+        repl.ui.error(str(e))
+        return
+    since = "the start of this session" if whole else f"before: {one_line(point.label)}"
+    if not patch.strip():
+        repl.console.print(f"[dim]no changes since {escape(since)}[/]")
+        return
+    repl.console.print(f"[dim]changes since {escape(since)}[/]")
+    repl.ui.print_patch(patch)
+
+
 def rewind(repl: Repl, index: int) -> None:
     point = repl.agent.conv.timeline[index]
     if point.kind == "compaction":

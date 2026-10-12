@@ -70,6 +70,12 @@ class Checkpoints:
         out = self._git("diff", "--name-status", "--no-renames", commit, current)
         return [line.replace("\t", " ", 1) for line in out.splitlines()]
 
+    def diff(self, commit: str, paths: tuple[str, ...] = ()) -> str:
+        """What changed between a snapshot and the workspace right now: a
+        summary of the files, then the patch. Empty if nothing changed."""
+        current = self._write_tree()
+        return self._git("diff", "--stat", "--patch", "--find-renames", commit, current, "--", *paths)
+
     def restore(self, commit: str) -> None:
         """Make the workspace match a snapshot: modified files are reverted,
         files created since are deleted, deleted files come back."""
