@@ -121,9 +121,7 @@ class Repl:
 
     def save_memories(self) -> None:
         """Before this conversation is left behind: let the model keep what it learned."""
-        if self.agent.memory is None or not self.agent.auto_memory:
-            return
-        if self.agent._memory_upto >= len(self.agent.messages):
+        if not (self.agent.auto_memory and self.agent.memories_pending()):
             return
         self.console.print("[dim]reviewing the session for memories… (Ctrl-C skips)[/]")
         try:

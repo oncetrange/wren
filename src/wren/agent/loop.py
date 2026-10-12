@@ -7,7 +7,6 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -26,16 +25,13 @@ from wren.agent.conversation import Conversation, RestorePoint
 from wren.agent.events import (
     Hooks,
     Notification,
-    PostToolUse,
-    PreToolUse,
     PromptSubmit,
     SessionEnd,
     SessionStart,
     Stop,
-    allowed,
     denial,
 )
-from wren.agent.permissions import Decision, Permissions
+from wren.agent.permissions import Permissions
 from wren.agent.plans import (
     CUT_OFF,
     STEERED,
@@ -44,19 +40,18 @@ from wren.agent.plans import (
     TURN_BUDGET,
     is_reminder,
     reminder,
-    save_plan,
 )
 from wren.agent.prompt import build_system_prompt
 from wren.agent.remember import extract_memories
 from wren.agent.session import SessionLog, SessionState
 from wren.agent.subagents import AgentType, Progress, TaskTool
 from wren.agent.todos import format_todos
+from wren.agent.tool_runner import ToolRunner
 from wren.agent.ui import AgentUI
 from wren.checkpoint import CheckpointError, Checkpoints
 from wren.config import CONFIG_DIR, ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
-    INVALID_JSON_KEY,
     Completed,
     ContentBlock,
     LLMError,
@@ -67,8 +62,6 @@ from wren.llm.types import (
     ThinkingBlock,
     ThinkingDelta,
     ToolCallStarted,
-    ToolResultBlock,
-    ToolUseBlock,
     Usage,
 )
 from wren.mcp_servers import McpServers
@@ -76,8 +69,7 @@ from wren.memory import Memories
 from wren.memory import prompt_section as memory_section
 from wren.sandbox import Sandbox
 from wren.skills import Skill, prompt_section
-from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
-from wren.tools.base import validate_args
+from wren.tools import Tool, ToolContext, default_tools
 from wren.tools.mcp import mcp_tools
 from wren.tools.memory import MemoryTool
 from wren.tools.shell import Bash, SandboxedBash
@@ -88,11 +80,22 @@ TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 MAX_STOP_BLOCKS = 3
 # Responses in a row cut off at max_tokens without acting, before the run gives up.
 MAX_CUT_OFFS = 3
-# Most tool calls (read-only subagents) run at the same time.
-MAX_CONCURRENT = 4
 # Seconds to wait before each retry of a model request that failed in a way
 # that may pass; on top of the SDK's own retries, which stop once a stream has begun.
 MODEL_RETRY_DELAYS = (5, 15, 45, 90)
+
+# How a run ended (`status` in the headless JSON result): finished normally, or why not.
+RunStatus = Literal[
+    "done",            # the model finished
+    "blocked",         # a UserPromptSubmit hook refused the prompt
+    "empty_response",  # the model returned nothing
+    "refusal",         # the model declined to continue
+    "max_tokens",      # responses kept being cut off at the output limit before acting
+    "max_turns",       # --max-turns used up
+    "time_limit",      # --time-limit reached
+    "interrupted",     # Ctrl-C
+    "error",           # the model request failed for good
+]
 
 
 class Agent:
@@ -171,21 +174,17 @@ class Agent:
         self.system = system or self._build_system()
         self.conv = Conversation()
         self.usage = Usage()
-        self.cost: float | None = 0.0 if model.price else None
+        self.cost: float | None = self._new_cost()
         # Prompt size as of the last response, and how many messages it covered.
         self.context_tokens = 0
         self._billed_upto = 0
-        # How the last run() ended: done | max_turns | error | interrupted | refusal
-        self.status = "done"
+        self.status: RunStatus = "done"
         self.turns = self.tool_calls = self.tool_errors = 0
         # Plan mode: the mode the model was last told about, and the last saved plan.
         self.told_mode = "ask"
         self.plan_text: str | None = None
         self.plan_file: Path | None = None
-        # Tool calls of the current turn that still need a result; used to keep
-        # the history valid when the user interrupts mid-turn.
-        self._pending: list[ToolUseBlock] = []
-        self._results: list[ToolResultBlock] = []
+        self.tool_runner = ToolRunner(self)
         # Whether a tool that can modify files ran successfully in this request.
         self.changed = False
         # Failed calls in this request (by call and result) and the current run of
@@ -202,14 +201,13 @@ class Agent:
         # Looks up another configured model by name, for subagents that name one.
         self.resolve_model = resolve_model
         # Set while calls run concurrently: where subagents report their progress.
-        self._progress: Progress | None = None
+        self.progress: Progress | None = None
         # Set from another thread to stop this agent at its next step (a subagent
         # running concurrently, when the user interrupts).
         self.cancel: threading.Event | None = None
         # Context from session-start handlers, added to the next prompt.
         self._session_context: list[str] = []
-        self.log.record("session_start", model=model.name, cwd=str(ctx.cwd), system=self.system,
-                        mask_at=model.mask_at, compact_at=model.compact_threshold)
+        self._log_session_start()
         if time_limit:
             self.set_time_limit(time_limit)
 
@@ -241,7 +239,7 @@ class Agent:
             # Manage context before adding the prompt so it stays verbatim.
             self._manage_context(extra=len(prompt) // 4)
             self._start_turn(prompt)
-            self._add_user([TextBlock(prompt), *(TextBlock(a) for a in attachments or []), *extra])
+            self.add_user([TextBlock(prompt), *(TextBlock(a) for a in attachments or []), *extra])
             for turn in range(self.max_turns):
                 self._manage_context()
                 response = self._call_model()
@@ -264,7 +262,7 @@ class Agent:
                 if response.stop_reason == "refusal":
                     self.ui.notice("the model declined to continue")
                     self.status = "refusal"
-                    self._abandon_pending(calls, "Not executed: the response was a refusal.")
+                    self.tool_runner.abandon(calls, "Not executed: the response was a refusal.")
                     return final_text
                 if cut_off:
                     cut_offs += 1
@@ -275,12 +273,12 @@ class Agent:
                         return final_text
                     self.ui.notice("response was cut off at the max_tokens limit; asking the model to go on")
                     self.log.record("reminder", reason="cut_off", count=cut_offs)
-                    self._add_user([TextBlock(reminder(CUT_OFF))])
+                    self.add_user([TextBlock(reminder(CUT_OFF))])
                     continue
                 cut_offs = 0
                 if not calls:
-                    if steered := self._take_steering():
-                        self._add_user(steered)
+                    if steered := self.take_steering():
+                        self.add_user(steered)
                         continue
                     if stop_blocks < MAX_STOP_BLOCKS:
                         blocks = [v for v in self.hooks.run("stop", Stop(self, final_text, stopped_by))
@@ -289,15 +287,15 @@ class Agent:
                             # All reasons in one message, so one extra model call.
                             stop_blocks += 1
                             stopped_by.update(v.source for v in blocks)
-                            self._add_user([TextBlock(reminder(*(v.reason for v in blocks)))])
+                            self.add_user([TextBlock(reminder(*(v.reason for v in blocks)))])
                             continue
                     return final_text
-                if not self._run_tools(calls, truncated=response.stop_reason == "max_tokens"):
+                if not self.tool_runner.run(calls, truncated=response.stop_reason == "max_tokens"):
                     return final_text
                 left = self.max_turns - turn - 1
                 if self.final_check and not warned and 0 < left <= max(3, self.max_turns // 10):
                     warned = True
-                    self._add_user([TextBlock(reminder(TURN_BUDGET.format(left=left)))])
+                    self.add_user([TextBlock(reminder(TURN_BUDGET.format(left=left)))])
                 if self._out_of_time():
                     self.ui.notice(f"stopped at the {(self.time_limit or 0) / 60:.0f}-minute time limit")
                     self.status = "time_limit"
@@ -305,7 +303,7 @@ class Agent:
             self.ui.notice(f"stopped after {self.max_turns} turns")
             self.status = "max_turns"
         except KeyboardInterrupt:
-            self._abandon_pending(self._pending, "Interrupted by the user.")
+            self.tool_runner.abandon_pending("Interrupted by the user.")
             self.ui.notice("interrupted")
             self.status = "interrupted"
         except LLMError as e:
@@ -428,8 +426,7 @@ class Agent:
         if point.commit is not None and self.checkpoints and self.checkpoints.enabled:
             self.checkpoints.restore(point.commit)
         self.conv.rewind(index)
-        self.ctx.read_files.clear()
-        self.context_tokens, self._billed_upto = 0, 0
+        self._reset_context()
         self.log.record("rewind", index=index)
         return point
 
@@ -451,12 +448,11 @@ class Agent:
         """Continue a logged session (its log must be `self.log`)."""
         self.conv = state.conversation
         self.usage = state.usage
-        self.cost = state.cost if state.cost is not None else (0.0 if self.model.price else None)
-        self.context_tokens, self._billed_upto = 0, 0
-        self.ctx.read_files.clear()
+        self.cost = state.cost if state.cost is not None else self._new_cost()
+        self._reset_context()
         # A session that crashed mid-turn can end with unanswered tool calls.
         if self.messages and self.messages[-1].role == "assistant":
-            self._abandon_pending(self.messages[-1].tool_uses(), "Interrupted: the session ended.")
+            self.tool_runner.abandon(self.messages[-1].tool_uses(), "Interrupted: the session ended.")
         self._memory_upto = len(self.messages)  # reviewed when that session ended
         self.log.record("resume", model=self.model.name)
 
@@ -465,13 +461,10 @@ class Agent:
         self.log = log
         self.conv = Conversation()
         self.usage = Usage()
-        self.cost = 0.0 if self.model.price else None
-        self.context_tokens, self._billed_upto = 0, 0
+        self.cost = self._new_cost()
+        self._reset_context()
         self._memory_upto = 0
-        self.ctx.read_files.clear()
-        self.log.record("session_start", model=self.model.name, cwd=str(self.ctx.cwd),
-                        system=self.system, mask_at=self.model.mask_at,
-                        compact_at=self.model.compact_threshold)
+        self._log_session_start()
 
     def set_model(self, provider: Provider, model: ModelConfig) -> None:
         # Thinking blocks are signed by the model that produced them and other
@@ -492,13 +485,16 @@ class Agent:
         self.conv.start_turn(prompt, commit)
         self.log.record("checkpoint", commit=commit, prompt=prompt)
 
+    def memories_pending(self) -> bool:
+        """Whether there is conversation the model hasn't reviewed for memories yet."""
+        return self.memory is not None and any(
+            m.role == "assistant" for m in self.messages[self._memory_upto:])
+
     def extract_memories(self, reason: str) -> int:
         """Have the model save what the conversation taught it, in a side
         request that doesn't enter the history. Returns how many memories it
         wrote. Raises LLMError."""
-        if self.memory is None or self._memory_upto >= len(self.messages):
-            return 0
-        if not any(m.role == "assistant" for m in self.messages[self._memory_upto:]):
+        if not self.memories_pending():
             return 0
         saved = extract_memories(self, reason)
         self._memory_upto = len(self.messages)
@@ -521,10 +517,10 @@ class Agent:
         minutes, total = max(round(left / 60), 1), round(self.time_limit / 60)
         if left <= max(180, self.time_limit * 0.1) and "up" not in self._time_notes:
             self._time_notes.update(("up", "check"))
-            self._add_user([TextBlock(reminder(TIME_UP.format(left=minutes)))])
+            self.add_user([TextBlock(reminder(TIME_UP.format(left=minutes)))])
         elif left <= self.time_limit * 0.25 and "check" not in self._time_notes:
             self._time_notes.add("check")
-            self._add_user([TextBlock(reminder(TIME_CHECK.format(left=minutes, total=total)))])
+            self.add_user([TextBlock(reminder(TIME_CHECK.format(left=minutes, total=total)))])
         return False
 
     def record_side_usage(self, usage: Usage, purpose: str) -> None:
@@ -534,10 +530,27 @@ class Agent:
 
     def add_usage(self, usage: Usage, cost: float | None, model: str, purpose: str) -> None:
         """Account for side requests whose cost is already known (a subagent's)."""
+        self._charge(usage, cost, model=model, purpose=purpose)
+
+    def _charge(self, usage: Usage, cost: float | None, **record: Any) -> None:
+        """Count tokens and cost (unknown once any part of it is) and log them."""
         self.usage += usage
         if cost is not None and self.cost is not None:
             self.cost += cost
-        self.log.record("usage", model=model, purpose=purpose, usage=vars(usage), cost=cost)
+        self.log.record("usage", **record, usage=vars(usage), cost=cost)
+
+    def _new_cost(self) -> float | None:
+        """Cost starts at zero when the model has a price, else it's unknown."""
+        return 0.0 if self.model.price else None
+
+    def _reset_context(self) -> None:
+        """After the history was replaced: nothing billed for it yet, no file seen."""
+        self.context_tokens, self._billed_upto = 0, 0
+        self.ctx.read_files.clear()
+
+    def _log_session_start(self) -> None:
+        self.log.record("session_start", model=self.model.name, cwd=str(self.ctx.cwd), system=self.system,
+                        mask_at=self.model.mask_at, compact_at=self.model.compact_threshold)
 
     # --- model -------------------------------------------------------------
 
@@ -560,7 +573,7 @@ class Agent:
                     self.cancel.wait(delay)
                 else:
                     time.sleep(delay)
-                self._check_cancel()
+                self.check_cancel()
         return request()
 
     def _stream_model(self) -> Response:
@@ -572,7 +585,7 @@ class Agent:
                 messages=self.messages,
                 tools=[t.spec() for t in self.tools.values()],
             ):
-                self._check_cancel()
+                self.check_cancel()
                 match event:
                     case TextDelta(text):
                         self.ui.text_delta(text)
@@ -587,244 +600,18 @@ class Agent:
         if response is None:
             raise LLMError("stream ended without a final message", retryable=True)
 
-        self.usage += response.usage
         self.turns += 1
         self.context_tokens = response.usage.context_tokens + response.usage.output_tokens
-        turn_cost = self.model.cost(response.usage)
-        if turn_cost is not None and self.cost is not None:
-            self.cost += turn_cost
-        self.log.record(
-            "usage",
-            model=self.model.name,
-            stop_reason=response.stop_reason,
-            usage=vars(response.usage),
-            cost=turn_cost,
-        )
+        self._charge(response.usage, self.model.cost(response.usage), model=self.model.name,
+                     stop_reason=response.stop_reason)
         return response
 
     # --- tools -------------------------------------------------------------
 
-    def _run_tools(self, calls: list[ToolUseBlock], truncated: bool) -> bool:
-        """Execute a turn's tool calls. Returns False if the loop should stop."""
-        self._pending, self._results = list(calls), []
-        denial: Decision | None = None
-        i = 0
-        while i < len(calls):
-            call = calls[i]
-            group = self._concurrent_group(calls[i:len(calls) - truncated]) if denial is None else []
-            if len(group) > 1:
-                self._results += self._execute_concurrently(group)
-                for c in group:
-                    self._pending.remove(c)
-                i += len(group)
-                continue
-            if truncated and call is calls[-1]:
-                result = ToolResultBlock(
-                    call.id,
-                    "Not executed: your response hit the output token limit while writing "
-                    "this call, so its arguments are incomplete. Split the work into smaller "
-                    "steps (e.g. create a file in parts, or use edit_file).",
-                    is_error=True,
-                )
-            elif denial is not None:
-                result = ToolResultBlock(
-                    call.id, "Not run: the user rejected an earlier tool call in this turn.", True)
-            else:
-                self._check_cancel()
-                result, denial = self._execute(call)
-            self._results.append(result)
-            self._pending.remove(call)
-            i += 1
-        blocks: list[ContentBlock] = list(self._results)
-        if denial is not None and denial.feedback:
-            # What the user typed is a message from them, not tool output: it
-            # goes in as their own text after the tool results.
-            blocks.append(TextBlock(denial.feedback))
-        steered = self._take_steering()
-        self._add_user(blocks + steered)
-        self._results = []
-        # A bare "no" hands control back to the user; with a message, the model responds to it.
-        return denial is None or bool(denial.feedback) or bool(steered)
-
-    def _execute(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
-        """Run one call. Returns its result, and the user's decision if they rejected it."""
-        tool = self._check(call)
-        if isinstance(tool, ToolResultBlock):
-            return tool, None
-
-        label = tool.describe(call.input, self.ctx)
-        if self.permissions.leaves_sandbox(tool, call.input):
-            label = f"{label} (outside the sandbox)"
-        self.ui.tool_started(call.name, label)
-        if call.name == "exit_plan_mode":
-            return self._exit_plan_mode(call)
-
-        verdicts = self.hooks.run("pre_tool", PreToolUse(self, tool, call))
-        if blocked := denial(verdicts):
-            return self._error(call, blocked.reason), None
-
-        must_ask = tool.always_confirm(call.input) or self.permissions.must_ask(tool, call.input)
-        if must_ask or (not allowed(verdicts) and self.permissions.needs_approval(tool, call.input)):
-            self.notify(f"wren needs your approval: {call.name} {label}".strip())
-            decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx),
-                                       key=self.permissions.key(tool, call.input))
-            if not decision.allow:
-                text = "The user rejected this tool call, so it was not run."
-                if decision.feedback:
-                    text += " Their message follows."
-                self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary="denied"))
-                self.log.record("tool", name=call.name, input=call.input, denied=True)
-                return ToolResultBlock(call.id, text, True), decision
-            if (decision.remember or decision.persist) and not must_ask:
-                self.permissions.remember(tool, call.input, persist=decision.persist)
-                if decision.persist and self.permissions.project_file is not None:
-                    self.ui.notice(f"always allowed in this project: {self.permissions.key(tool, call.input)} "
-                                   f"(saved in {self.permissions.project_file})")
-
-        return self._finish(call, tool, self._run_tool(tool, call)), None
-
-    def _check_cancel(self) -> None:
+    def check_cancel(self) -> None:
+        """Stop here (KeyboardInterrupt) if another thread asked this agent to."""
         if self.cancel is not None and self.cancel.is_set():
             raise KeyboardInterrupt
-
-    def _check(self, call: ToolUseBlock) -> Tool | ToolResultBlock:
-        """The call's tool, or an error result if there is no such tool or the arguments are wrong."""
-        tool = self.tools.get(call.name)
-        if tool is None:
-            return self._error(call, f"unknown tool {call.name!r}; available: {', '.join(self.tools)}")
-        if INVALID_JSON_KEY in call.input:
-            raw = str(call.input[INVALID_JSON_KEY])
-            return self._error(call, f"invalid arguments for {call.name}: not a JSON object "
-                                     f"({len(raw)} characters, starting {raw[:80]!r}). "
-                                     "Call it again with valid JSON arguments.")
-        problem = validate_args(tool.input_schema, call.input) if tool.strict_args else (
-            None if isinstance(call.input, dict) else "arguments must be a JSON object")
-        if problem:
-            return self._error(call, f"invalid arguments for {call.name}: {problem}")
-        return tool
-
-    def _run_tool(self, tool: Tool, call: ToolUseBlock) -> ToolOutput:
-        self.ctx.read_only_shell = self.read_only or self.permissions.mode == "plan"
-        self.ctx.can_leave_sandbox = not self.read_only
-        try:
-            return tool.run(call.input, self.ctx)
-        except ToolError as e:
-            return ToolOutput(str(e), is_error=True, summary=str(e).splitlines()[0])
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as e:  # a bug in a tool must not kill the session
-            return ToolOutput(f"internal error in {call.name}: {type(e).__name__}: {e}", True,
-                              summary=f"{type(e).__name__}: {e}")
-
-    def _finish(self, call: ToolUseBlock, tool: Tool, output: ToolOutput) -> ToolResultBlock:
-        if output.todos is not None:
-            self.conv.todos = output.todos
-            self.log.record("todos", items=[t.to_dict() for t in output.todos])
-        if not tool.read_only and not output.is_error:
-            self.changed = True
-        for v in self.hooks.run("post_tool", PostToolUse(self, tool, call, output)):
-            if v.context:
-                output.content = f"{output.content}\n\n{v.context}"
-        self.ui.tool_finished(call.name, output)
-        self.tool_calls += 1
-        self.tool_errors += output.is_error
-        self.log.record("tool", name=call.name, input=call.input, is_error=output.is_error,
-                        error=output.content[:500] if output.is_error else None)
-        return ToolResultBlock(call.id, output.content or "(no output)", output.is_error)
-
-    # --- concurrent calls ----------------------------------------------------
-
-    def _concurrent_group(self, calls: list[ToolUseBlock]) -> list[ToolUseBlock]:
-        """The leading calls that may run at the same time (read-only subagents):
-        they never ask for approval and change nothing, so order doesn't matter."""
-        group = []
-        for call in calls:
-            tool = self.tools.get(call.name)
-            if (tool is None or validate_args(tool.input_schema, call.input)
-                    or not tool.concurrent_safe(call.input)):
-                break
-            group.append(call)
-        return group
-
-    def _execute_concurrently(self, calls: list[ToolUseBlock]) -> list[ToolResultBlock]:
-        """Run the calls on threads, showing their progress; print each call
-        with its result once all are done, in the order they were made."""
-        results: dict[str, ToolResultBlock] = {}
-        runnable: list[tuple[ToolUseBlock, Tool]] = []
-        for call in calls:
-            tool = self.tools[call.name]
-            if blocked := denial(self.hooks.run("pre_tool", PreToolUse(self, tool, call))):
-                self.ui.tool_started(call.name, tool.describe(call.input, self.ctx))
-                results[call.id] = self._error(call, blocked.reason)
-            else:
-                runnable.append((call, tool))
-        progress = Progress(self.ui)
-        self._progress = progress
-        try:
-            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
-                futures = {call.id: pool.submit(self._run_tool, tool, call) for call, tool in runnable}
-                try:
-                    wait(futures.values())
-                except KeyboardInterrupt:
-                    progress.cancel.set()  # the workers stop at their next step
-                    raise
-        finally:
-            self._progress = None
-            progress.close()
-        for call, tool in runnable:
-            self.ui.tool_started(call.name, tool.describe(call.input, self.ctx))
-            error = futures[call.id].exception()
-            if isinstance(error, KeyboardInterrupt):
-                raise error
-            results[call.id] = self._finish(call, tool, futures[call.id].result())
-        return [results[c.id] for c in calls]
-
-    def _exit_plan_mode(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
-        """Show the plan for approval. Returns a rejection Decision when the
-        turn should stop (no approval) or continue with the user's feedback."""
-        if self.permissions.mode != "plan":
-            return self._error(call, "Plan mode is not on: no approval step is needed, go ahead."), None
-        plan = call.input["plan"]
-        self.notify("wren has a plan for you to review")
-        decision = self.ui.review_plan(plan)
-        self.tool_calls += 1
-
-        if decision is None or decision.approved:
-            self.plan_text, self.plan_file = plan, save_plan(self.ctx.cwd, plan)
-            where = self.ctx.display_path(self.plan_file)
-        if decision is None:  # nobody to ask (headless): the plan is the result
-            text = f"Plan saved to {where}. Stopping here: it needs the user's approval first."
-            summary, outcome = f"saved to {where}", Decision(allow=False)
-        elif decision.approved:
-            self.permissions.mode = self.told_mode = decision.mode
-            text = (f"The user approved the plan (saved to {where}). Plan mode is off: you can "
-                    "modify files now. Track the plan's steps with todo_write, then carry it out.")
-            summary, outcome = f"approved · {decision.mode.replace('_', ' ')}", None
-        else:
-            text = "The user did not approve the plan. " + (
-                "Their message follows: revise the plan and present it again with exit_plan_mode."
-                if decision.feedback else "Wait for their instructions.")
-            summary, outcome = "changes requested" if decision.feedback else "not approved", \
-                Decision(allow=False, feedback=decision.feedback)
-        self.log.record("plan", plan=plan, approved=bool(decision and decision.approved),
-                        file=str(self.plan_file) if decision is None or decision.approved else None)
-        self.ui.tool_finished(call.name, ToolOutput(text, summary=summary))
-        return ToolResultBlock(call.id, text), outcome
-
-    def _error(self, call: ToolUseBlock, text: str) -> ToolResultBlock:
-        self.ui.tool_finished(call.name, ToolOutput(text, is_error=True, summary=text))
-        self.tool_calls += 1
-        self.tool_errors += 1
-        self.log.record("tool", name=call.name, input=call.input, is_error=True, error=text[:500])
-        return ToolResultBlock(call.id, text, is_error=True)
-
-    def _abandon_pending(self, calls: list[ToolUseBlock], reason: str) -> None:
-        """Answer every unanswered tool call so the history stays valid."""
-        results: list[ContentBlock] = [*self._results,
-                                       *(ToolResultBlock(c.id, reason, is_error=True) for c in calls)]
-        if results:
-            self._add_user(results)
-        self._pending, self._results = [], []
 
     # --- history -----------------------------------------------------------
 
@@ -848,12 +635,14 @@ class Agent:
     def queued(self) -> int:
         return len(self._inbox)
 
-    def _take_steering(self) -> list[ContentBlock]:
+    def take_steering(self) -> list[ContentBlock]:
+        """The messages sent with steer, as blocks for the next user message (shown as they go)."""
         texts = self.unsent()
         for text in texts:
             self.ui.steered(text)
         return [TextBlock(reminder(STEERED)), *(TextBlock(t) for t in texts)] if texts else []
 
-    def _add_user(self, blocks: list[ContentBlock]) -> None:
+    def add_user(self, blocks: list[ContentBlock]) -> None:
+        """Add a user message to the history (and the log)."""
         self.conv.add_user(blocks)
         self.log.record("message", **Message("user", list(blocks)).to_dict())

@@ -404,7 +404,7 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
     skills = parent.skills if kind.allows("skill") else {}
     tools = subagent_tools(parent, kind)
     mcp = any(isinstance(t, McpTool) for t in tools)
-    progress = parent._progress  # set when running alongside other subagents
+    progress = parent.progress  # set when running alongside other subagents
     ui = progress.child_ui(f"{description} ({kind.name})") if progress else SubagentUI(parent.ui)
     log = _log(parent)
     child = Agent(
