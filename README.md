@@ -29,7 +29,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/diff`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/jobs`, `/schedule`, `/loop`, `/hooks`, `/permissions`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/diff`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/jobs`, `/schedule`, `/loop`, `/hooks`, `/permissions`, `/sandbox`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 Mention files with `@`: `explain @src/app.py`, `@src/app.py#L40-80` for some lines, `@docs/` for
 a directory listing, `@"name with spaces.md"`. Typing `@` completes paths in the bottom line (↑/↓,
@@ -162,6 +162,20 @@ allow_write = ["~/.cache/uv"]      # e.g. so `uv run` can use its cache
 deny_read = ["~/work/secrets"]
 network = "deny"                   # or "allow"
 ```
+
+Commands in the sandbox run without asking, in every permission mode. Deny and ask rules still
+apply to them.
+
+- **Plan mode** and read-only subagents such as `explore` run commands in a read-only form of
+  the sandbox: only the temp directories and `allow_write` stay writable, and the project does
+  not, even if it lives in `/tmp`. So investigating needs no approvals. `explore` can run any
+  command, not just its list of known read-only ones, but it can't leave the sandbox.
+- **The file tools** run inside wren, outside the sandbox, so wren checks their writes against
+  the same bounds. Writing a file the sandbox wouldn't let a command write, outside the project
+  or into `.git/hooks` or `.git/config`, asks every time, in every mode, and is never
+  remembered.
+- **`/sandbox`** shows what the sandbox allows, and `/sandbox on` / `/sandbox off` switch it
+  mid-session. The bottom bar shows `sandbox` while it's on.
 
 When a command fails in a way that looks like the sandbox's doing, the model is told what the
 sandbox allows. If the task really needs more, the model can run the command again with

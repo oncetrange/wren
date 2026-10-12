@@ -74,11 +74,13 @@ from wren.llm.types import (
 from wren.mcp_servers import McpServers
 from wren.memory import Memories
 from wren.memory import prompt_section as memory_section
+from wren.sandbox import Sandbox
 from wren.skills import Skill, prompt_section
 from wren.tools import Tool, ToolContext, ToolError, ToolOutput, default_tools
 from wren.tools.base import validate_args
 from wren.tools.mcp import mcp_tools
 from wren.tools.memory import MemoryTool
+from wren.tools.shell import Bash, SandboxedBash
 from wren.tools.skill import SkillTool
 
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
@@ -162,11 +164,11 @@ class Agent:
         # Before finishing a request that changed things, ask the model once to
         # check the request's explicit instructions (on by default when headless).
         self.final_check = final_check
-        self.system = system or build_system_prompt(
-            ctx.cwd, prompt_section(self.skills),
-            memory=memory_section(self.memory) if self.memory else "",
-            mcp=mcp.instructions() if mcp else "",
-            sandbox=ctx.sandbox.describe() if ctx.sandbox else "")
+        # Shell commands can't write even in the project (a read-only subagent);
+        # plan mode has the same effect while it's on.
+        self.read_only = False
+        self._own_system = system is None
+        self.system = system or self._build_system()
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -386,6 +388,24 @@ class Agent:
         """Estimate the full prompt size after history changed underneath the last bill."""
         self.context_tokens = self._fixed_tokens() + estimate_tokens(self.messages)
         self._billed_upto = len(self.messages)
+
+    def _build_system(self) -> str:
+        return build_system_prompt(
+            self.ctx.cwd, prompt_section(self.skills),
+            memory=memory_section(self.memory) if self.memory else "",
+            mcp=self.mcp.instructions() if self.mcp else "",
+            sandbox=self.ctx.sandbox.describe() if self.ctx.sandbox else "")
+
+    def set_sandbox(self, sandbox: Sandbox | None) -> None:
+        """Turn the sandbox for shell commands on or off, mid-session: bash gains or
+        loses its way out, and the system prompt says what applies now."""
+        self.ctx.sandbox = self.permissions.sandbox = sandbox
+        if "bash" in self.tools:
+            self.tools["bash"] = SandboxedBash() if sandbox else Bash()
+        if self._own_system:
+            self.system = self._build_system()
+        self.log.record("sandbox", enabled=sandbox is not None, system=self.system)
+        self._reestimate()
 
     def changed_files(self, point: RestorePoint) -> list[str]:
         """Files a rewind to `point` would restore. Raises CheckpointError."""
@@ -633,6 +653,8 @@ class Agent:
             return tool, None
 
         label = tool.describe(call.input, self.ctx)
+        if self.permissions.leaves_sandbox(tool, call.input):
+            label = f"{label} (outside the sandbox)"
         self.ui.tool_started(call.name, label)
         if call.name == "exit_plan_mode":
             return self._exit_plan_mode(call)
@@ -682,6 +704,8 @@ class Agent:
         return tool
 
     def _run_tool(self, tool: Tool, call: ToolUseBlock) -> ToolOutput:
+        self.ctx.read_only_shell = self.read_only or self.permissions.mode == "plan"
+        self.ctx.can_leave_sandbox = not self.read_only
         try:
             return tool.run(call.input, self.ctx)
         except ToolError as e:

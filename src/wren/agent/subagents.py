@@ -216,7 +216,13 @@ def discover_agent_types(cwd: Path, home: Path | None = None) -> tuple[dict[str,
 
 
 def read_only_guard(e: PreToolUse) -> Verdict | None:
-    """For read-only subagents: reads run freely, read-only commands too, the rest is refused."""
+    """For read-only subagents: reads run freely, read-only commands too, the rest is refused.
+    With a sandbox, any command runs, in its read-only form, but never outside it."""
+    if e.tool.name == "bash" and e.agent.ctx.sandbox is not None:
+        if e.tool.escapes_sandbox(e.call.input):
+            return Verdict("deny", "This subagent is read-only and can't run commands outside the "
+                                   "sandbox. Report what you couldn't check instead.")
+        return Verdict("allow")
     if e.tool.name == "bash":
         if is_read_only_command(e.call.input.get("command", "")):
             return Verdict("allow")
@@ -414,10 +420,13 @@ def run_subagent(parent: Agent, kind: AgentType, description: str, prompt: str) 
         skills=skills,
         system=build_system_prompt(parent.ctx.cwd, prompt_section(skills),
                                    base=f"{SUBAGENT_BASE}\n{kind.prompt}",
-                                   mcp=parent.mcp.instructions() if mcp and parent.mcp else ""),
+                                   mcp=parent.mcp.instructions() if mcp and parent.mcp else "",
+                                   sandbox=parent.ctx.sandbox.describe(kind.read_only)
+                                   if parent.ctx.sandbox else "", sandbox_exit=not kind.read_only),
         hooks=hooks,
     )
     child.cancel = progress.cancel if progress else None
+    child.read_only = kind.read_only
     child.time_limit, child.deadline = parent.time_limit, parent.deadline  # the same clock
     with _BOOKKEEPING:
         parent.log.record("subagent", agent=kind.name, description=description,

@@ -28,7 +28,7 @@ from wren.agent.session import SessionLog, list_sessions
 from wren.agent.subagents import TaskTool
 from wren.agent.todos import format_todos, progress
 from wren.checkpoint import CheckpointError
-from wren.cli.app import run_prompt
+from wren.cli.app import new_sandbox, run_prompt
 from wren.cli.pickers import confirm, pick
 from wren.cli.schedule_cmd import print_jobs, print_run
 from wren.cli.terminal import detect_background, shift_enter_help
@@ -38,6 +38,7 @@ from wren.config import CONFIG_FILE, ConfigError
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
 from wren.mcp_servers import PROJECT_MCP
+from wren.sandbox import SandboxUnavailable
 from wren.schedules import Scheduler, Schedules, launch_detached
 from wren.settings import Theme
 
@@ -468,6 +469,41 @@ def _permissions(repl: Repl, arg: str) -> None:
             repl.console.print(f"  {escape(key)}")
     repl.console.print(f"[dim]rules: [permissions] in {CONFIG_FILE} · saved for this project: "
                        f"{p.project_file}[/]")
+
+
+@command("/sandbox", "the sandbox shell commands run in · /sandbox on|off")
+def _sandbox(repl: Repl, arg: str) -> None:
+    agent = repl.agent
+    if arg == "off":
+        agent.set_sandbox(None)
+    elif arg == "on":
+        sandbox = new_sandbox(repl.config, agent.ctx.cwd)
+        try:
+            sandbox.check()
+        except SandboxUnavailable as e:
+            repl.ui.error(f"no sandbox: {e}")
+            return
+        agent.set_sandbox(sandbox)
+    elif arg:
+        repl.ui.error("usage: /sandbox [on|off]")
+        return
+    sandbox = agent.ctx.sandbox
+    if sandbox is None:
+        repl.console.print("[bold]sandbox[/] off: commands ask for approval as the mode says "
+                           "[dim](/sandbox on)[/]")
+        return
+    net = "any" if sandbox.network else ("localhost only" if sandbox.platform == "darwin"
+                                         else "none (localhost is each command's own)")
+    repl.console.print("[bold]sandbox[/] on: commands run without asking; leaving the sandbox, or "
+                       "file edits beyond it, ask [dim](/sandbox off)[/]")
+    rows = [("writable", ", ".join(map(str, sandbox.writable()))),
+            ("read-only", ", ".join(map(str, sandbox.protected))),
+            ("unreadable", ", ".join(str(p) for p in sandbox.hidden if p.exists()) or "-"),
+            ("network", net),
+            ("in plan mode", "nothing writable but " + ", ".join(map(str, sandbox.writable(read_only=True))))]
+    for name, value in rows:
+        repl.console.print(f"  [dim]{name:<13}[/] {escape(value)}")
+    repl.console.print(f"[dim]configure under [sandbox] in {CONFIG_FILE}[/]")
 
 
 # --- settings ----------------------------------------------------------------------

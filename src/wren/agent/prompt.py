@@ -45,15 +45,19 @@ or something is still broken, say so plainly.
 
 
 def build_system_prompt(cwd: Path, skills: str = "", base: str = BASE_PROMPT, memory: str = "",
-                        mcp: str = "", sandbox: str = "") -> str:
-    """`sandbox` describes the sandbox bash runs in, if any (Sandbox.describe)."""
+                        mcp: str = "", sandbox: str = "", sandbox_exit: bool = True) -> str:
+    """`sandbox` describes the sandbox bash runs in, if any (Sandbox.describe);
+    `sandbox_exit` is whether the model may ask to leave it."""
     parts = [base, _environment(cwd)]
     if sandbox:
-        parts.append(f"# Sandbox\nShell commands run in a sandbox: {sandbox}. Work within it: put "
-                     "scratch files in the temp directory, and expect downloads (package installs, "
-                     "git fetch) to fail. When something the task needs is blocked, run that command "
-                     "again with sandbox: false; the user is asked to approve it, so say why in a "
-                     "sentence first.\n")
+        section = (f"# Sandbox\nShell commands run in a sandbox: {sandbox}. Work within it: put "
+                   "scratch files in the temp directory, and expect downloads (package installs, "
+                   "git fetch) to fail.")
+        if sandbox_exit:
+            section += (" When something the task needs is blocked, run that command again with "
+                        "sandbox: false; the user is asked to approve it, so say why in a sentence "
+                        "first. In plan mode the project is read-only to commands too.")
+        parts.append(section + "\n")
     parts += [s for s in (skills, memory, mcp) if s]
     for path in (CONFIG_DIR / "WREN.md", *(cwd / name for name in PROJECT_FILES)):
         if path.is_file():

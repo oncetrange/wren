@@ -154,7 +154,8 @@ class Repl:
         color = {"ask": "ansigray", "accept_edits": "ansigreen", "plan": "ansicyan", "auto": "ansired"}[mode]
         running = len(self.agent.ctx.jobs.running())
         jobs = f" · {running} background job{'s' if running != 1 else ''} (/jobs)" if running else ""
-        return HTML(f"  <{color}>{icon} {LABELS[mode]}</{color}>"
+        sandbox = " · <ansigreen>sandbox</ansigreen>" if self.agent.ctx.sandbox else ""
+        return HTML(f"  <{color}>{icon} {LABELS[mode]}</{color}>{sandbox}"
                     f"<ansigray> · shift+tab to switch · {self.agent.model.name}{jobs}</ansigray>")
 
     def _prediction_ready(self) -> None:

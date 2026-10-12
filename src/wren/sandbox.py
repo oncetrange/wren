@@ -64,11 +64,27 @@ class Sandbox:
         self.home = _real(home or Path.home())
         self.cwd = _real(cwd)
         temp = {_real(Path(tempfile.gettempdir())), _real(Path("/tmp"))}
-        self.writable = [self.cwd, *sorted(temp), *(_real(Path(p).expanduser()) for p in config.allow_write)]
+        # Writable even read-only (plan mode, read-only subagents): scratch space and caches.
+        self.scratch = [*sorted(temp), *(_real(Path(p).expanduser()) for p in config.allow_write)]
         self.protected = [self.cwd / ".git" / "hooks", self.cwd / ".git" / "config"]
         self.hidden = [self.home / p for p in SECRET_PATHS] + [
             _real(Path(p).expanduser()) for p in config.deny_read]
         self.secret_env = set(secret_env)
+
+    def writable(self, read_only: bool = False) -> list[Path]:
+        return self.scratch if read_only else [self.cwd, *self.scratch]
+
+    def read_only_paths(self, read_only: bool = False) -> list[Path]:
+        """Never writable, even inside a writable directory (the project may be in /tmp)."""
+        return [self.cwd] if read_only else self.protected
+
+    def allows_write(self, path: Path) -> bool:
+        """Whether a command in the sandbox could write `path` (for the file tools,
+        which run outside it)."""
+        real = _real(path)
+        if any(real.is_relative_to(p) for p in self.protected):
+            return False
+        return any(real.is_relative_to(p) for p in self.writable())
 
     @property
     def network(self) -> bool:
@@ -79,17 +95,18 @@ class Sandbox:
         if reason := _unavailable(self.platform):
             raise SandboxUnavailable(reason)
 
-    def wrap(self, argv: list[str], cwd: Path) -> list[str]:
-        """The command line that runs `argv` inside the sandbox, from `cwd`."""
+    def wrap(self, argv: list[str], cwd: Path, read_only: bool = False) -> list[str]:
+        """The command line that runs `argv` inside the sandbox, from `cwd`.
+        `read_only`: not even the project is writable, only scratch space."""
         if self.platform == "darwin":
-            return ["sandbox-exec", "-p", self.seatbelt_profile(), *argv]
-        return self.bwrap_args(cwd) + ["--", *argv]
+            return ["sandbox-exec", "-p", self.seatbelt_profile(read_only), *argv]
+        return self.bwrap_args(cwd, read_only) + ["--", *argv]
 
     def env(self, env: dict[str, str]) -> dict[str, str]:
         """The environment without API keys and tokens."""
         return {k: v for k, v in env.items() if k not in self.secret_env and not _SECRET_ENV.search(k)}
 
-    def describe(self) -> str:
+    def describe(self, read_only: bool = False) -> str:
         """The rules, for the model and for error hints."""
         if self.network:
             net = "any network"
@@ -97,19 +114,22 @@ class Sandbox:
             net = "no network except localhost"
         else:  # each command gets a network namespace of its own
             net = "no network (localhost reaches only servers started by the same command)"
-        return (f"commands may write only in {', '.join(map(str, self.writable))} (not in .git/hooks "
-                f"or .git/config), can't read credentials such as ~/.ssh, and have {net}")
+        where = ", ".join(map(str, self.writable(read_only)))
+        guarded = "" if read_only else " (not in .git/hooks or .git/config)"
+        return (f"commands may write only in {where}{guarded}, can't read credentials such as "
+                f"~/.ssh, and have {net}")
 
-    def blocked_hint(self, output: str) -> str | None:
+    def blocked_hint(self, output: str, read_only: bool = False, can_leave: bool = True) -> str | None:
         """A note for the model when a failure looks like the sandbox's doing."""
         if not _BLOCKED.search(output):
             return None
-        return (f"[This may be the sandbox: {self.describe()}. If the task really needs this, run the "
-                "command again with sandbox: false; the user will be asked to approve it.]")
+        way_out = (" If the task really needs this, run the command again with sandbox: false; the "
+                   "user will be asked to approve it." if can_leave else "")
+        return f"[This may be the sandbox: {self.describe(read_only)}.{way_out}]"
 
     # --- per platform -----------------------------------------------------
 
-    def seatbelt_profile(self) -> str:
+    def seatbelt_profile(self, read_only: bool = False) -> str:
         def paths(kind: str, items: list[Path]) -> str:
             return " ".join(f'({kind} "{_sb_quote(str(p))}")' for p in items)
 
@@ -117,8 +137,8 @@ class Sandbox:
             "(version 1)",
             "(allow default)",
             "(deny file-write*)",
-            f'(allow file-write* {paths("subpath", self.writable)} (subpath "/dev"))',
-            f"(deny file-write* {paths('subpath', self.protected)})",
+            f'(allow file-write* {paths("subpath", self.writable(read_only))} (subpath "/dev"))',
+            f"(deny file-write* {paths('subpath', self.read_only_paths(read_only))})",
             f"(deny file-read* file-write* {paths('subpath', self.hidden)})",
         ]
         if not self.network:
@@ -131,13 +151,13 @@ class Sandbox:
             ]
         return "\n".join(lines) + "\n"
 
-    def bwrap_args(self, cwd: Path) -> list[str]:
+    def bwrap_args(self, cwd: Path, read_only: bool = False) -> list[str]:
         args = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 "--unshare-pid", "--die-with-parent", "--new-session"]
-        for p in self.writable:
+        for p in self.writable(read_only):
             if p.exists():
                 args += ["--bind", str(p), str(p)]
-        for p in self.protected:
+        for p in self.read_only_paths(read_only):
             if p.exists():
                 args += ["--ro-bind", str(p), str(p)]
         for p in self.hidden:

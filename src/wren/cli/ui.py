@@ -124,7 +124,9 @@ class RichUI(AgentUI):
         elif "\n" in label:
             self.console.print(Padding(Syntax(label, "bash", theme=self.code_theme), (0, 0, 0, 4)))
         if not self.interactive:
-            self.console.print("  [yellow]denied (no terminal to ask for approval; use --yolo)[/]")
+            # Leaving the sandbox asks even with --yolo, so don't suggest it then.
+            hint = "" if label.endswith("(outside the sandbox)") else "; use --yolo"
+            self.console.print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
             return Decision(allow=False)
 
         key = key or tool.permission_key(args)
