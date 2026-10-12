@@ -74,6 +74,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--memory", action=argparse.BooleanOptionalAction, default=None,
                    help="use long-term memory: the model reads and keeps memories across "
                         "sessions (default: on, off with -p)")
+    p.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=None,
+                   help="run shell commands in a sandbox: writes only in the project and temp "
+                        "directories, no network (default: [sandbox] enabled in the config, off)")
     p.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
     p.add_argument("--no-checkpoints", action="store_true", help="don't snapshot the workspace before each prompt")
     p.add_argument("--version", action="version", version=f"wren {__version__}")

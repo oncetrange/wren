@@ -129,7 +129,7 @@ class Agent:
         # Messages the user sent while the agent worked (see steer).
         self._inbox: deque[str] = deque()
         self.log = log or SessionLog(directory=None)
-        self.tools = {t.name: t for t in (tools if tools is not None else default_tools())}
+        self.tools = {t.name: t for t in (tools if tools is not None else default_tools(sandboxed=ctx.sandbox is not None))}
         # Skills: listed in the system prompt, loaded by the model with the skill tool.
         self.skills = skills or {}
         if any(s.model_invocable for s in self.skills.values()):
@@ -165,7 +165,8 @@ class Agent:
         self.system = system or build_system_prompt(
             ctx.cwd, prompt_section(self.skills),
             memory=memory_section(self.memory) if self.memory else "",
-            mcp=mcp.instructions() if mcp else "")
+            mcp=mcp.instructions() if mcp else "",
+            sandbox=ctx.sandbox.describe() if ctx.sandbox else "")
         self.conv = Conversation()
         self.usage = Usage()
         self.cost: float | None = 0.0 if model.price else None
@@ -643,7 +644,8 @@ class Agent:
         must_ask = tool.always_confirm(call.input) or self.permissions.must_ask(tool, call.input)
         if must_ask or (not allowed(verdicts) and self.permissions.needs_approval(tool, call.input)):
             self.notify(f"wren needs your approval: {call.name} {label}".strip())
-            decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx))
+            decision = self.ui.confirm(tool, call.input, label, tool.preview(call.input, self.ctx),
+                                       key=self.permissions.key(tool, call.input))
             if not decision.allow:
                 text = "The user rejected this tool call, so it was not run."
                 if decision.feedback:
@@ -654,7 +656,7 @@ class Agent:
             if (decision.remember or decision.persist) and not must_ask:
                 self.permissions.remember(tool, call.input, persist=decision.persist)
                 if decision.persist and self.permissions.project_file is not None:
-                    self.ui.notice(f"always allowed in this project: {tool.permission_key(call.input)} "
+                    self.ui.notice(f"always allowed in this project: {self.permissions.key(tool, call.input)} "
                                    f"(saved in {self.permissions.project_file})")
 
         return self._finish(call, tool, self._run_tool(tool, call)), None

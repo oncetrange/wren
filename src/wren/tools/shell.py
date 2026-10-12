@@ -7,10 +7,13 @@ import signal
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, truncate, wildcard
 from wren.tools.jobs import start_in_background
+
+if TYPE_CHECKING:
+    from wren.sandbox import Sandbox
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
@@ -48,7 +51,11 @@ class Bash(Tool):
     }
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
-        return args.get("command", "")
+        command = args.get("command", "")
+        return f"{command} (outside the sandbox)" if self.escapes_sandbox(args) and ctx.sandbox else command
+
+    def escapes_sandbox(self, args: dict[str, Any]) -> bool:
+        return args.get("sandbox") is False
 
     def permission_key(self, args: dict[str, Any]) -> str:
         command = args.get("command", "").strip()
@@ -80,9 +87,10 @@ class Bash(Tool):
         return False
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
+        sandbox = None if self.escapes_sandbox(args) else ctx.sandbox
         if args.get("run_in_background"):
             env = {**os.environ, "PAGER": "cat", "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0"}
-            return start_in_background(args["command"], ctx, env)
+            return start_in_background(args["command"], ctx, env, sandbox)
         timeout = min(max(args.get("timeout", DEFAULT_TIMEOUT), 1), MAX_TIMEOUT)
         cwd_file = Path(tempfile.mkstemp(prefix="wren-cwd-")[1])
         env = {**os.environ, "PAGER": "cat", "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
@@ -90,15 +98,21 @@ class Bash(Tool):
         # The EXIT trap records where the shell ended up, even if the command calls `exit`.
         script = f'trap \'pwd -P > "$WREN_CWD_FILE"\' EXIT\n{args["command"]}'
         try:
-            return self._run(script, timeout, env, cwd_file, ctx)
+            output = self._run(script, timeout, env, cwd_file, ctx, sandbox)
         finally:
             cwd_file.unlink(missing_ok=True)
+        if sandbox is not None and output.is_error and (hint := sandbox.blocked_hint(output.content)):
+            output.content += f"\n{hint}"
+        return output
 
     def _run(self, script: str, timeout: int, env: dict[str, str], cwd_file: Path,
-             ctx: ToolContext) -> ToolOutput:
+             ctx: ToolContext, sandbox: Sandbox | None) -> ToolOutput:
         start_dir = ctx.bash_cwd
+        argv = ["bash", "-c", script]
+        if sandbox is not None:
+            argv, env = sandbox.wrap(argv, start_dir), sandbox.env(env)
         proc = subprocess.Popen(
-            ["bash", "-c", script],
+            argv,
             cwd=start_dir,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -131,6 +145,19 @@ class Bash(Tool):
             is_error=code != 0,
             summary=f"exit {code}, {lines} line{'s' if lines != 1 else ''} of output",
         )
+
+
+class SandboxedBash(Bash):
+    """bash while there is a sandbox: the same tool, plus the way out of it. The
+    parameter only exists here, so without a sandbox the model sees bash as ever."""
+
+    description = Bash.description + (
+        " Commands run in a sandbox (see the system prompt). If it blocks something the task "
+        "really needs, run the command again with sandbox: false; the user is asked first.")
+    input_schema = {**Bash.input_schema, "properties": {
+        **Bash.input_schema["properties"],
+        "sandbox": {"type": "boolean", "description": "false: run outside the sandbox (needs the user's approval)"},
+    }}
 
 
 def _kill_group(proc: subprocess.Popen) -> None:

@@ -60,7 +60,7 @@ class RecordingUI(AgentUI):
     def model_finished(self): pass
     def tool_started(self, name, label): self.events.append(("tool", name, label))
 
-    def confirm(self, tool, args, label, preview) -> Decision:
+    def confirm(self, tool, args, label, preview, key=None) -> Decision:
         self.events.append(("confirm", tool.name, preview))
         return self.decisions.pop(0) if self.decisions else Decision(allow=True)
 

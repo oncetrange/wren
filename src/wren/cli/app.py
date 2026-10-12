@@ -33,6 +33,7 @@ from wren.llm.base import Provider
 from wren.llm.factory import create_provider
 from wren.mcp_servers import PROJECT_MCP, McpServers, load_project_mcp
 from wren.memory import Memories
+from wren.sandbox import Sandbox, SandboxUnavailable
 from wren.settings import Settings
 from wren.skills import discover
 from wren.skills import expand as expand_skill
@@ -68,14 +69,15 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
     memories = Memories.for_project(cwd)
     for warning in skill_warnings + agent_warnings:
         ui.notice(warning)
+    sandbox = make_sandbox(args, config, cwd, ui)
     mcp = connect_mcp(config, cwd, args, ui)
     try:
         agent = Agent(
             provider,
             model,
-            ToolContext(cwd=cwd),
+            ToolContext(cwd=cwd, sandbox=sandbox),
             ui,
-            permissions=permissions(args, config, cwd),
+            permissions=permissions(args, config, cwd, sandboxed=sandbox is not None),
             log=SessionLog(path=state.path) if state else SessionLog(),
             checkpoints=None if args.no_checkpoints else Checkpoints(cwd),
             max_turns=args.max_turns,
@@ -105,11 +107,28 @@ def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -
     return Session(agent, config, memories, mcp)
 
 
-def permissions(args: argparse.Namespace, config: Config, cwd: Path) -> Permissions:
+def permissions(args: argparse.Namespace, config: Config, cwd: Path, sandboxed: bool = False) -> Permissions:
     """The mode asked for, and the rules from the user config and saved for this project."""
     mode, saved = permission_mode(args), project_rules_file(cwd)
     return Permissions(mode=mode, allow_auto=mode == "auto", cwd=cwd, project_file=saved,
-                       rules=config.permissions + load_project_rules(saved))
+                       rules=config.permissions + load_project_rules(saved), sandboxed=sandboxed)
+
+
+def make_sandbox(args: argparse.Namespace, config: Config, cwd: Path, ui: RichUI) -> Sandbox | None:
+    """The sandbox for shell commands, if asked for. Raises ConfigError when it
+    can't be had and nobody would approve commands instead (headless, or auto mode)."""
+    if not (config.sandbox.enabled if args.sandbox is None else args.sandbox):
+        return None
+    sandbox = Sandbox(cwd, config.sandbox, secret_env=tuple(m.key_env for m in config.models.values()))
+    try:
+        sandbox.check()
+    except SandboxUnavailable as e:
+        if args.prompt or permission_mode(args) == "auto":
+            raise ConfigError(f"no sandbox: {e}. Run without --sandbox (or [sandbox] enabled) "
+                              "to run commands unsandboxed.") from None
+        ui.notice(f"no sandbox: {e}; commands will ask for approval as usual")
+        return None
+    return sandbox
 
 
 def extra_tools(args: argparse.Namespace, config: Config) -> list[Tool]:

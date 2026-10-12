@@ -31,8 +31,10 @@ class AgentUI:
     def tool_started(self, name: str, label: str) -> None: ...
     def tool_finished(self, name: str, output: ToolOutput) -> None: ...
 
-    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None) -> Decision:
-        """May this call run? (Only asked when the permission mode says so.)"""
+    def confirm(self, tool: Tool, args: dict[str, Any], label: str, preview: str | None,
+                key: str | None = None) -> Decision:
+        """May this call run? (Only asked when the permission mode says so.) `key` is
+        what answering "always" would allow (default: the tool's permission key)."""
         return Decision(allow=False)
 
     def review_plan(self, plan: str) -> PlanDecision | None:
