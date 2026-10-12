@@ -44,6 +44,9 @@ class AgentUI:
     def notice(self, text: str) -> None: ...
     def error(self, text: str) -> None: ...
 
+    def steered(self, text: str) -> None:
+        """A message the user sent while the agent worked, now passed to the model."""
+
     def attached(self, label: str, summary: str) -> None:
         """A file @-mentioned in the prompt, and what was attached."""
 

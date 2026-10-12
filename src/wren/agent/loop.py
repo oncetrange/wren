@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
@@ -37,6 +38,7 @@ from wren.agent.events import (
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.plans import (
     CUT_OFF,
+    STEERED,
     TIME_CHECK,
     TIME_UP,
     TURN_BUDGET,
@@ -124,6 +126,8 @@ class Agent:
         self.ctx = ctx
         self.ui = ui
         self.permissions = permissions or Permissions()
+        # Messages the user sent while the agent worked (see steer).
+        self._inbox: deque[str] = deque()
         self.log = log or SessionLog(directory=None)
         self.tools = {t.name: t for t in (tools if tools is not None else default_tools())}
         # Skills: listed in the system prompt, loaded by the model with the skill tool.
@@ -272,6 +276,9 @@ class Agent:
                     continue
                 cut_offs = 0
                 if not calls:
+                    if steered := self._take_steering():
+                        self._add_user(steered)
+                        continue
                     if stop_blocks < MAX_STOP_BLOCKS:
                         blocks = [v for v in self.hooks.run("stop", Stop(self, final_text, stopped_by))
                                   if v.decision == "block"]
@@ -605,10 +612,11 @@ class Agent:
             # What the user typed is a message from them, not tool output: it
             # goes in as their own text after the tool results.
             blocks.append(TextBlock(denial.feedback))
-        self._add_user(blocks)
+        steered = self._take_steering()
+        self._add_user(blocks + steered)
         self._results = []
         # A bare "no" hands control back to the user; with a message, the model responds to it.
-        return denial is None or bool(denial.feedback)
+        return denial is None or bool(denial.feedback) or bool(steered)
 
     def _execute(self, call: ToolUseBlock) -> tuple[ToolResultBlock, Decision | None]:
         """Run one call. Returns its result, and the user's decision if they rejected it."""
@@ -790,6 +798,28 @@ class Agent:
     def _append(self, message: Message) -> None:
         self.conv.append(message)
         self.log.record("message", **message.to_dict())
+
+    def steer(self, text: str) -> None:
+        """Pass the model a message while it works, from any thread: it goes in
+        after the current tool calls, or as the next prompt if the model is done."""
+        self._inbox.append(text)
+
+    def unsent(self) -> list[str]:
+        """Messages passed to steer that the model hasn't seen yet; takes them back."""
+        texts = []
+        while self._inbox:
+            texts.append(self._inbox.popleft())
+        return texts
+
+    @property
+    def queued(self) -> int:
+        return len(self._inbox)
+
+    def _take_steering(self) -> list[ContentBlock]:
+        texts = self.unsent()
+        for text in texts:
+            self.ui.steered(text)
+        return [TextBlock(reminder(STEERED)), *(TextBlock(t) for t in texts)] if texts else []
 
     def _add_user(self, blocks: list[ContentBlock]) -> None:
         self.conv.add_user(blocks)

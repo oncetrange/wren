@@ -42,6 +42,9 @@ so nothing happened. Continue from where it stopped: if you were reasoning, keep
 take the next step now with a tool call; if you were writing your final answer, finish it more \
 concisely."""
 
+STEERED = """The user sent the message below while you were working. It comes after the tool \
+results above: take it into account from now on, even if it changes what you were doing."""
+
 TURN_BUDGET = """You have {left} model calls left before you are stopped. Wrap up: make \
 sure the work is saved the way the user asked (e.g. committed if they asked for a commit), \
 then give your final summary."""
