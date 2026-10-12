@@ -20,6 +20,13 @@ CONFIG_DIR = Path(os.environ.get("WREN_HOME", Path.home() / ".wren"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 
+def project_home(cwd: Path, home: Path | None = None) -> Path:
+    """~/.wren/projects/<cwd with separators as dashes>: what wren keeps about a
+    project outside it, so a cloned repo can't supply it."""
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", str(cwd)).strip("-") or "root"
+    return (home or CONFIG_DIR) / "projects" / slug
+
+
 @dataclass
 class Price:
     """USD per million tokens.
@@ -232,6 +239,37 @@ class WebConfig:
     api_key_env: str | None = None
 
 
+# A permission rule: a tool name (or `edit`), optionally with `:pattern` (see agent/permissions.py).
+_RULE = re.compile(r"^[A-Za-z0-9_*-]+(:.*)?$", re.DOTALL)
+
+
+@dataclass
+class PermissionRules:
+    """[permissions]: calls to run without asking, refuse, or always ask about."""
+
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+    ask: list[str] = field(default_factory=list)
+
+    def __add__(self, other: PermissionRules) -> PermissionRules:
+        return PermissionRules(self.allow + other.allow, self.deny + other.deny, self.ask + other.ask)
+
+
+def parse_permission_rules(raw: dict[str, Any], source: str) -> PermissionRules:
+    if unknown := set(raw) - {"allow", "deny", "ask"}:
+        raise ConfigError(f"{source}: [permissions]: unknown keys {sorted(unknown)}")
+    lists = {}
+    for kind in ("allow", "deny", "ask"):
+        rules = raw.get(kind, [])
+        if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+            raise ConfigError(f"{source}: [permissions] {kind} must be a list of strings")
+        if bad := [r for r in rules if not _RULE.match(r)]:
+            raise ConfigError(f"{source}: [permissions] {kind}: not a rule: {bad[0]!r} "
+                              "(expected `tool` or `tool:pattern`, e.g. `bash:pytest`)")
+        lists[kind] = list(rules)
+    return PermissionRules(**lists)
+
+
 @dataclass
 class Config:
     default_model: str = "kimi"
@@ -239,6 +277,7 @@ class Config:
     hooks: list[HookSpec] = field(default_factory=list)
     mcp: list[McpServerConfig] = field(default_factory=list)
     web: WebConfig = field(default_factory=WebConfig)
+    permissions: PermissionRules = field(default_factory=PermissionRules)
 
     def model(self, name: str | None = None) -> ModelConfig:
         """Look a model up by its config name, or by its model id with an
@@ -277,6 +316,7 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
         hooks=parse_hooks(raw.get("hooks", {}), source="user"),
         mcp=parse_mcp_servers(raw.get("mcp", {}), source="user"),
         web=_web_config(raw.get("web", {})),
+        permissions=parse_permission_rules(raw.get("permissions", {}), source=str(path)),
     )
 
 

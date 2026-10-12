@@ -29,7 +29,7 @@ wren --plan                       # start in plan mode: investigate, propose, th
 wren --yolo                       # never ask before editing files or running commands
 ```
 
-In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/jobs`, `/schedule`, `/loop`, `/hooks`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
+In a session: `/undo`, `/rewind`, `/compact`, `/todos`, `/skills`, `/agents`, `/memory`, `/remember`, `/mcp`, `/jobs`, `/schedule`, `/loop`, `/hooks`, `/permissions`, `/resume`, `/clear`, `/model`, `/theme`, `/keys`, `/suggest`, `/cost`, `/help`. Pickers use ↑/↓ and Enter; Esc cancels. Ctrl-C interrupts the agent.
 
 Mention files with `@`: `explain @src/app.py`, `@src/app.py#L40-80` for some lines, `@docs/` for
 a directory listing, `@"name with spaces.md"`. Typing `@` completes paths in the bottom line (↑/↓,
@@ -38,6 +38,7 @@ model can edit it right away; mentions of paths that don't exist (or e-mail addr
 alone.
 
 - **Permission modes** (Shift+Tab to switch, shown in the bottom bar): *ask before edits* (default), *accept edits* (edits run freely, commands still ask), *plan* (read-only), and *auto* (`--yolo`).
+- **Permission rules**: at an approval prompt, `a` allows that command (by its program, e.g. every `pytest …`) for the session and `p` for this project from now on. For rules of your own, see [Permission rules](#permission-rules).
 - **Plan mode**: the model investigates without changing anything, then presents a plan. Approve it (auto-accepting edits or asking for each), or send it back with what to change. Approved plans are saved to `.wren/plans/`. Headless, `wren -p "..." --plan` returns the plan without touching files.
 - **Task list**: for multi-step work the model keeps a checklist (`todo_write`), shown as it changes and with `/todos`. It survives compaction and follows `/undo`; if the model tries to finish with open items it gets one reminder.
 - **Next-prompt suggestions**: after each answer, wren guesses what you'll type next and shows it as grey text in the empty input; Tab or → accepts it, typing something else dismisses it. It costs one extra request per answer (the same prefix as the last one, so mostly a prompt-cache read); `/suggest` turns it off.
@@ -97,6 +98,45 @@ read from the usage report (caching itself is automatic). For OpenAI's own endpo
 limit goes in `max_completion_tokens`; set `max_tokens_param` to override.
 
 Models are only read from the user config, never from the project directory, so a repository can't redirect your API key to its own endpoint.
+
+## Permission rules
+
+Rules say what runs without asking, what is refused, and what always asks, in every project
+(`~/.wren/config.toml`):
+
+```toml
+[permissions]
+allow = ["bash:pytest", "bash:git diff", "bash:git log", "web_fetch:*.python.org"]
+deny = ["bash:git push --force", "bash:rm -rf", "edit:.env", "read_file:*secret*"]
+ask = ["bash:git push", "mcp__github__*"]     # asks even in auto mode (--yolo)
+```
+
+A rule is a tool name, or `edit` for both `edit_file` and `write_file`, optionally followed by
+`:pattern`, where `*` matches anything. What the pattern is matched against depends on the tool:
+
+- For `bash`, it is matched against the command. `bash:git diff` covers `git diff` with any
+  arguments, but not `git diffx`.
+- For the file tools, it is matched against the path, relative to the working directory.
+  A pattern without `/` also matches a file name, so `edit:*.lock` matches anywhere in the tree.
+- For `web_fetch`, it is matched against the host.
+
+A bare name covers every call of that tool. Tool names can use `*` too, as in
+`mcp__github__*`.
+
+Deny beats ask, and ask beats allow. Deny and ask rules apply in every mode, auto included.
+A call matched by an ask rule is never remembered.
+
+An allow rule only covers a simple command. A command with `&&`, `|`, `;`, a redirection or
+`$(…)` is allowed only when the rule spells out that whole command. Deny and ask rules look at
+every command inside a compound one, so `deny = ["bash:rm"]` also refuses `make && rm -rf x`.
+That check is a guard against mistakes, not a sandbox. For a hard rule, use a `PreToolUse`
+hook.
+
+Answering `p` at a prompt saves the allow rule in
+`~/.wren/projects/<path>/permissions.toml`, which uses the same format and can be edited by
+hand. The file lives outside the repository on purpose: a cloned repository can't grant itself
+any permissions. `/permissions` shows the current mode, every rule in force, and what this
+session allows.
 
 ## Architecture
 

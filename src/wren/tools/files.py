@@ -6,7 +6,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, read_text, write_text
+from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, path_matches, read_text, write_text
 from wren.tools.matching import closest_region, find_loose, split_block
 
 MAX_LINES = 2000
@@ -88,6 +88,9 @@ class ReadFile(Tool):
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
 
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        return path_matches(pattern, args.get("path", ""), cwd)
+
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         path = ctx.resolve(args["path"])
         if not path.exists():
@@ -137,6 +140,9 @@ class WriteFile(Tool):
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
+
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        return path_matches(pattern, args.get("path", ""), cwd)
 
     edits_files = True
 
@@ -194,6 +200,9 @@ class EditFile(Tool):
 
     def describe(self, args: dict[str, Any], ctx: ToolContext) -> str:
         return args.get("path", "")
+
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        return path_matches(pattern, args.get("path", ""), cwd)
 
     edits_files = True
 

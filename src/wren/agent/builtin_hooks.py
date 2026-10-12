@@ -19,7 +19,7 @@ from wren.agent.todos import format_todos
 
 
 def plan_guard(e: PreToolUse) -> Verdict | None:
-    """Plan mode is read-only. Registered first, so no hook can allow past it."""
+    """Deny rules, and plan mode being read-only. Registered first, so no hook can allow past it."""
     reason = e.agent.permissions.blocked(e.tool, e.call.input)
     return Verdict("deny", reason) if reason else None
 

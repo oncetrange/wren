@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -8,12 +9,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, truncate
+from wren.tools.base import Tool, ToolContext, ToolError, ToolOutput, truncate, wildcard
 from wren.tools.jobs import start_in_background
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
 _COMPOUND = ("&&", "||", ";", "|", "`", "$(", ">", "<", "\n")
+# Where one command of a compound command ends and the next begins.
+_SEPARATORS = re.compile(r"&&|\|\||[;|&\n`()]|\$\(")
 
 
 class Bash(Tool):
@@ -58,6 +61,23 @@ class Bash(Tool):
         except (ValueError, IndexError):
             return f"bash:{command}"
         return f"bash:{program}"
+
+    def matches_rule(self, pattern: str, args: dict[str, Any], cwd: Path, *, allow: bool) -> bool:
+        """`bash:git diff` covers `git diff` with any arguments. An allow rule only
+        covers a simple command (a compound one only verbatim, as "always allow"
+        saved it), while deny and ask rules look at every command in it."""
+        command = args.get("command", "").strip()
+        if any(tok in command for tok in _COMPOUND):
+            if allow:
+                return pattern == command
+            parts = [command, *_SEPARATORS.split(command)]
+        else:
+            parts = [command]
+        for part in parts:
+            words = " ".join(part.split())
+            if words and (wildcard(pattern, words) or wildcard(pattern + " *", words)):
+                return True
+        return False
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         if args.get("run_in_background"):
