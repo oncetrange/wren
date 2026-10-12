@@ -8,6 +8,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # a normal run takes about 2
     strategy:
       matrix:
         python: ["3.12", "3.13"]
@@ -27,4 +28,4 @@ jobs:
       - name: Type check
         run: uv run pyright
       - name: Test
-        run: uv run pytest -q
+        run: uv run pytest -q --durations=10  # the slowest tests, to catch one that waits
