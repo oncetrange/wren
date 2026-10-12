@@ -63,6 +63,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]  # tests import bench/ as well as src/wren
+# A test stuck this long dumps every thread's stack, to show where it waits.
+faulthandler_timeout = 120
 
 [tool.ruff]
 line-length = 110
