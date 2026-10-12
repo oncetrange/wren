@@ -151,8 +151,9 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
   sandbox. Commits work as usual.
 - can read everything except where credentials live: `~/.ssh`, `~/.aws`, `~/.gnupg`,
   `~/.config/gh`, `~/.netrc`, `~/.wren/env` and the like.
-- has no network. On macOS, servers on localhost are still reachable. On Linux, each command
-  has its own localhost, so it can reach only servers it started itself.
+- has no network, or only to the hosts you allow (see below). On macOS, servers on localhost
+  are still reachable. On Linux, each command has its own localhost, so it can reach only
+  servers it started itself.
 - doesn't see API keys and tokens (`*_API_KEY`, `*_TOKEN`, each model's key variable).
 
 ```toml
@@ -160,8 +161,32 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
 enabled = true
 allow_write = ["~/.cache/uv"]      # e.g. so `uv run` can use its cache
 deny_read = ["~/work/secrets"]
-network = "deny"                   # or "allow"
+network = "deny"                   # or "allow", or a list of hosts, below
 ```
+
+To let commands reach certain hosts, make `network` a list of them:
+
+```toml
+network = ["@packages", "github.com", "*.githubusercontent.com"]
+```
+
+`@packages` stands for the package registries: PyPI, npm and yarn, crates.io, the Go module
+proxy, RubyGems and Maven Central. `example.com` allows that host only, and `*.example.com`
+allows its subdomains.
+
+The traffic goes through a proxy inside wren, which commands get in `HTTP_PROXY` and
+`HTTPS_PROXY`. pip, uv, npm, cargo, go and git over https all use those variables. The sandbox
+blocks every other connection, so a host that isn't on the list is refused, whichever program
+tries.
+
+HTTPS stays end to end. The proxy sees only the host name and never decrypts anything.
+
+On Linux, the command's own network namespace can't reach the proxy directly. So a small bridge
+(`wren.netbridge`) carries the connection through a unix socket.
+
+When the proxy refuses a host, the model is told which host it was. `/sandbox` lists the hosts
+refused lately. `github.com` is left out of `@packages` on purpose: anyone who can reach it
+can push code out of the sandbox. Add it yourself if you need it.
 
 Commands in the sandbox run without asking, in every permission mode. Deny and ask rules still
 apply to them.
