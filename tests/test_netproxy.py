@@ -117,8 +117,11 @@ def test_sandboxed_commands_get_the_allowed_hosts_and_nothing_else(tmp_path, ups
     sb = make(tmp_path, network=["127.0.0.1"])
     ctx = ToolContext(cwd=sb.cwd, sandbox=sb)
     py = sys.executable
-    # The proxy from the environment, explicitly: NO_PROXY would send 127.0.0.1 direct.
-    fetch = ("import os, urllib.request as u; o = u.build_opener(u.ProxyHandler({{'http': os.environ['HTTP_PROXY']}})); "
+    # Through the proxy, though the upstream is on 127.0.0.1, which NO_PROXY would send direct.
+    # On Linux going direct can't work (the command has a network namespace of its own), so
+    # reaching the upstream there proves the way through the bridge.
+    fetch = ("import os, urllib.request as u; [os.environ.pop(k, None) for k in ('NO_PROXY', 'no_proxy')]; "
+             "o = u.build_opener(u.ProxyHandler({{'http': os.environ['HTTP_PROXY']}})); "
              "print(o.open('{url}').read().decode())")
     ok = SandboxedBash().run({"command": f"{py} -c \"{fetch.format(url=f'http://127.0.0.1:{port}/in')}\""}, ctx)
     assert "hello from upstream" in ok.content and seen[-1][0] == "/in", ok.content
