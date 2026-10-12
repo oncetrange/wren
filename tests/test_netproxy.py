@@ -121,7 +121,7 @@ def test_sandboxed_commands_get_the_allowed_hosts_and_nothing_else(tmp_path, ups
     fetch = ("import os, urllib.request as u; o = u.build_opener(u.ProxyHandler({{'http': os.environ['HTTP_PROXY']}})); "
              "print(o.open('{url}').read().decode())")
     ok = SandboxedBash().run({"command": f"{py} -c \"{fetch.format(url=f'http://127.0.0.1:{port}/in')}\""}, ctx)
-    assert "hello from upstream" in ok.content and seen[-1][0] == "/in"
+    assert "hello from upstream" in ok.content and seen[-1][0] == "/in", ok.content
     no = SandboxedBash().run({"command": f"{py} -c \"{fetch.format(url='http://blocked.invalid/')}\""}, ctx)
-    assert no.is_error and "The proxy refused blocked.invalid" in no.content
+    assert no.is_error and "The proxy refused blocked.invalid" in no.content, no.content
     assert "network only to 127.0.0.1" in sb.describe()
