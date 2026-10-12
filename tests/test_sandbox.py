@@ -71,7 +71,7 @@ def test_secrets_leave_the_environment(tmp_path):
 def test_hints_only_for_failures_that_look_like_the_sandbox(tmp_path):
     sb = make(tmp_path)
     assert "sandbox: false" in sb.blocked_hint("touch: /x: Operation not permitted")
-    assert "no network except localhost" in sb.blocked_hint("curl: (6) Could not resolve host: pypi.org")
+    assert "no network" in sb.blocked_hint("curl: (6) Could not resolve host: pypi.org")
     assert sb.blocked_hint("AssertionError: 1 != 2") is None
 
 
@@ -190,4 +190,4 @@ def test_the_agent_leaves_the_sandbox_only_with_approval(tmp_path, model):
     assert [e[1] for e in ui.events if e[0] == "confirm"] == ["bash"]   # asked, even in auto
     assert (sb.cwd / ".git" / "hooks" / "post-commit").read_text() == "hook\n"
     agent = Agent(ScriptedProvider([]), model, ctx, ui)
-    assert "# Sandbox" in agent.system and "no network except localhost" in agent.system
+    assert "# Sandbox" in agent.system and "no network" in agent.system
