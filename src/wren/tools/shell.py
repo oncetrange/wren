@@ -6,6 +6,7 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -97,12 +98,14 @@ class Bash(Tool):
                "WREN_CWD_FILE": str(cwd_file)}
         # The EXIT trap records where the shell ended up, even if the command calls `exit`.
         script = f'trap \'pwd -P > "$WREN_CWD_FILE"\' EXIT\n{args["command"]}'
+        started = time.monotonic()
         try:
             output = self._run(script, timeout, env, cwd_file, ctx, sandbox)
         finally:
             cwd_file.unlink(missing_ok=True)
         if sandbox is not None and output.is_error and (
-                hint := sandbox.blocked_hint(output.content, ctx.read_only_shell, ctx.can_leave_sandbox)):
+                hint := sandbox.blocked_hint(output.content, ctx.read_only_shell, ctx.can_leave_sandbox,
+                                             since=started)):
             output.content += f"\n{hint}"
         return output
 
