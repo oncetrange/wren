@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 
+from wren.cli.screen import Printer
 from wren.config import ConfigError, load_config
 from wren.credentials import read_env_file
 from wren.schedules import (
@@ -110,7 +111,7 @@ def schedule_main(argv: list[str], console: Console | None = None) -> int:
     return 0
 
 
-def print_jobs(console: Console, store: Schedules) -> None:
+def print_jobs(console: Printer, store: Schedules) -> None:
     jobs = store.jobs()
     if not jobs:
         console.print("[dim]no scheduled jobs; add one with `wren schedule add CRON PROMPT`[/]")
@@ -124,7 +125,7 @@ def print_jobs(console: Console, store: Schedules) -> None:
         console.print(f"    {escape(job.prompt if len(job.prompt) <= 100 else job.prompt[:99] + '…')}")
 
 
-def print_run(console: Console, entry: dict) -> None:
+def print_run(console: Printer, entry: dict) -> None:
     color = {"done": "green", "skipped": "yellow", "missed": "yellow"}.get(entry.get("status", ""), "red")
     when = entry.get("started") or entry.get("scheduled", "")
     extra = []

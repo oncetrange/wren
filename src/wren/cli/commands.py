@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,12 +27,11 @@ from wren.agent.session import SessionLog, list_sessions
 from wren.agent.subagents import TaskTool
 from wren.agent.todos import format_todos, progress
 from wren.checkpoint import CheckpointError
+from wren.cli import render
 from wren.cli.app import new_sandbox, run_prompt
-from wren.cli.pickers import confirm, pick
 from wren.cli.schedule_cmd import print_jobs, print_run
 from wren.cli.terminal import detect_background, shift_enter_help
 from wren.cli.text import one_line, session_options
-from wren.cli.ui import fmt_tokens
 from wren.config import CONFIG_FILE, ConfigError
 from wren.llm.factory import create_provider
 from wren.llm.types import LLMError
@@ -77,7 +75,7 @@ def find(name: str) -> Command | None:
 def _undo(repl: Repl, arg: str) -> None:
     timeline = repl.agent.conv.timeline
     if not timeline:
-        repl.console.print("[dim]nothing to undo[/]")
+        repl.screen.print("[dim]nothing to undo[/]")
     else:
         rewind(repl, len(timeline) - 1)
 
@@ -86,7 +84,7 @@ def _undo(repl: Repl, arg: str) -> None:
 def _rewind(repl: Repl, arg: str) -> None:
     timeline = repl.agent.conv.timeline
     if not timeline:
-        repl.console.print("[dim]nothing to rewind to[/]")
+        repl.screen.print("[dim]nothing to rewind to[/]")
         return
     options = []
     for i, point in enumerate(timeline):
@@ -94,7 +92,7 @@ def _rewind(repl: Repl, arg: str) -> None:
             options.append((i, f"before: {one_line(point.label)}"))
         else:
             options.append((i, "⟲ undo compaction (bring back the full history)"))
-    index = pick("Go back to which point?", options, default=len(timeline) - 1)
+    index = repl.screen.pick("Go back to which point?", options, default=len(timeline) - 1)
     if index is not None:
         rewind(repl, index)
 
@@ -111,7 +109,7 @@ def _diff(repl: Repl, arg: str) -> None:
         return
     turns = [p for p in repl.agent.conv.timeline if p.kind == "turn" and p.commit is not None]
     if not turns:
-        repl.console.print("[dim]no prompt sent yet in this session[/]")
+        repl.screen.print("[dim]no prompt sent yet in this session[/]")
         return
     point = turns[0] if whole else turns[-1]
     try:
@@ -121,19 +119,19 @@ def _diff(repl: Repl, arg: str) -> None:
         return
     since = "the start of this session" if whole else f"before: {one_line(point.label)}"
     if not patch.strip():
-        repl.console.print(f"[dim]no changes since {escape(since)}[/]")
+        repl.screen.print(f"[dim]no changes since {escape(since)}[/]")
         return
-    repl.console.print(f"[dim]changes since {escape(since)}[/]")
-    repl.ui.print_patch(patch)
+    repl.screen.print(f"[dim]changes since {escape(since)}[/]")
+    repl.screen.page(*render.patch(patch, repl.ui.code_theme))
 
 
 def rewind(repl: Repl, index: int) -> None:
     point = repl.agent.conv.timeline[index]
     if point.kind == "compaction":
-        if not confirm("Undo the compaction and restore the full conversation?", default=True):
+        if not repl.screen.confirm("Undo the compaction and restore the full conversation?", default=True):
             return
         repl.agent.rewind(index)
-        repl.console.print("[dim]full conversation restored; files unchanged[/]")
+        repl.screen.print("[dim]full conversation restored; files unchanged[/]")
         return
 
     try:
@@ -141,27 +139,27 @@ def rewind(repl: Repl, index: int) -> None:
     except CheckpointError as e:
         repl.ui.error(str(e))
         return
-    repl.console.print(f"going back to before: [bold]{escape(one_line(point.label))}[/]")
+    repl.screen.print(f"going back to before: [bold]{escape(one_line(point.label))}[/]")
     if point.commit is None:
-        repl.console.print("[yellow]no file snapshot for this turn; only the conversation is rewound[/]")
+        repl.screen.print("[yellow]no file snapshot for this turn; only the conversation is rewound[/]")
     elif changed:
-        repl.console.print("files to restore:")
+        repl.screen.print("files to restore:")
         for line in changed[:20]:
             status, _, path = line.partition(" ")
             what = {"A": "delete", "D": "recreate", "M": "revert"}.get(status, status)
-            repl.console.print(f"  [dim]{what:<8}[/] {escape(path)}")
+            repl.screen.print(f"  [dim]{what:<8}[/] {escape(path)}")
         if len(changed) > 20:
-            repl.console.print(f"  [dim]… and {len(changed) - 20} more[/]")
+            repl.screen.print(f"  [dim]… and {len(changed) - 20} more[/]")
     else:
-        repl.console.print("[dim]no file changes to restore[/]")
-    if not confirm("Proceed?"):
+        repl.screen.print("[dim]no file changes to restore[/]")
+    if not repl.screen.confirm("Proceed?"):
         return
     try:
         repl.agent.rewind(index)
     except CheckpointError as e:
         repl.ui.error(str(e))
         return
-    repl.console.print("[dim]restored; the prompt is back in the input box[/]")
+    repl.screen.print("[dim]restored; the prompt is back in the input box[/]")
     repl.prefill = point.label
 
 
@@ -183,16 +181,16 @@ def _resume(repl: Repl, arg: str) -> None:
     agent = repl.agent
     sessions = list_sessions(agent.ctx.cwd)
     if not sessions:
-        repl.console.print("[dim]no sessions in this directory yet[/]")
+        repl.screen.print("[dim]no sessions in this directory yet[/]")
         return
-    state = pick("Switch to which session?", session_options(sessions, agent.log.path))
+    state = repl.screen.pick("Switch to which session?", session_options(sessions, agent.log.path))
     if state is None or state.path == agent.log.path:
         return
     repl.save_memories()
     agent.log = SessionLog(path=state.path)
     agent.restore(state)
     agent.start_session("resume")
-    repl.console.clear()
+    repl.screen.clear()
     repl.ui.render_history(agent.messages, agent.tools, agent.ctx)
 
 
@@ -202,7 +200,7 @@ def _clear(repl: Repl, arg: str) -> None:
     old = repl.agent.log.id
     repl.agent.new_session(SessionLog())
     repl.agent.start_session("clear")
-    repl.console.print(f"[dim]new session started · the previous one can be resumed "
+    repl.screen.print(f"[dim]new session started · the previous one can be resumed "
                        f"with /resume or wren -r {old}[/]")
 
 
@@ -210,10 +208,10 @@ def _clear(repl: Repl, arg: str) -> None:
 def _todos(repl: Repl, arg: str) -> None:
     todos = repl.agent.conv.todos
     if todos:
-        repl.console.print(f"[bold]Tasks[/] [dim]({progress(todos)})[/]")
-        repl.ui.print_todos_text(format_todos(todos))
+        repl.screen.print(f"[bold]Tasks[/] [dim]({progress(todos)})[/]")
+        repl.screen.print(render.todos(format_todos(todos)))
     else:
-        repl.console.print("[dim]no task list[/]")
+        repl.screen.print("[dim]no task list[/]")
 
 
 # --- what the agent can use --------------------------------------------------------
@@ -223,7 +221,7 @@ def _todos(repl: Repl, arg: str) -> None:
 def _skills(repl: Repl, arg: str) -> None:
     skills = sorted(repl.agent.skills.values(), key=lambda s: s.name)
     if not skills:
-        repl.console.print("[dim]no skills; add one as ~/.wren/skills/<name>/SKILL.md "
+        repl.screen.print("[dim]no skills; add one as ~/.wren/skills/<name>/SKILL.md "
                            "or .wren/skills/<name>/SKILL.md[/]")
         return
     for s in skills:
@@ -233,24 +231,24 @@ def _skills(repl: Repl, arg: str) -> None:
         if s.name in BUILTIN_NAMES:
             notes.append("shadowed by a built-in command")
         hint = f" {escape(s.argument_hint)}" if s.argument_hint else ""
-        repl.console.print(f"  [bold]/{s.name}[/]{hint} [dim]· {' · '.join(notes)}[/]")
-        repl.console.print(f"    {escape(one_line(s.description, 100))}")
+        repl.screen.print(f"  [bold]/{s.name}[/]{hint} [dim]· {' · '.join(notes)}[/]")
+        repl.screen.print(f"    {escape(one_line(s.description, 100))}")
 
 
 @command("/agents", "list subagent types the model can delegate to")
 def _agents(repl: Repl, arg: str) -> None:
     task = repl.agent.tools.get("task")
     if not isinstance(task, TaskTool):
-        repl.console.print("[dim]subagents are off[/]")
+        repl.screen.print("[dim]subagents are off[/]")
         return
     for t in sorted(task.types.values(), key=lambda t: t.name):
         tools = "all tools" if t.tools is None else ", ".join(sorted(t.tools)) or "no tools"
         notes = [t.source, tools] + (["read-only"] if t.read_only else [])
         if t.model:
             notes.append(f"model {t.model}")
-        repl.console.print(f"  [bold]{t.name}[/] [dim]· {escape(' · '.join(notes))}[/]")
-        repl.console.print(f"    {escape(one_line(t.description, 100))}")
-    repl.console.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
+        repl.screen.print(f"  [bold]{t.name}[/] [dim]· {escape(' · '.join(notes))}[/]")
+        repl.screen.print(f"    {escape(one_line(t.description, 100))}")
+    repl.screen.print("[dim]define more in ~/.wren/agents/<name>.md or .wren/agents/<name>.md[/]")
 
 
 @command("/memory", "view, edit or delete memories · /memory on|off|auto")
@@ -263,14 +261,14 @@ def _memory(repl: Repl, arg: str) -> None:
         case "on" | "off":
             memories.set_enabled(arg == "on")
             live = (repl.agent.memory is not None) == (arg == "on")
-            repl.console.print(f"[dim]memory {arg} for this project"
+            repl.screen.print(f"[dim]memory {arg} for this project"
                                + ("" if live else "; takes effect when wren next starts") + "[/]")
             return
         case "auto":
             settings.memory_auto = repl.agent.auto_memory = not settings.memory_auto
             settings.save()
             state = "on" if settings.memory_auto else "off"
-            repl.console.print(f"[dim]reviewing sessions for memories (at compaction and "
+            repl.screen.print(f"[dim]reviewing sessions for memories (at compaction and "
                                f"session end) is {state}[/]")
             return
         case "":
@@ -280,29 +278,29 @@ def _memory(repl: Repl, arg: str) -> None:
             return
     state = "on" if memories.enabled else "off (/memory on enables it)"
     auto = "on" if settings.memory_auto else "off"
-    repl.console.print(f"[bold]Memory[/] {state} · review at session end {auto} (/memory auto)")
+    repl.screen.print(f"[bold]Memory[/] {state} · review at session end {auto} (/memory auto)")
     entries = [(store, m) for store in (memories.user, memories.project) for m in store.all()]
     for store in (memories.user, memories.project):
-        repl.console.print(f"  [dim]{store.scope}: {store.dir}[/]")
+        repl.screen.print(f"  [dim]{store.scope}: {store.dir}[/]")
     if not entries:
-        repl.console.print("[dim]no memories yet[/]")
+        repl.screen.print("[dim]no memories yet[/]")
         return
-    choice = pick("Which memory?", [(i, f"{store.scope}/{m.name} · {one_line(m.description, 70)}")
+    choice = repl.screen.pick("Which memory?", [(i, f"{store.scope}/{m.name} · {one_line(m.description, 70)}")
                                     for i, (store, m) in enumerate(entries)])
     if choice is None:
         return
     store, memory = entries[choice]
-    repl.console.print(Panel(Markdown(memory.body, code_theme=repl.ui.code_theme),
+    repl.screen.print(Panel(Markdown(memory.body, code_theme=repl.ui.code_theme),
                              title=f"{store.scope}/{memory.name} · {memory.type} · {memory.updated}",
                              title_align="left", border_style="dim", padding=(0, 1)))
-    action = pick("Do what with it?", [("keep", "Keep"), ("edit", "Edit in $EDITOR"),
+    action = repl.screen.pick("Do what with it?", [("keep", "Keep"), ("edit", "Edit in $EDITOR"),
                                         ("delete", "Delete")], default="keep")
-    if action == "delete" and confirm(f"Delete {store.scope}/{memory.name}?"):
+    if action == "delete" and repl.screen.confirm(f"Delete {store.scope}/{memory.name}?"):
         store.delete(memory.name)
-        repl.console.print("[dim]deleted[/]")
+        repl.screen.print("[dim]deleted[/]")
     elif action == "edit":
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-        subprocess.run([*shlex.split(editor), str(store.path(memory.name))])
+        repl.screen.run_program([*shlex.split(editor), str(store.path(memory.name))])
         store.reindex()
 
 
@@ -320,80 +318,80 @@ def _remember(repl: Repl, arg: str) -> None:
 def _mcp(repl: Repl, arg: str) -> None:
     mcp = repl.agent.mcp
     if mcp is None:
-        repl.console.print("[dim]no MCP servers; add one as [mcp.<name>] in "
+        repl.screen.print("[dim]no MCP servers; add one as [mcp.<name>] in "
                            f"{CONFIG_FILE} or in the project's {PROJECT_MCP}[/]")
         return
     for state in mcp.servers.values():
         cfg = state.config
         color = {"connected": "green", "failed": "red"}.get(state.status, "yellow")
         target = cfg.url if cfg.url else " ".join([cfg.command or "", *cfg.args])
-        repl.console.print(f"  [bold]{cfg.name}[/] [{color}]{state.status}[/] "
+        repl.screen.print(f"  [bold]{cfg.name}[/] [{color}]{state.status}[/] "
                            f"[dim]· {cfg.transport} · {cfg.source} · {escape(target)}[/]")
         if state.error:
-            repl.console.print(f"    [red]{escape(state.error)}[/]")
+            repl.screen.print(f"    [red]{escape(state.error)}[/]")
         if cfg.transport == "stdio":
-            repl.console.print(f"    [dim]log: {mcp.log_dir / f'mcp-{cfg.name}.log'}[/]")
+            repl.screen.print(f"    [dim]log: {mcp.log_dir / f'mcp-{cfg.name}.log'}[/]")
         names = [t.name + (" (read-only)" if t.read_only else "") for t in state.tools]
         if names:
-            repl.console.print(f"    {escape(', '.join(names))}")
+            repl.screen.print(f"    {escape(', '.join(names))}")
 
 
 @command("/jobs", "background commands: output, or stop one")
 def _jobs(repl: Repl, arg: str) -> None:
     jobs = repl.agent.ctx.jobs
     if not jobs.jobs:
-        repl.console.print("[dim]no background jobs; the model starts them with bash run_in_background[/]")
+        repl.screen.print("[dim]no background jobs; the model starts them with bash run_in_background[/]")
         return
     for job in jobs.jobs.values():
         color = "green" if job.running else "dim"
-        repl.console.print(f"  [bold]{job.id}[/] [{color}]{job.status}[/] [dim]· {job.runtime} ·[/] "
+        repl.screen.print(f"  [bold]{job.id}[/] [{color}]{job.status}[/] [dim]· {job.runtime} ·[/] "
                            f"{escape(job.command if len(job.command) <= 80 else job.command[:79] + '…')}")
-    job_id = pick("Which job?", [(j.id, f"{j.id} · {j.status}") for j in jobs.jobs.values()])
+    job_id = repl.screen.pick("Which job?", [(j.id, f"{j.id} · {j.status}") for j in jobs.jobs.values()])
     if job_id is None:
         return
     job = jobs.jobs[job_id]
     options = [("tail", "Show its latest output")] + ([("kill", "Stop it")] if job.running else [])
-    action = pick("Do what?", options, default="tail")
+    action = repl.screen.pick("Do what?", options, default="tail")
     if action == "tail":
         text = job.log.read_text(errors="replace")[-4000:]
-        repl.console.print(escape(text.rstrip()) or "[dim](no output)[/]")
+        repl.screen.print(escape(text.rstrip()) or "[dim](no output)[/]")
     elif action == "kill":
         jobs.kill(job)
-        repl.console.print(f"[dim]{job_id} {job.status}[/]")
+        repl.screen.print(f"[dim]{job_id} {job.status}[/]")
 
 
 @command("/schedule", "scheduled runs: list, run now, pause or delete")
 def _schedule(repl: Repl, arg: str) -> None:
     store, scheduler = Schedules(), Scheduler()
     state = "running" if scheduler.installed() else "[yellow]not installed[/] (wren schedule install)"
-    repl.console.print(f"[bold]Scheduled runs[/] · scheduler {state}")
-    print_jobs(repl.console, store)
+    repl.screen.print(f"[bold]Scheduled runs[/] · scheduler {state}")
+    print_jobs(repl.screen, store)
     jobs = store.jobs()
     if not jobs:
-        repl.console.print("[dim]ask me to schedule something, or: wren schedule add CRON PROMPT[/]")
+        repl.screen.print("[dim]ask me to schedule something, or: wren schedule add CRON PROMPT[/]")
         return
-    job_id = pick("Which job?", [(j.id, f"{j.id} · {j.cron}") for j in jobs])
+    job_id = repl.screen.pick("Which job?", [(j.id, f"{j.id} · {j.cron}") for j in jobs])
     if job_id is None:
         return
     job = store.get(job_id)
-    action = pick("Do what with it?", [
+    action = repl.screen.pick("Do what with it?", [
         ("logs", "Show recent runs"), ("run", "Run it now, in the background"),
         ("pause", "Resume it" if job.paused else "Pause it"), ("delete", "Delete it")], default="logs")
     if action == "logs":
         runs = store.runs(job_id, 5)
         for entry in runs:
-            print_run(repl.console, entry)
+            print_run(repl.screen, entry)
         if not runs:
-            repl.console.print("[dim]no runs yet[/]")
+            repl.screen.print("[dim]no runs yet[/]")
     elif action == "run":
         launch_detached(store)(job)
-        repl.console.print(f"[dim]started; see /schedule → logs, or {store.dir / job_id / 'output.log'}[/]")
+        repl.screen.print(f"[dim]started; see /schedule → logs, or {store.dir / job_id / 'output.log'}[/]")
     elif action == "pause":
         store.set_paused(job_id, not job.paused)
-        repl.console.print(f"[dim]{job_id} {'resumed' if job.paused else 'paused'}[/]")
-    elif action == "delete" and confirm(f"Delete {job_id}?"):
+        repl.screen.print(f"[dim]{job_id} {'resumed' if job.paused else 'paused'}[/]")
+    elif action == "delete" and repl.screen.confirm(f"Delete {job_id}?"):
         store.remove(job_id)
-        repl.console.print("[dim]deleted[/]")
+        repl.screen.print("[dim]deleted[/]")
 
 
 @command("/loop", "repeat a prompt at an interval: /loop 10m <prompt>")
@@ -405,24 +403,24 @@ def _loop(repl: Repl, arg: str) -> None:
         repl.ui.error("usage: /loop <interval> <prompt>, e.g. /loop 10m check the deploy "
                       "(s, m, h or d; at least 1m)")
         return
-    repl.console.print(f"[dim]running every {interval}, Ctrl-C stops[/]")
+    repl.screen.print(f"[dim]running every {interval}, Ctrl-C stops[/]")
     run = 0
     try:
         while True:
             run += 1
-            repl.console.print(Rule(f"loop run {run} · {datetime.now():%H:%M}", style="dim"))
+            repl.screen.print(Rule(f"loop run {run} · {datetime.now():%H:%M}", style="dim"))
             run_prompt(repl.agent, prompt.strip(), BUILTIN_NAMES)
             repl.usage_line()
             if repl.agent.status == "interrupted":
                 break
             deadline = time.monotonic() + seconds
-            with repl.console.status("") as status:
+            with repl.screen.status("") as status:
                 while (left := deadline - time.monotonic()) > 0:
                     status.update(f"next run in {int(left) // 60}:{int(left) % 60:02d} · Ctrl-C stops")
                     time.sleep(min(1.0, left))
     except KeyboardInterrupt:
         pass
-    repl.console.print(f"[dim]loop stopped after {run} run{'s' if run != 1 else ''}[/]")
+    repl.screen.print(f"[dim]loop stopped after {run} run{'s' if run != 1 else ''}[/]")
 
 
 def parse_interval(text: str) -> int | None:
@@ -443,31 +441,31 @@ def _hooks(repl: Repl, arg: str) -> None:
         regs = repl.agent.hooks.registrations(event)
         if not regs:
             continue
-        repl.console.print(f"[bold]{label}[/]")
+        repl.screen.print(f"[bold]{label}[/]")
         for reg in regs:
             if isinstance(reg.fn, shell_hooks.ShellHook):
                 spec = reg.fn.spec
                 matcher = f" [dim]({spec.matcher})[/]" if spec.matcher else ""
-                repl.console.print(f"  {escape(spec.command)}{matcher} [dim]· {spec.source}[/]")
+                repl.screen.print(f"  {escape(spec.command)}{matcher} [dim]· {spec.source}[/]")
             else:
-                repl.console.print(f"  [dim]{reg.name} · built-in[/]")
-    repl.console.print(f"[dim]user hooks: {CONFIG_FILE} · project hooks: {shell_hooks.PROJECT_HOOKS}[/]")
+                repl.screen.print(f"  [dim]{reg.name} · built-in[/]")
+    repl.screen.print(f"[dim]user hooks: {CONFIG_FILE} · project hooks: {shell_hooks.PROJECT_HOOKS}[/]")
 
 
 @command("/permissions", "permission mode, rules and what this session always allows")
 def _permissions(repl: Repl, arg: str) -> None:
     p = repl.agent.permissions
-    repl.console.print(f"[bold]mode[/] {LABELS[p.mode]} [dim](Shift+Tab switches)[/]")
+    repl.screen.print(f"[bold]mode[/] {LABELS[p.mode]} [dim](Shift+Tab switches)[/]")
     for kind, rules in (("deny", p.rules.deny), ("ask", p.rules.ask), ("allow", p.rules.allow)):
         if rules:
-            repl.console.print(f"[bold]{kind}[/]")
+            repl.screen.print(f"[bold]{kind}[/]")
             for rule in rules:
-                repl.console.print(f"  {escape(rule)}")
+                repl.screen.print(f"  {escape(rule)}")
     if session := sorted(p.allowed - set(p.rules.allow)):
-        repl.console.print("[bold]allowed for this session[/]")
+        repl.screen.print("[bold]allowed for this session[/]")
         for key in session:
-            repl.console.print(f"  {escape(key)}")
-    repl.console.print(f"[dim]rules: [permissions] in {CONFIG_FILE} · saved for this project: "
+            repl.screen.print(f"  {escape(key)}")
+    repl.screen.print(f"[dim]rules: [permissions] in {CONFIG_FILE} · saved for this project: "
                        f"{p.project_file}[/]")
 
 
@@ -489,7 +487,7 @@ def _sandbox(repl: Repl, arg: str) -> None:
         return
     sandbox = agent.ctx.sandbox
     if sandbox is None:
-        repl.console.print("[bold]sandbox[/] off: commands ask for approval as the mode says "
+        repl.screen.print("[bold]sandbox[/] off: commands ask for approval as the mode says "
                            "[dim](/sandbox on)[/]")
         return
     if sandbox.network:
@@ -500,7 +498,7 @@ def _sandbox(repl: Repl, arg: str) -> None:
             net += f"; refused lately: {', '.join(refused[-8:])}"
     else:
         net = "localhost only" if sandbox.platform == "darwin" else "none (localhost is each command's own)"
-    repl.console.print("[bold]sandbox[/] on: commands run without asking; leaving the sandbox, or "
+    repl.screen.print("[bold]sandbox[/] on: commands run without asking; leaving the sandbox, or "
                        "file edits beyond it, ask [dim](/sandbox off)[/]")
     rows = [("writable", ", ".join(map(str, sandbox.writable()))),
             ("read-only", ", ".join(map(str, sandbox.protected))),
@@ -508,8 +506,8 @@ def _sandbox(repl: Repl, arg: str) -> None:
             ("network", net),
             ("in plan mode", "nothing writable but " + ", ".join(map(str, sandbox.writable(read_only=True))))]
     for name, value in rows:
-        repl.console.print(f"  [dim]{name:<13}[/] {escape(value)}")
-    repl.console.print(f"[dim]configure under [sandbox] in {CONFIG_FILE}[/]")
+        repl.screen.print(f"  [dim]{name:<13}[/] {escape(value)}")
+    repl.screen.print(f"[dim]configure under [sandbox] in {CONFIG_FILE}[/]")
 
 
 # --- settings ----------------------------------------------------------------------
@@ -518,7 +516,7 @@ def _sandbox(repl: Repl, arg: str) -> None:
 @command("/model", "show or switch the model")
 def _model(repl: Repl, name: str) -> None:
     if not name:
-        picked = pick("Model", [(m.name, f"{m.name}  {m.model}" + ("" if m.has_key() else
+        picked = repl.screen.pick("Model", [(m.name, f"{m.name}  {m.model}" + ("" if m.has_key() else
                                          f"  (no key: ${m.key_env}; wren setup saves one)"))
                                 for m in repl.config.models.values()],
                       default=repl.agent.model.name)
@@ -531,7 +529,7 @@ def _model(repl: Repl, name: str) -> None:
     except ConfigError as e:
         repl.ui.error(str(e))
         return
-    repl.console.print(f"switched to [cyan]{model.name}[/] ({model.model}) "
+    repl.screen.print(f"switched to [cyan]{model.name}[/] ({model.model}) "
                        f"[dim]· models are configured in {CONFIG_FILE}[/]")
 
 
@@ -543,13 +541,13 @@ def _theme(repl: Repl, arg: str) -> None:
         ("dark", "dark terminal background"),
         ("light", "light terminal background"),
     ]
-    theme: Theme | None = pick("Color theme", options, default=repl.settings.theme)
+    theme: Theme | None = repl.screen.pick("Color theme", options, default=repl.settings.theme)
     if theme is None:
         return
     repl.settings.theme = theme
     repl.settings.save()
     repl.ui.background = theme if theme != "auto" else (detected or "dark")
-    repl.console.print(f"[dim]theme: {theme} ({repl.ui.background})[/]")
+    repl.screen.print(f"[dim]theme: {theme} ({repl.ui.background})[/]")
 
 
 @command("/suggest", "turn next-prompt suggestions on or off")
@@ -559,26 +557,26 @@ def _suggest(repl: Repl, arg: str) -> None:
     if not repl.settings.suggestions:
         repl.predictor.clear()
     state = "on" if repl.settings.suggestions else "off"
-    repl.console.print(f"[dim]next-prompt suggestions {state} (Tab accepts one)[/]")
+    repl.screen.print(f"[dim]next-prompt suggestions {state} (Tab accepts one)[/]")
 
 
 @command("/keys", "how to make Shift+Enter insert a newline in your terminal")
 def _keys(repl: Repl, arg: str) -> None:
-    repl.console.print(escape(shift_enter_help()))
+    repl.screen.print(escape(shift_enter_help()))
 
 
 @command("/cost", "token usage and cost so far")
 def _cost(repl: Repl, arg: str) -> None:
     u, cost = repl.agent.usage, repl.agent.cost
     shown = f"${cost:.4f}" if cost is not None else "unknown (no price configured)"
-    repl.console.print(f"input {fmt_tokens(u.input_tokens)} · output {fmt_tokens(u.output_tokens)} · "
-                       f"cache read {fmt_tokens(u.cache_read_tokens)} · cache write "
-                       f"{fmt_tokens(u.cache_write_tokens)} · cost {shown}")
+    repl.screen.print(f"input {render.fmt_tokens(u.input_tokens)} · output {render.fmt_tokens(u.output_tokens)} · "
+                       f"cache read {render.fmt_tokens(u.cache_read_tokens)} · cache write "
+                       f"{render.fmt_tokens(u.cache_write_tokens)} · cost {shown}")
 
 
 @command("/help", "this help")
 def _help(repl: Repl, arg: str) -> None:
-    repl.console.print(HELP)
+    repl.screen.print(HELP)
 
 
 @command("/exit", "quit (or Ctrl-D)", "/quit")
