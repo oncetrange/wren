@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `wren --fullscreen` (experimental): a full-screen UI. The conversation
+  scrolls above a fixed input line, and pickers and approvals open in its place.
+
 ## 1.0.0 — 2026-10-12
 
 The first release on PyPI, as `wren-agent`.
