@@ -37,18 +37,18 @@ class Repl:
                  memories: Memories | None = None):
         self.agent, self.ui, self.config, self.settings = agent, ui, config, settings
         self.memories = memories
-        self.console = ui.console
+        self.screen = ui.screen
         self.prefill = ""  # text to pre-fill the next prompt with (e.g. after /undo)
 
     def loop(self) -> int:
-        self.console.print(
+        self.screen.print(
             f"[bold]wren[/] {__version__} · model [cyan]{self.agent.model.name}[/] "
             f"({self.agent.model.model}) · {self.agent.ctx.cwd}\n"
             "[dim]/help for commands · Ctrl-D to quit[/]"
         )
         cps = self.agent.checkpoints
         if cps is not None and not cps.enabled:
-            self.console.print(f"[yellow]file checkpoints disabled ({cps.disabled_reason}); "
+            self.screen.print(f"[yellow]file checkpoints disabled ({cps.disabled_reason}); "
                                "/undo only rewinds the conversation[/]")
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         register_shift_enter()
@@ -86,7 +86,7 @@ class Repl:
                     if self.command(text) == "exit":
                         return 0
                 except (KeyboardInterrupt, EOFError):
-                    self.console.print("[dim]cancelled[/]")
+                    self.screen.print("[dim]cancelled[/]")
                 continue
             self.run(text)
             self.usage_line()
@@ -105,7 +105,7 @@ class Repl:
         left = self.agent.unsent() + ([ahead.draft.strip()] if ahead.draft.strip() else [])
         if left:
             self.prefill = "\n".join(left)
-            self.console.print("[dim]not sent to wren; it's back in the input line[/]")
+            self.screen.print("[dim]not sent to wren; it's back in the input line[/]")
 
     def command(self, text: str) -> str | None:
         name, _, arg = text.partition(" ")
@@ -123,17 +123,17 @@ class Repl:
         """Before this conversation is left behind: let the model keep what it learned."""
         if not (self.agent.auto_memory and self.agent.memories_pending()):
             return
-        self.console.print("[dim]reviewing the session for memories… (Ctrl-C skips)[/]")
+        self.screen.print("[dim]reviewing the session for memories… (Ctrl-C skips)[/]")
         try:
             saved = self.agent.extract_memories("the session is ending")
         except KeyboardInterrupt:
-            self.console.print("[dim]skipped[/]")
+            self.screen.print("[dim]skipped[/]")
             return
         except LLMError as e:
             self.ui.error(f"could not save memories: {e}")
             return
         if not saved:
-            self.console.print("[dim]nothing new to remember[/]")
+            self.screen.print("[dim]nothing new to remember[/]")
 
     # --- the input line ----------------------------------------------------------
 

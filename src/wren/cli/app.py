@@ -23,7 +23,6 @@ from wren.agent.permissions import Mode, Permissions, load_project_rules, projec
 from wren.agent.session import SESSIONS_DIR, SessionLog, SessionState, list_sessions, load_session
 from wren.agent.subagents import discover_agent_types
 from wren.checkpoint import Checkpoints
-from wren.cli.pickers import pick
 from wren.cli.setup_cmd import NoUsableModel, default_model, run_setup
 from wren.cli.terminal import detect_background
 from wren.cli.text import session_options
@@ -58,7 +57,7 @@ class Session:
 def start(args: argparse.Namespace, settings: Settings, ui: RichUI, cwd: Path) -> Session:
     """Everything the command line asks for, ready to run. Raises ConfigError."""
     config = load_config()
-    state = session_to_resume(args, cwd)
+    state = session_to_resume(args, cwd, ui)
     config, model = choose_model(args, config, state, ui)
     provider = create_provider(model)
     if ignored := model.ignored_options():
@@ -246,7 +245,7 @@ def connect_mcp(config: Config, cwd: Path, args: argparse.Namespace, ui: RichUI)
     if not servers:
         return None
     mcp = McpServers(servers, cwd)
-    with ui.console.status(f"connecting to MCP server{'s' if len(servers) > 1 else ''}…"):
+    with ui.screen.status(f"connecting to MCP server{'s' if len(servers) > 1 else ''}…"):
         mcp.connect()
     for state in mcp.servers.values():
         if state.status != "connected":
@@ -280,10 +279,10 @@ def _trusted(project: shell_hooks.Trustable, *, granted: bool, args: argparse.Na
     if args.prompt or not ui.interactive:
         ui.notice(skipping)
         return False
-    ui.console.print(header)
+    ui.screen.print(header)
     for line in lines:
-        ui.console.print(line)
-    if pick(question, [(True, "Yes, trust this file (asks again if it changes)"),
+        ui.screen.print(line)
+    if ui.screen.pick(question, [(True, "Yes, trust this file (asks again if it changes)"),
                        (False, "No, skip them this time")], default=False):
         shell_hooks.trust(project)
         return True
@@ -303,7 +302,7 @@ def background(settings: Settings) -> str:
     return detect_background() or "dark"
 
 
-def session_to_resume(args: argparse.Namespace, cwd: Path) -> SessionState | None:
+def session_to_resume(args: argparse.Namespace, cwd: Path, ui: RichUI) -> SessionState | None:
     if args.resume:
         matches = list(SESSIONS_DIR.glob(f"*-{args.resume}.jsonl"))
         if not matches:
@@ -316,7 +315,7 @@ def session_to_resume(args: argparse.Namespace, cwd: Path) -> SessionState | Non
         raise ConfigError(f"no previous sessions in {cwd}")
     if args.continue_:
         return sessions[0]
-    state = pick("Resume which session?", session_options(sessions))
+    state = ui.screen.pick("Resume which session?", session_options(sessions))
     if state is None:
         raise ConfigError("no session selected")
     return state

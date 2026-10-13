@@ -3,39 +3,23 @@
 from __future__ import annotations
 
 import contextlib
-import os
-import shutil
-import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any
 
 from rich.console import Console, Group, RenderableType
-from rich.markdown import Markdown
-from rich.markup import escape
-from rich.padding import Padding
-from rich.panel import Panel
-from rich.rule import Rule
 from rich.status import Status
-from rich.syntax import Syntax
 from rich.text import Text
 
-from wren.agent.compact import is_summary_note
 from wren.agent.permissions import Decision
-from wren.agent.plans import PlanDecision, is_reminder
+from wren.agent.plans import PlanDecision
 from wren.agent.ui import AgentUI
+from wren.cli import render
 from wren.cli.markdown import MarkdownStream
-from wren.cli.pickers import ask_text, pick
-from wren.cli.terminal import distinguish_shift_enter
+from wren.cli.screen import Screen
 from wren.cli.typeahead import TypeAhead
-from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from wren.llm.types import Message
 from wren.tools import Tool, ToolContext, ToolOutput
-
-MAX_DIFF_LINES = 80
-
-
-def fmt_tokens(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 class RichUI(AgentUI):
@@ -44,6 +28,7 @@ class RichUI(AgentUI):
         self.console = console or Console(highlight=False)
         self.interactive = sys.stdin.isatty() if interactive is None else interactive
         self.background = background  # "dark" | "light": picks syntax colors
+        self.screen = Screen(self.console, self.interactive)
         self._status: Status | None = None
         self._stream_kind: str | None = None  # "text" | "thinking" while streaming
         self._markdown: MarkdownStream | None = None
@@ -57,16 +42,14 @@ class RichUI(AgentUI):
 
     @contextlib.contextmanager
     def typing_ahead(self, ahead: TypeAhead, queued: Callable[[], int]) -> Iterator[None]:
-        self.typeahead, self.queued = ahead, queued
+        self.typeahead = self.screen.typeahead = ahead
+        self.queued = queued
         try:
             with ahead:
                 yield
         finally:
-            self.typeahead, self.queued = None, lambda: 0
-
-    def _keyboard(self) -> contextlib.AbstractContextManager[None]:
-        """Around anything that reads the keyboard while a prompt runs."""
-        return self.typeahead.paused() if self.typeahead else contextlib.nullcontext()
+            self.typeahead = self.screen.typeahead = None
+            self.queued = lambda: 0
 
     @contextlib.contextmanager
     def nested(self) -> Iterator[None]:
@@ -75,9 +58,6 @@ class RichUI(AgentUI):
             yield
         finally:
             self._depth -= 1
-
-    def _indent(self, renderable: Any) -> Any:
-        return Padding(renderable, (0, 0, 0, 4 * self._depth)) if self._depth else renderable
 
     # --- model stream ------------------------------------------------------
 
@@ -103,15 +83,7 @@ class RichUI(AgentUI):
     def tool_started(self, name: str, label: str) -> None:
         self._stop_spin()
         self._previewed = False
-        line = Text("● ", style="cyan")
-        line.append(name, style="bold")
-        if label:
-            first, *rest = label.splitlines()
-            line.append(" " + first + (" …" if rest else ""))
-        if self._depth:
-            line.stylize("dim")
-        line.truncate(self.console.width * 2 - 4 * self._depth, overflow="ellipsis")
-        self.console.print(self._indent(line))
+        self.console.print(render.tool_line(name, label, self.console.width, self._depth))
         if self.typeahead is not None and not self._depth:
             self._spin(Text(f"Running {name}…", style="dim"))
 
@@ -119,27 +91,19 @@ class RichUI(AgentUI):
                 key: str | None = None) -> Decision:
         self._stop_spin()
         if preview:
-            self._print_diff(preview)
+            self.console.print(render.diff(preview, self.code_theme, self._depth))
             self._previewed = True
         elif "\n" in label:
-            self.console.print(Padding(Syntax(label, "bash", theme=self.code_theme), (0, 0, 0, 4)))
+            self.console.print(render.command(label, self.code_theme))
         if not self.interactive:
             # Leaving the sandbox asks even with --yolo, so don't suggest it then.
             hint = "" if label.endswith("(outside the sandbox)") else "; use --yolo"
             self.console.print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
             return Decision(allow=False)
 
-        key = key or tool.permission_key(args)
-        scope = key.removeprefix("bash:") if key.startswith("bash:") else key
-        if len(scope) > 40:
-            scope = "this exact command"
-        self.console.print(
-            f"  [bold]Allow?[/] [green]y[/]es · [green]a[/]lways for [bold]{escape(scope)}[/] "
-            f"· [green]p[/]: always in this project · [red]n[/]o · or type what to do instead"
-        )
+        self.console.print(render.approval_question(key or tool.permission_key(args)))
         try:
-            with self._keyboard(), distinguish_shift_enter():
-                answer = ask_text().strip()
+            answer = self.screen.ask_text().strip()
         except EOFError:
             answer = "n"
         match answer.lower():
@@ -155,155 +119,72 @@ class RichUI(AgentUI):
 
     def review_plan(self, plan: str) -> PlanDecision | None:
         self._stop_spin()
-        self.console.print(Panel(Markdown(plan, code_theme=self.code_theme), title="Plan",
-                                 title_align="left", border_style="cyan", padding=(0, 1)))
+        self.console.print(render.plan(plan, self.code_theme))
         if not self.interactive:
             return None
-        with self._keyboard():
-            choice = pick("Approve this plan?", [
-                ("accept_edits", "Yes, and auto-accept edits"),
-                ("ask", "Yes, and ask before each edit"),
-                ("revise", "No, keep planning"),
-            ], default="accept_edits")
-            if choice in ("accept_edits", "ask"):
-                return PlanDecision(True, mode=choice)
-            if choice == "revise":
-                self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
-                with distinguish_shift_enter():
-                    return PlanDecision(False, feedback=ask_text().strip())
-            return PlanDecision(False)
+        choice = self.screen.pick("Approve this plan?", [
+            ("accept_edits", "Yes, and auto-accept edits"),
+            ("ask", "Yes, and ask before each edit"),
+            ("revise", "No, keep planning"),
+        ], default="accept_edits")
+        if choice in ("accept_edits", "ask"):
+            return PlanDecision(True, mode=choice)
+        if choice == "revise":
+            self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
+            return PlanDecision(False, feedback=self.screen.ask_text().strip())
+        return PlanDecision(False)
 
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         self._stop_spin()
-        style = "red" if output.is_error else "dim"
-        summary = output.summary or ("error" if output.is_error else "done")
-        # A subagent's successful calls are one line each; errors and diffs still show.
-        if not (self._depth and not output.is_error):
-            self.console.print(self._indent(Text(f"  ⎿ {summary}", style=style)))
-        if output.diff and not self._previewed:
-            self._print_diff(output.diff)
-        if output.display:
-            self.print_todos_text(output.display)
-        if output.is_error and name == "bash":
-            tail = output.content.strip().splitlines()[-8:]
-            self.console.print(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4 + 4 * self._depth)))
-
-    def print_patch(self, patch: str) -> None:
-        """A whole `git diff --stat --patch`, colored, through a pager the way git
-        does it (`$PAGER` or less, which prints it as is when it fits the screen)."""
-        stat, sep, body = patch.partition("\ndiff --git ")
-        rendered: list[RenderableType] = [Text(stat.rstrip("\n"), style="bold")]
-        if sep:
-            rendered.append(Syntax("diff --git " + body.rstrip("\n"), "diff", theme=self.code_theme))
-        pager = os.environ.get("PAGER") or ("less" if shutil.which("less") else "")
-        if not (self.interactive and self.console.is_terminal and pager):
-            self.console.print(*rendered)
-            return
-        with self.console.capture() as captured:
-            self.console.print(*rendered)
-        env = {**os.environ, "LESS": os.environ.get("LESS", "FRX")}
-        with contextlib.suppress(OSError):
-            subprocess.run(pager, shell=True, input=captured.get(), text=True, env=env, check=False)
-
-    def print_todos_text(self, text: str) -> None:
-        styled = Text()
-        for line in text.splitlines():
-            style = {"✓": "dim strike", "▸": "bold cyan"}.get(line[:1], "")
-            styled.append(line + "\n", style=style)
-        self.console.print(Padding(styled, (0, 0, 0, 4)), end="")
+        for shown in render.tool_result(name, output, self.code_theme, self._depth, self._previewed):
+            self.console.print(shown)
 
     @property
     def code_theme(self) -> str:
-        return "ansi_light" if self.background == "light" else "ansi_dark"
+        return render.code_theme(self.background)
 
     # --- history -----------------------------------------------------------
 
-    def render_history(self, messages: list[Message], tools: dict[str, Tool], ctx: ToolContext,
-                       max_messages: int = 60) -> None:
-        """Print a past conversation the way it looked while it happened."""
-        hidden = max(0, len(messages) - max_messages)
-        if hidden:
-            self.console.print(Text(f"… {hidden} earlier messages not shown", style="dim"))
-        results = {b.tool_use_id: b for m in messages for b in m.content
-                   if isinstance(b, ToolResultBlock)}
-        for m in messages[hidden:]:
-            for b in m.content:
-                if isinstance(b, TextBlock) and m.role == "user":
-                    if is_reminder(b.text):
-                        continue
-                    if is_summary_note(b.text):
-                        self.console.print(Rule("earlier conversation compacted", style="dim"))
-                    else:
-                        self.console.print(Text("\n› " + b.text, style="bold"))
-                elif isinstance(b, TextBlock) and b.text.strip():
-                    self.console.print(Markdown(b.text, code_theme=self.code_theme))
-                elif isinstance(b, ToolUseBlock):
-                    tool = tools.get(b.name)
-                    self.tool_started(b.name, tool.describe(b.input, ctx) if tool else "")
-                    result = results.get(b.id)
-                    if result is not None and result.is_error:
-                        first = (result.content.strip().splitlines() or ["error"])[0]
-                        self.console.print(Text(f"  ⎿ {first}", style="red"))
-        self.console.print(Rule("resumed", style="dim"))
+    def render_history(self, messages: list[Message], tools: dict[str, Tool], ctx: ToolContext) -> None:
+        """Show a past conversation the way it looked while it happened."""
+        for shown in render.history(messages, tools, ctx, self.code_theme, self.console.width):
+            self.console.print(shown)
 
     def progress(self, lines: list[str] | None) -> None:
         """Live status lines for subagents running concurrently; None ends it."""
         if lines is None:
             self._stop_spin()
             return
-        width = max(20, self.console.width - 6)
-        status = Text(f"{len(lines)} subagents")
-        for line in lines:
-            row = Text("\n  " + line, style="dim")
-            row.truncate(width + 3, overflow="ellipsis")
-            status.append_text(row)
-        self._spin(status)
+        self._spin(render.subagent_progress(lines, self.console.width))
 
     # --- misc --------------------------------------------------------------
 
     def steered(self, text: str) -> None:
         self._stop_spin()
         self._end_stream()
-        line = Text("› " + text, style="bold")
-        line.append("  (sent while wren worked)", style="dim")
-        self.console.print(line)
+        self.console.print(render.steered(text))
 
     def attached(self, label: str, summary: str) -> None:
         """A file @-mentioned in the prompt, and what was attached."""
-        style = "yellow" if summary.startswith("not attached") else "dim"
-        self.console.print(Text(f"  @ {label} · {summary}", style=style))
+        self.console.print(render.attached(label, summary))
 
     def hook_ran(self, name: str, status: str) -> None:
         self._stop_spin()
-        style = "dim" if status.startswith("ok") else "yellow"
-        self.console.print(self._indent(Text(f"  ◆ {name} · {status}", style=style)))
+        self.console.print(render.hook(name, status, self._depth))
 
     def notice(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(self._indent(Text(text, style="yellow")))
+        self.console.print(render.notice(text, self._depth))
 
     def error(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(self._indent(Text.assemble(("error:", "bold red"), " " + text)))
+        self.console.print(render.error(text, self._depth))
 
     def usage_line(self, context_tokens: int, context_window: int, output_tokens: int,
                    cost: float | None) -> None:
-        pct = 100 * context_tokens / context_window if context_window else 0
-        parts = [f"context {fmt_tokens(context_tokens)}/{fmt_tokens(context_window)} ({pct:.0f}%)",
-                 f"output {fmt_tokens(output_tokens)} total"]
-        if cost is not None:
-            parts.append(f"${cost:.4f}")
-        self.console.print(Text("  " + " · ".join(parts), style="dim"))
+        self.console.print(render.usage(context_tokens, context_window, output_tokens, cost))
 
     # --- internals ---------------------------------------------------------
-
-    def _print_diff(self, diff: str) -> None:
-        lines = diff.splitlines()
-        body = "\n".join(lines[:MAX_DIFF_LINES])
-        if len(lines) > MAX_DIFF_LINES:
-            body += f"\n... ({len(lines) - MAX_DIFF_LINES} more lines)"
-        self.console.print(Padding(Syntax(body, "diff", theme=self.code_theme),
-                                   (0, 0, 0, 4 + 4 * self._depth)))
 
     def _stream(self, text: str, kind: str, style: str) -> None:
         self._stop_spin()

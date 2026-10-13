@@ -21,7 +21,8 @@ src/wren/
 ├── config.py       models and the rest of ~/.wren/config.toml
 ├── skills.py · memory.py · mcp_servers.py · mentions.py · schedules.py
 ├── integrations/   the Pier/Harbor benchmark adapter
-└── cli/            command line, REPL, slash commands, rendering, typing while the agent works
+└── cli/            command line, REPL, slash commands, typing while the agent works;
+                    render.py draws things, screen.py is where commands print and ask
 ```
 
 - The agent only sees `wren.llm.types`; adding a provider means writing one adapter.
