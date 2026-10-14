@@ -56,6 +56,7 @@ class SlashMenu:
         self.entries = entries
         self.files = files
         self.index = 0
+        self.buffer: Buffer | None = None  # the input it completes (see attach)
         self._last_text = ""
         self._completed: tuple[str, list[str]] = ("\0", [])  # (prefix, paths), cached
         # Predicted next prompt, offered as ghost text when no command is typed.
@@ -64,7 +65,10 @@ class SlashMenu:
     def items(self, text: str | None = None) -> list[tuple[str, str]]:
         """What the menu offers. `text` is what's before the cursor (default: the buffer's)."""
         if text is None:
-            text = get_app().current_buffer.document.text_before_cursor
+            current = get_app().current_buffer
+            if self.buffer is not None and current is not self.buffer:
+                return []  # another input (e.g. the full-screen find line)
+            text = current.document.text_before_cursor
         if text != self._last_text:  # typing resets the selection
             self._last_text, self.index = text, 0
         if commands := matches(text, self.entries()):
@@ -86,6 +90,7 @@ class SlashMenu:
     def attach(self, buffer: Buffer) -> None:
         """Show the ghost text as soon as the input changes (prompt_toolkit's
         own auto-suggest runs asynchronously, a beat later)."""
+        self.buffer = buffer
         buffer.on_text_changed += self._update_ghost
 
     def _update_ghost(self, buf: Buffer) -> None:

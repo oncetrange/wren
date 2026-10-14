@@ -114,7 +114,6 @@ def session(ctx, tmp_path_factory, monkeypatch):
         if failure:
             traceback.print_exception(failure[0])
             raise failure[0]
-        r.printed = out.getvalue()                         # on the normal screen, once it ended
         return code, plain(ui), r
     return run
 
@@ -132,7 +131,6 @@ def test_prompts_commands_and_exit(session):
     assert "unknown command /nope" in text
     assert "context" in r._usage                         # the usage line went to the toolbar
     assert "PgUp/PgDn scroll the conversation" in text     # /help has the full-screen keys
-    assert "› hello" in r.printed and "hi there" in r.printed  # left in the scrollback on exit
     assert r.agent.provider.requests[0][0].content[0].text == "hello"
 
 
@@ -251,3 +249,64 @@ def test_long_output_opens_a_pager(session, ctx):
     _, text, _ = session(script, checkpoints=True, turns=[
         call("bash", "t1", command="sed -i.bak s/line/LINE/ a.txt && rm a.txt.bak"), reply("ok")])
     assert "shown in the pager" in text and "+LINE 99" not in text
+
+
+def test_ctrl_o_shows_what_calls_returned_and_whole_diffs(session):
+    body = "".join(f"row {i}\n" for i in range(40))
+    seen = {}
+
+    def script(d):
+        d.line("go")
+        seen["short"] = plain(d.r.ui)
+        d.send("\x0f")                                     # Ctrl-O
+        wait_for(lambda: d.r.view.transcript.expanded)
+        seen["full"] = plain(d.r.ui)
+        d.send("\x0f")
+        wait_for(lambda: not d.r.view.transcript.expanded)
+    session(script, turns=[call("bash", "t1", command="printf 'the-%s' output"),
+                           call("write_file", "t2", path="rows.txt", content=body), reply("done")])
+    assert "the-output" not in seen["short"] and "the-output" in seen["full"]
+    assert "Ctrl-O shows all" in seen["short"] and "+row 39" not in seen["short"]
+    assert "+row 39" in seen["full"]
+
+
+def test_searching_the_conversation(session):
+    seen = {}
+
+    def script(d):
+        for word in ("apple one", "banana", "apple two"):
+            d.line(word)
+        d.send("\x06")                                     # Ctrl-F
+        wait_for(lambda: d.r.searching)
+        d.send("APPLE")
+        wait_for(lambda: len(d.r._matches) == 2)           # any case
+        lines = d.r.view.transcript.lines(d.r._width())
+        newest = "".join(t for _, t, *_ in lines[d.r.view.control.current])
+        d.send("\r")                                       # Enter: the older one
+        wait_for(lambda: d.r._match == 0)
+        older = "".join(t for _, t, *_ in lines[d.r.view.control.current])
+        seen.update(newest=newest, older=older, where=plain_lines(d.r._search_line()))
+        d.send("\x1b")
+        wait_for(lambda: not d.r.searching)
+        seen["term"] = d.r.view.control.term
+        d.send("\x06/diff")                                # a slash doesn't open the command menu
+        wait_for(lambda: d.r.find.text == "/diff")
+        seen["menu"] = d.r.menu.items()
+        d.send("\x03")                                     # Ctrl-C closes it too
+        wait_for(lambda: not d.r.searching)
+    session(script, turns=[reply("ok"), reply("ok"), reply("ok")])
+    assert "apple two" in seen["newest"] and "apple one" in seen["older"]
+    assert "1/2" in seen["where"] and seen["term"] == "" and seen["menu"] == []
+
+
+def test_ctrl_s_gives_the_mouse_to_the_terminal(session):
+    states = []
+
+    def script(d):
+        states.append(d.r.app.mouse_support())
+        d.send("\x13")
+        wait_for(lambda: d.r.selecting)
+        states.append(d.r.app.mouse_support())
+        assert "selecting text" in plain_lines(d.r._toolbar_line())
+    session(script)
+    assert states == [True, False]

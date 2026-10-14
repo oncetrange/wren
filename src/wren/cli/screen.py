@@ -87,6 +87,12 @@ class Screen:
         with contextlib.suppress(OSError):
             subprocess.run(pager, shell=True, input=captured.get(), text=True, env=env, check=False)
 
+    def write_terminal(self, sequence: str) -> None:
+        """Send the terminal a control sequence (e.g. OSC 52, to set the clipboard)."""
+        if self.console.is_terminal:
+            self.console.file.write(sequence)
+            self.console.file.flush()
+
     def run_program(self, argv: list[str]) -> int:
         """Hand the terminal to a program (an editor) until it exits."""
         with self._keyboard():

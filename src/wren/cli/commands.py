@@ -27,18 +27,18 @@ from wren.agent.session import SessionLog, list_sessions
 from wren.agent.subagents import TaskTool
 from wren.agent.todos import format_todos, progress
 from wren.checkpoint import CheckpointError
-from wren.cli import render
+from wren.cli import clipboard, render
 from wren.cli.app import new_sandbox, run_prompt
 from wren.cli.schedule_cmd import print_jobs, print_run
 from wren.cli.terminal import shift_enter_help
 from wren.cli.text import one_line, session_options
 from wren.config import CONFIG_FILE, ConfigError
 from wren.llm.factory import create_provider
-from wren.llm.types import LLMError
+from wren.llm.types import LLMError, TextBlock
 from wren.mcp_servers import PROJECT_MCP
 from wren.sandbox import SandboxUnavailable
 from wren.schedules import Scheduler, Schedules, launch_detached
-from wren.settings import Theme
+from wren.settings import Theme, UiMode
 
 if TYPE_CHECKING:
     from wren.cli.repl import Repl
@@ -533,6 +533,21 @@ def _model(repl: Repl, name: str) -> None:
                        f"[dim]· models are configured in {CONFIG_FILE}[/]")
 
 
+@command("/ui", "full-screen or inline terminal UI, from the next start")
+def _ui(repl: Repl, arg: str) -> None:
+    options: list[tuple[UiMode, str]] = [
+        ("auto", "auto: full screen, except in Zellij"),
+        ("fullscreen", "full screen: wren draws the whole terminal"),
+        ("inline", "inline: output goes into the terminal's scrollback"),
+    ]
+    mode: UiMode | None = repl.screen.pick("Terminal UI", options, default=repl.settings.ui)
+    if mode is None:
+        return
+    repl.settings.ui = mode
+    repl.settings.save()
+    repl.screen.print(f"[dim]ui: {mode}, from the next time wren starts (wren --ui overrides it)[/]")
+
+
 @command("/theme", "dark / light / auto-detected colors")
 def _theme(repl: Repl, arg: str) -> None:
     detected = repl.terminal_background()
@@ -563,6 +578,23 @@ def _suggest(repl: Repl, arg: str) -> None:
 @command("/keys", "how to make Shift+Enter insert a newline in your terminal")
 def _keys(repl: Repl, arg: str) -> None:
     repl.screen.print(escape(shift_enter_help()))
+
+
+@command("/copy", "copy wren's last reply to the clipboard · /copy 2: the one before")
+def _copy(repl: Repl, arg: str) -> None:
+    replies = [text for m in repl.agent.messages if m.role == "assistant"
+               if (text := "\n\n".join(b.text for b in m.content if isinstance(b, TextBlock)).strip())]
+    n = int(arg) if arg.isdigit() and int(arg) > 0 else 1 if not arg else None
+    if n is None:
+        repl.ui.error("usage: /copy [N], N counting back from the last reply")
+        return
+    if len(replies) < n:
+        repl.screen.print("[dim]no such reply[/]")
+        return
+    text = replies[-n]
+    where = clipboard.copy(text, repl.screen.write_terminal)
+    which = "the last reply" if n == 1 else f"reply {n} from the end"
+    repl.screen.print(f"[dim]copied {which} ({len(text)} characters) to {where}[/]")
 
 
 @command("/cost", "token usage and cost so far")

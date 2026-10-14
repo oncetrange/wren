@@ -296,6 +296,15 @@ def permission_mode(args: argparse.Namespace) -> Mode:
     return "auto" if args.yolo else "plan" if args.plan else args.mode
 
 
+def fullscreen(mode: str) -> bool:
+    """Whether to draw the whole terminal. Auto: yes, except where the
+    alternate screen has no scrollback to fall back on (Zellij) or the
+    terminal can't draw it."""
+    if mode != "auto":
+        return mode == "fullscreen"
+    return not os.environ.get("ZELLIJ") and os.environ.get("TERM") != "dumb"
+
+
 def background(settings: Settings) -> str:
     if settings.theme != "auto":
         return settings.theme

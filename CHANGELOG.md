@@ -2,10 +2,17 @@
 
 ## Unreleased
 
-- `wren --fullscreen` (experimental): a full-screen UI. The conversation
-  scrolls above a fixed input line, and pickers and approvals open in its place.
-  Long output opens in a pager, Ctrl-G edits the input in `$EDITOR`, Ctrl-Z
-  suspends, and the conversation is left in the scrollback on exit.
+- A full-screen UI, now the default. The conversation scrolls above an input
+  line that is always there, and pickers and approvals open in its place.
+  - Ctrl-O shows what tool calls returned, and whole diffs.
+  - Ctrl-F finds text in the conversation.
+  - Long output opens in a pager.
+  - Ctrl-S hands the mouse to the terminal to select text.
+  - Ctrl-G edits the input in `$EDITOR`, and Ctrl-Z suspends wren.
+- `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
+  over SSH.
+- `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
+  the inline UI. `auto` picks full screen, except in Zellij.
 
 ## 1.0.0 — 2026-10-12
 

@@ -33,6 +33,7 @@ wren -r                           # pick a session to resume (or: wren -r <id>)
 wren --plan                       # start in plan mode: investigate, propose, then act
 wren --sandbox                    # run shell commands in an OS sandbox, without approvals
 wren --yolo                       # never ask before editing files or running commands
+wren --ui inline                  # print into the terminal's scrollback instead of full screen
 ```
 
 In a session:
@@ -42,6 +43,8 @@ In a session:
 - `@path` attaches a file.
 - Ctrl-C interrupts the agent. You can also type while it works: Enter sends the message, and the
   model reads it after its current step.
+- In the full-screen UI, Ctrl-O shows what tool calls returned and Ctrl-F searches the
+  conversation. `/help` lists the keys.
 
 wren reads project instructions from `WREN.md` or `AGENTS.md` in the working directory, and
 global instructions from `~/.wren/WREN.md`.

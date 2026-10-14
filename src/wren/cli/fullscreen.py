@@ -1,4 +1,5 @@
-"""The full-screen session (`wren --fullscreen`): wren draws the whole terminal.
+"""The full-screen session (the default; `wren --ui inline` or /ui for the other):
+wren draws the whole terminal.
 
     ┌──────────────────────────────────────────┐
     │ the conversation (scrolls: wheel, PgUp)   │  transcript.py
@@ -18,8 +19,7 @@ the main thread until the UI answers it.
 
 Before the UI starts and after it stops, output and questions fall back to the
 inline forms, so startup prompts and the end-of-session memory review work as
-they always did. Once it stops, the conversation is printed to the normal
-screen, so it stays in the terminal's scrollback as it would inline.
+they always did.
 """
 
 from __future__ import annotations
@@ -50,10 +50,12 @@ from prompt_toolkit.layout import (
     FormattedTextControl,
     HSplit,
     Layout,
+    VSplit,
     Window,
 )
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.processors import AppendAutoSuggestion
+from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import suspend_to_background_supported
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
@@ -75,10 +77,13 @@ from wren.config import CONFIG_DIR, Config
 from wren.llm.types import Message
 from wren.memory import Memories
 from wren.settings import Settings
-from wren.tools import Tool, ToolContext
+from wren.tools import Tool, ToolContext, ToolOutput
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 MAX_PICKER_ROWS = 10
+FOLDED_DIFF_LINES = 16  # of a diff in the conversation, until Ctrl-O expands it
+STYLE = merge_styles([TOOLBAR_STYLE, Style.from_dict({
+    "search": "bg:ansiyellow fg:ansiblack", "search.current": "bg:ansibrightyellow fg:ansiblack bold"})])
 
 
 @dataclass
@@ -225,6 +230,16 @@ class FullscreenScreen(Screen):
         self.view.show_pager(Pager(transcript, control))
         self.print(Text(f"  ({lines} lines, shown in the pager)", style="dim"))
 
+    def write_terminal(self, sequence: str) -> None:
+        app = self.view.app
+        if not self.view.running or app is None:
+            return super().write_terminal(sequence)
+
+        def write() -> None:
+            app.output.write_raw(sequence)
+            app.output.flush()
+        self.view.call(write)
+
     def run_program(self, argv: list[str]) -> int:
         if not self.view.running or self.view.loop is None:
             return super().run_program(argv)
@@ -275,6 +290,15 @@ class FullscreenUI(RichUI):
         if not self._depth:
             self._spin(Text(f"Running {name}…", style="dim"))
 
+    def tool_finished(self, name: str, output: ToolOutput) -> None:
+        """Short (a diff cut at FOLDED_DIFF_LINES), and in full with what the call
+        returned, shown while the conversation is expanded (Ctrl-O)."""
+        self._stop_spin()
+        short = render.tool_result(name, output, self.code_theme, self._depth, self._previewed,
+                                   diff_lines=FOLDED_DIFF_LINES, more=" · Ctrl-O shows all")
+        full = render.tool_result(name, output, self.code_theme, self._depth, self._previewed, details=True)
+        self.view.transcript.add(*short, expanded=full)
+
     def render_history(self, messages: list[Message], tools: dict[str, Tool], ctx: ToolContext) -> None:
         self.view.transcript.add(*render.history(messages, tools, ctx, self.code_theme, self.screen.width))
 
@@ -301,9 +325,14 @@ class FullscreenUI(RichUI):
 
 class FullscreenRepl(Repl):
     keys_help = """
-  Full screen: the mouse wheel or PgUp/PgDn scroll the conversation; to select text, hold
-  Shift (Option in iTerm2) while dragging. Ctrl-G or Ctrl-X Ctrl-E edits the input in $EDITOR,
-  Ctrl-Z suspends wren. Long output (/diff) opens in a pager: ↑↓ PgUp PgDn g G, q closes"""
+
+[bold]Full screen[/] (/ui switches to the inline UI)
+  The mouse wheel or PgUp/PgDn scroll the conversation
+  Ctrl-O shows what tool calls returned and whole diffs (again: back to short)
+  Ctrl-F finds text in the conversation: ↑ or Enter older, ↓ newer, Esc closes
+  Ctrl-S gives the mouse to the terminal, to select text (or hold Shift/Option while dragging)
+  /copy copies wren's last reply; Ctrl-G or Ctrl-X Ctrl-E edits the input in $EDITOR
+  Ctrl-Z suspends wren; long output (/diff) opens in a pager: ↑↓ PgUp PgDn g G, q closes"""
 
     def __init__(self, agent: Agent, ui: FullscreenUI, config: Config, settings: Settings,
                  memories: Memories | None = None):
@@ -315,6 +344,10 @@ class FullscreenRepl(Repl):
         self._session_thread = threading.get_ident()
         self._usage = ""
         self._hint = ""  # shown in the toolbar until the next key
+        self.selecting = False  # the mouse is the terminal's, to select text
+        self.searching = False
+        self._matches: list[int] = []  # lines of the conversation with the search term
+        self._match = -1
         self._error: BaseException | None = None
 
     # --- the session's thread --------------------------------------------------
@@ -341,9 +374,6 @@ class FullscreenRepl(Repl):
         finally:
             self.view.call(self.app.exit)
             ui.join()
-            # Back on the normal screen: leave the conversation in its scrollback.
-            for renderable in self.view.transcript.renderables():
-                self.screen.console.print(renderable)
         if self._error is not None:
             raise self._error
         return 0
@@ -415,12 +445,15 @@ class FullscreenRepl(Repl):
         self.input = Buffer(multiline=True, history=FileHistory(str(CONFIG_DIR / "history")),
                             accept_handler=self._accept, name="input")
         self.answer = Buffer(multiline=True, accept_handler=self._accept_answer, name="answer")
+        self.find = Buffer(multiline=False, accept_handler=self._accept_find, name="find")
+        self.find.on_text_changed += lambda _: self._search()
         self.menu.attach(self.input)
         self.input.on_text_changed += lambda _: setattr(self, "_hint", "")
 
         asking_text = Condition(lambda: view.question is not None and view.question.options is None)
         picking = Condition(lambda: view.question is not None and view.question.options is not None)
         no_question = Condition(lambda: view.question is None)
+        searching = Condition(lambda: self.searching)
 
         def prefix(text: str) -> Callable[[int, int], StyleAndTextTuples]:
             return lambda line, wrap: [("class:prompt", text if line == 0 and wrap == 0 else "  ")]
@@ -440,7 +473,11 @@ class FullscreenRepl(Repl):
                 Window(BufferControl(self.input, input_processors=[AppendAutoSuggestion()]),
                        height=Dimension(min=1, max=12), wrap_lines=True, dont_extend_height=True,
                        get_line_prefix=prefix("› ")),
-                filter=no_question),
+                filter=no_question & ~searching),
+            ConditionalContainer(
+                VSplit([Window(BufferControl(self.find), height=1, get_line_prefix=prefix("find: ")),
+                        Window(FormattedTextControl(self._search_line), height=1, dont_extend_width=True)]),
+                filter=no_question & searching),
             ConditionalContainer(Window(self._picker, dont_extend_height=True), filter=picking),
             ConditionalContainer(
                 HSplit([
@@ -457,7 +494,8 @@ class FullscreenRepl(Repl):
             layout=Layout(body, focused_element=self.input),
             key_bindings=merge_key_bindings([self._bindings(picking, paging), newline_bindings(),
                                              self.menu.bindings()]),
-            style=TOOLBAR_STYLE, full_screen=True, mouse_support=True, min_redraw_interval=0.05,
+            style=STYLE, full_screen=True, min_redraw_interval=0.05,
+            mouse_support=Condition(lambda: not self.selecting),
         )
         view.app = app
         return app
@@ -468,7 +506,7 @@ class FullscreenRepl(Repl):
         if self.view.pager is not None:
             self.app.layout.focus(self._pager_status)  # keys go to the pager, typing nowhere
         elif question is None:
-            self.app.layout.focus(self.input)
+            self.app.layout.focus(self.find if self.searching else self.input)
         else:
             self.view.control.to_bottom()  # what is being asked about is at the end
             if question.options is None:
@@ -491,6 +529,8 @@ class FullscreenRepl(Repl):
         def _(event) -> None:
             if view.pager is not None:
                 view.close_pager()
+            elif self.searching and view.question is None:
+                self._end_search()
             elif view.question is not None:
                 cancel = KeyboardInterrupt() if view.question.options is None else None
                 view.answer(None, error=cancel)
@@ -525,6 +565,46 @@ class FullscreenRepl(Repl):
         @kb.add("c-x", "c-e", filter=typing)
         def _(event) -> None:
             self.input.open_in_editor()  # the edited text comes back in the input line
+
+        @kb.add("c-o", filter=~paging)
+        def _(event) -> None:
+            view.transcript.toggle()
+
+        @kb.add("c-s")
+        def _(event) -> None:
+            self.selecting = not self.selecting
+
+        @kb.add("up", filter=typing & Condition(lambda: self.selecting))
+        def _(event) -> None:
+            view.control.scroll(1)  # the wheel, sent as arrow keys while the mouse is the terminal's
+
+        @kb.add("down", filter=typing & Condition(lambda: self.selecting))
+        def _(event) -> None:
+            view.control.scroll(-1)
+
+        # --- searching the conversation
+        @kb.add("c-f", filter=typing)
+        def _(event) -> None:
+            self.searching = True
+            self.find.reset()
+            self._search()
+            self._focus()
+
+        in_find = Condition(lambda: self.searching and view.question is None and view.pager is None)
+
+        @kb.add("up", filter=in_find)
+        @kb.add("c-p", filter=in_find)
+        def _(event) -> None:
+            self._next_match(-1)
+
+        @kb.add("down", filter=in_find)
+        @kb.add("c-n", filter=in_find)
+        def _(event) -> None:
+            self._next_match(1)
+
+        @kb.add("escape", filter=in_find, eager=True)
+        def _(event) -> None:
+            self._end_search()
 
         @kb.add("c-z", filter=Condition(suspend_to_background_supported))
         def _(event) -> None:
@@ -592,6 +672,50 @@ class FullscreenRepl(Repl):
             view.answer(None)
 
         return kb
+
+    def _search(self) -> None:
+        """The matches of what is typed in the find line; shows the newest."""
+        term = self.find.text.strip().lower()
+        control = self.view.control
+        control.term = term
+        lines = self.view.transcript.lines(self._width()) if term else []
+        self._matches = [i for i, line in enumerate(lines)
+                         if term in "".join(text for _, text, *_ in line).lower()]
+        self._match = len(self._matches) - 1
+        self._show_match()
+
+    def _next_match(self, step: int) -> None:
+        """Older (-1) or newer (+1) than the current match."""
+        if self._matches:
+            self._match = max(0, min(len(self._matches) - 1, self._match + step))
+            self._show_match()
+
+    def _show_match(self) -> None:
+        control = self.view.control
+        if self._matches:
+            control.current = self._matches[self._match]
+            control.show_line(control.current)
+        else:
+            control.current = None
+
+    def _accept_find(self, buf: Buffer) -> bool:
+        self._next_match(-1)  # Enter: the next older match
+        return True  # keeps the term
+
+    def _end_search(self) -> None:
+        """Close the find line, staying where the search led."""
+        self.searching = False
+        self.view.control.term, self.view.control.current = "", None
+        self._focus()
+
+    def _search_line(self) -> StyleAndTextTuples:
+        if not self.find.text.strip():
+            where = ""
+        elif self._matches:
+            where = f"{self._match + 1}/{len(self._matches)}"
+        else:
+            where = "no matches"
+        return [("bold", f" {where} "), ("class:menu.hint", " ↑ older (or Enter) · ↓ newer · Esc closes ")]
 
     def _move(self, step: int) -> None:
         question = self.view.question
@@ -696,6 +820,8 @@ class FullscreenRepl(Repl):
         extra = []
         if below := self.view.control.below:
             extra.append(f"↓ {below} more lines (PgDn)")
+        if self.selecting:
+            extra.append("selecting text: drag with the mouse · Ctrl-S to scroll again")
         if self._usage:
             extra.append(self._usage)
         if self._hint:

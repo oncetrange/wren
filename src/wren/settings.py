@@ -12,11 +12,14 @@ from wren.config import CONFIG_DIR
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
 Theme = Literal["auto", "dark", "light"]
+UiMode = Literal["auto", "fullscreen", "inline"]
 
 
 @dataclass
 class Settings:
     theme: Theme = "auto"
+    # Draw the whole terminal, or print into its scrollback; auto: full screen where it works.
+    ui: UiMode = "auto"
     # Predict the next prompt after each answer (one extra, mostly cached, request).
     suggestions: bool = True
     # Review the conversation for memories at compaction and session end.
