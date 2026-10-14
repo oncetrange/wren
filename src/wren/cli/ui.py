@@ -149,6 +149,12 @@ class RichUI(AgentUI):
         for shown in render.history(messages, tools, ctx, self.code_theme, self.console.width):
             self._print(shown)
 
+    def waiting(self, text: str | None) -> None:
+        if text is None:
+            self._stop_spin()
+        else:
+            self._spin(Text(text, style="dim"))
+
     def progress(self, lines: list[str] | None) -> None:
         """Live status lines for subagents running concurrently; None ends it."""
         if lines is None:

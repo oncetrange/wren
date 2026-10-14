@@ -412,6 +412,8 @@ class FullscreenRepl(Repl):
         self.menu = SlashMenu(self.completions, mentions.FileIndex(self.agent.ctx.cwd))
         self.predictor = Predictor(self.agent, on_ready=self._prediction_ready)
         self.app = self.build()
+        if self.agent.mcp is not None:  # the bar says so while they connect
+            self.agent.mcp.when_ready(self.view.redraw)
         started = threading.Event()
         ui = threading.Thread(target=contextvars.copy_context().run, args=(self._run_app, started),
                               name="wren-ui", daemon=True)
@@ -893,6 +895,8 @@ class FullscreenRepl(Repl):
             left.append(Item(self._hint, "ansiyellow", 1))
         if below := self.view.control.below:
             left.append(Item(f"↓ {below} more lines (PgDn)", "ansigray", 2, f"↓ {below}"))
+        if self.agent.mcp is not None and not self.agent.mcp.ready:
+            left.append(Item("connecting to MCP servers", "ansigray", 3, "MCP…"))
         if running := len(self.agent.ctx.jobs.running()):
             left.append(Item(f"{running} background job{'s' if running != 1 else ''} (/jobs)", "ansigray", 4,
                              f"{running} job{'s' if running != 1 else ''}"))

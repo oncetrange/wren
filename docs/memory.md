@@ -20,13 +20,14 @@ what you ask now, your request wins. Saving needs no approval, but every change 
   ⎿ saved user/prefers-pytest: User prefers pytest over unittest
 ```
 
-Models seldom stop mid-task to take notes, so before a compaction and when a session ends
-(`/exit`, `/clear`, `/resume`, Ctrl-D) the model also reviews the conversation for anything worth
-keeping, in one side request that mostly reads from the prompt cache (Ctrl-C skips it).
+Models seldom stop mid-task to take notes. With `/memory auto` on, before a compaction and when a
+session ends (`/exit`, `/clear`, `/resume`, Ctrl-D) the model also reviews the conversation for
+anything worth keeping, in one side request that mostly reads from the prompt cache (Ctrl-C skips
+it). It is off by default, since it makes leaving a session take a moment.
 
 - `/memory` lists memories to view, edit in `$EDITOR` or delete
 - `/remember <text>` has the model save something now
-- `/memory off` / `/memory on` turns memory off or on for this project; `/memory auto` toggles the
-  end-of-session review
+- `/memory off` / `/memory on` turns memory off or on for this project; `/memory auto` turns the
+  review at compaction and session end on or off (default: off)
 - Headless runs (`wren -p`) don't use memory unless given `--memory`, so benchmark runs stay
   independent of each other

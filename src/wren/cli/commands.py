@@ -324,8 +324,9 @@ def _mcp(repl: Repl, arg: str) -> None:
     for state in mcp.servers.values():
         cfg = state.config
         color = {"connected": "green", "failed": "red"}.get(state.status, "yellow")
+        status = "connecting" if state.status == "pending" else state.status
         target = cfg.url if cfg.url else " ".join([cfg.command or "", *cfg.args])
-        repl.screen.print(f"  [bold]{cfg.name}[/] [{color}]{state.status}[/] "
+        repl.screen.print(f"  [bold]{cfg.name}[/] [{color}]{status}[/] "
                            f"[dim]· {cfg.transport} · {cfg.source} · {escape(target)}[/]")
         if state.error:
             repl.screen.print(f"    [red]{escape(state.error)}[/]")

@@ -148,10 +148,12 @@ class Agent:
         self.auto_memory = auto_memory
         self._memory_upto = 0  # messages already reviewed for memories
         # MCP servers' tools, as mcp__<server>__<tool>.
+        # They may still be connecting (see McpServers.start); their tools join
+        # before the first request (wait_for_mcp).
         self.mcp = mcp
-        if mcp is not None:
-            for tool in mcp_tools(mcp):
-                self.tools.setdefault(tool.name, tool)
+        self._mcp_joined = False
+        if mcp is not None and mcp.ready:
+            self._join_mcp()
         for tool in extra_tools or []:
             self.tools[tool.name] = tool
         # Subagents: the task tool hands a self-contained job to a fresh agent.
@@ -228,6 +230,7 @@ class Agent:
         stopped_by: set[str] = set()
         stop_blocks = cut_offs = 0
         try:
+            self.wait_for_mcp()
             verdicts = self.hooks.run("prompt", PromptSubmit(self, prompt))
             if blocked := denial(verdicts):
                 self.ui.notice(f"prompt blocked by {blocked.source}: {blocked.reason}")
@@ -393,6 +396,31 @@ class Agent:
             memory=memory_section(self.memory) if self.memory else "",
             mcp=self.mcp.instructions() if self.mcp else "",
             sandbox=self.ctx.sandbox.describe() if self.ctx.sandbox else "")
+
+    def wait_for_mcp(self) -> None:
+        """Before the model sees the tools: wait for MCP servers still
+        connecting (usually done while the first prompt is typed), then add theirs."""
+        if self.mcp is None or self._mcp_joined:
+            return
+        if not self.mcp.ready:
+            self.ui.waiting("connecting to MCP servers…")
+            try:
+                self.mcp.wait()
+            finally:
+                self.ui.waiting(None)
+        self._join_mcp()
+        for failure in self.mcp.failures():
+            self.ui.notice(failure)
+        if self._own_system:
+            self.system = self._build_system()
+        self.log.record("mcp", tools=[t for t in self.tools if t.startswith("mcp__")], system=self.system)
+        self._reestimate()
+
+    def _join_mcp(self) -> None:
+        assert self.mcp is not None
+        for tool in mcp_tools(self.mcp):
+            self.tools.setdefault(tool.name, tool)
+        self._mcp_joined = True
 
     def set_sandbox(self, sandbox: Sandbox | None) -> None:
         """Turn the sandbox for shell commands on or off, mid-session: bash gains or

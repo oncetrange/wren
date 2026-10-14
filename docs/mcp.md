@@ -1,7 +1,9 @@
 # MCP servers
 
-wren connects to [MCP](https://modelcontextprotocol.io) servers at startup and gives the model
-their tools as `mcp__<server>__<tool>`. Configure them in `~/.wren/config.toml`:
+wren connects to [MCP](https://modelcontextprotocol.io) servers and gives the model their tools
+as `mcp__<server>__<tool>`. It connects in the background as the session starts, so you can type
+right away; the first prompt waits for servers still connecting (each within its timeout).
+Configure them in `~/.wren/config.toml`:
 
 ```toml
 [mcp.github]                           # a local server, over stdio

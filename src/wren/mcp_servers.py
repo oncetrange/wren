@@ -14,9 +14,11 @@ is configured.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,14 +82,42 @@ class McpServers:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="mcp", daemon=True)
         self._thread.start()
+        self._connecting: concurrent.futures.Future | None = None
 
     # --- lifecycle -----------------------------------------------------------------
 
-    def connect(self, timeout: float = CONNECT_TIMEOUT) -> None:
-        """Connect to every server at once; failures are recorded, not raised."""
+    def start(self, timeout: float = CONNECT_TIMEOUT) -> None:
+        """Begin connecting to every server at once, in the background: the
+        session starts meanwhile (see wait). Failures are recorded, not raised."""
         async def all_of_them() -> None:
             await asyncio.gather(*(self._start(s, timeout) for s in self.servers.values()))
-        asyncio.run_coroutine_threadsafe(all_of_them(), self._loop).result()
+        self._connecting = asyncio.run_coroutine_threadsafe(all_of_them(), self._loop)
+
+    @property
+    def ready(self) -> bool:
+        """Every server has connected or failed."""
+        return self._connecting is not None and self._connecting.done()
+
+    def when_ready(self, fn: Callable[[], object]) -> None:
+        """Call `fn()` (on another thread) once every server has connected or failed."""
+        if self._connecting is not None:
+            self._connecting.add_done_callback(lambda _: fn())
+
+    def wait(self) -> None:
+        """Until every server has connected or failed (each within its timeout)."""
+        if self._connecting is None:
+            self.start()
+        assert self._connecting is not None
+        self._connecting.result()
+
+    def connect(self, timeout: float = CONNECT_TIMEOUT) -> None:
+        """Connect to every server at once, and wait for them."""
+        self.start(timeout)
+        self.wait()
+
+    def failures(self) -> list[str]:
+        return [f"MCP server {s.config.name!r} unavailable: {s.error} (see /mcp)"
+                for s in self.servers.values() if s.status == "failed"]
 
     async def _start(self, state: ServerState, timeout: float) -> None:
         ready = asyncio.Event()

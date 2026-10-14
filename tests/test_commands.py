@@ -2,6 +2,7 @@
 they do with the answers, without a terminal."""
 
 import io
+import json
 
 import pytest
 from conftest import ScriptedProvider, call, reply
@@ -158,3 +159,13 @@ def test_auto_ui_is_full_screen_except_in_zellij(monkeypatch):
     assert fullscreen("auto") and fullscreen("fullscreen") and not fullscreen("inline")
     monkeypatch.setenv("ZELLIJ", "0")
     assert not fullscreen("auto") and fullscreen("fullscreen")
+
+
+def test_settings_keep_only_what_was_chosen(tmp_path):
+    path = tmp_path / "settings.json"
+    s = Settings()
+    assert not s.memory_auto                                # reviewing at exit is opt-in
+    s.theme = "light"
+    s.save(path)
+    assert json.loads(path.read_text()) == {"theme": "light"}  # defaults can still change later
+    assert Settings.load(path) == Settings(theme="light")

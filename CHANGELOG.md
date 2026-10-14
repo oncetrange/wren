@@ -13,6 +13,11 @@
     joined again; double-click copies a word, triple-click a line.
   - Ctrl-S hands the mouse to the terminal, for its own selection.
   - Ctrl-G edits the input in `$EDITOR`, and Ctrl-Z suspends wren.
+- MCP servers connect in the background, so the session opens at once; the
+  first prompt waits for servers still connecting.
+- Reviewing the session for memories at exit (and at compaction) is off by
+  default; `/memory auto` turns it on. Settings now store only what differs
+  from the defaults, so a changed default reaches everyone who didn't choose.
 - `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
   over SSH.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
