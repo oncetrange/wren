@@ -83,7 +83,7 @@ class RichUI(AgentUI):
     def tool_started(self, name: str, label: str) -> None:
         self._stop_spin()
         self._previewed = False
-        self.console.print(render.tool_line(name, label, self.console.width, self._depth))
+        self._print(render.tool_line(name, label, self.console.width, self._depth))
         if self.typeahead is not None and not self._depth:
             self._spin(Text(f"Running {name}…", style="dim"))
 
@@ -91,17 +91,17 @@ class RichUI(AgentUI):
                 key: str | None = None) -> Decision:
         self._stop_spin()
         if preview:
-            self.console.print(render.diff(preview, self.code_theme, self._depth))
+            self._print(render.diff(preview, self.code_theme, self._depth))
             self._previewed = True
         elif "\n" in label:
-            self.console.print(render.command(label, self.code_theme))
+            self._print(render.command(label, self.code_theme))
         if not self.interactive:
             # Leaving the sandbox asks even with --yolo, so don't suggest it then.
             hint = "" if label.endswith("(outside the sandbox)") else "; use --yolo"
-            self.console.print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
+            self._print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
             return Decision(allow=False)
 
-        self.console.print(render.approval_question(key or tool.permission_key(args)))
+        self._print(render.approval_question(key or tool.permission_key(args)))
         try:
             answer = self.screen.ask_text().strip()
         except EOFError:
@@ -119,7 +119,7 @@ class RichUI(AgentUI):
 
     def review_plan(self, plan: str) -> PlanDecision | None:
         self._stop_spin()
-        self.console.print(render.plan(plan, self.code_theme))
+        self._print(render.plan(plan, self.code_theme))
         if not self.interactive:
             return None
         choice = self.screen.pick("Approve this plan?", [
@@ -130,14 +130,14 @@ class RichUI(AgentUI):
         if choice in ("accept_edits", "ask"):
             return PlanDecision(True, mode=choice)
         if choice == "revise":
-            self.console.print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
+            self._print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
             return PlanDecision(False, feedback=self.screen.ask_text().strip())
         return PlanDecision(False)
 
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         self._stop_spin()
         for shown in render.tool_result(name, output, self.code_theme, self._depth, self._previewed):
-            self.console.print(shown)
+            self._print(shown)
 
     @property
     def code_theme(self) -> str:
@@ -148,7 +148,7 @@ class RichUI(AgentUI):
     def render_history(self, messages: list[Message], tools: dict[str, Tool], ctx: ToolContext) -> None:
         """Show a past conversation the way it looked while it happened."""
         for shown in render.history(messages, tools, ctx, self.code_theme, self.console.width):
-            self.console.print(shown)
+            self._print(shown)
 
     def progress(self, lines: list[str] | None) -> None:
         """Live status lines for subagents running concurrently; None ends it."""
@@ -162,29 +162,33 @@ class RichUI(AgentUI):
     def steered(self, text: str) -> None:
         self._stop_spin()
         self._end_stream()
-        self.console.print(render.steered(text))
+        self._print(render.steered(text))
 
     def attached(self, label: str, summary: str) -> None:
         """A file @-mentioned in the prompt, and what was attached."""
-        self.console.print(render.attached(label, summary))
+        self._print(render.attached(label, summary))
 
     def hook_ran(self, name: str, status: str) -> None:
         self._stop_spin()
-        self.console.print(render.hook(name, status, self._depth))
+        self._print(render.hook(name, status, self._depth))
 
     def notice(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(render.notice(text, self._depth))
+        self._print(render.notice(text, self._depth))
 
     def error(self, text: str) -> None:
         self._stop_spin()
-        self.console.print(render.error(text, self._depth))
+        self._print(render.error(text, self._depth))
 
     def usage_line(self, context_tokens: int, context_window: int, output_tokens: int,
                    cost: float | None) -> None:
-        self.console.print(render.usage(context_tokens, context_window, output_tokens, cost))
+        self._print(render.usage(context_tokens, context_window, output_tokens, cost))
 
     # --- internals ---------------------------------------------------------
+
+    def _print(self, *renderables: Any, **kwargs: Any) -> None:
+        """Everything the UI shows goes out here."""
+        self.console.print(*renderables, **kwargs)
 
     def _stream(self, text: str, kind: str, style: str) -> None:
         self._stop_spin()
@@ -196,14 +200,14 @@ class RichUI(AgentUI):
         if self._markdown is not None:
             self._markdown.feed(text)
         else:
-            self.console.print(text, end="", style=style, markup=False, soft_wrap=True)
+            self._print(text, end="", style=style, markup=False, soft_wrap=True)
 
     def _end_stream(self) -> None:
         if self._markdown is not None:
             self._markdown.close()
             self._markdown = None
         elif self._stream_kind is not None:
-            self.console.print()
+            self._print()
         self._stream_kind = None
 
     def _spin(self, message: str | Text) -> None:

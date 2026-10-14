@@ -108,7 +108,7 @@ def menu_prompt(project, keys):
 
     def prompt():
         session = PromptSession(key_bindings=merge_key_bindings([menu.bindings(), probe]))
-        menu.attach(session)
+        menu.attach(session.default_buffer)
         return session.prompt("› ")
 
     return run_keys(keys, prompt), ghosts

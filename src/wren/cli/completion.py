@@ -24,7 +24,6 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
 from prompt_toolkit.auto_suggest import Suggestion
 from prompt_toolkit.buffer import Buffer
@@ -84,10 +83,10 @@ class SlashMenu:
         items = self.items(text)
         return items[self.index % len(items)][0] if items else None
 
-    def attach(self, session: PromptSession) -> None:
+    def attach(self, buffer: Buffer) -> None:
         """Show the ghost text as soon as the input changes (prompt_toolkit's
         own auto-suggest runs asynchronously, a beat later)."""
-        session.default_buffer.on_text_changed += self._update_ghost
+        buffer.on_text_changed += self._update_ghost
 
     def _update_ghost(self, buf: Buffer) -> None:
         text = buf.document.text_before_cursor

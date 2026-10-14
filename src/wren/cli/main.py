@@ -14,6 +14,7 @@ from rich.console import Console
 from wren import __version__
 from wren.cli import app
 from wren.cli.commands import BUILTIN_NAMES
+from wren.cli.fullscreen import FullscreenRepl, FullscreenUI
 from wren.cli.repl import Repl
 from wren.cli.ui import RichUI
 from wren.config import ConfigError
@@ -39,7 +40,12 @@ def main(argv: list[str] | None = None) -> int:
         args.prompt = sys.stdin.read()
     settings = Settings.load()
     # In JSON mode stdout carries only the result object; everything else goes to stderr.
-    ui = RichUI(Console(highlight=False, stderr=json_output), background=app.background(settings))
+    console = Console(highlight=False, stderr=json_output)
+    fullscreen = args.fullscreen and not args.prompt and sys.stdin.isatty() and sys.stdout.isatty()
+    if fullscreen:
+        ui: RichUI = FullscreenUI(console, background=app.background(settings))
+    else:
+        ui = RichUI(console, background=app.background(settings))
     try:
         session = app.start(args, settings, ui, Path.cwd().resolve())
     except ConfigError as e:
@@ -53,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(app.result_json(session.agent, result, time.monotonic() - start),
                                  ensure_ascii=False))
             return 0 if session.agent.status == "done" else 1
+        if isinstance(ui, FullscreenUI):
+            return FullscreenRepl(session.agent, ui, session.config, settings, session.memories).loop()
         return Repl(session.agent, ui, session.config, settings, session.memories).loop()
     finally:
         session.close()
@@ -79,6 +87,9 @@ def parser() -> argparse.ArgumentParser:
                         "directories, no network (default: [sandbox] enabled in the config, off)")
     p.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
     p.add_argument("--no-checkpoints", action="store_true", help="don't snapshot the workspace before each prompt")
+    p.add_argument("--fullscreen", action="store_true",
+                   help="draw the whole terminal: the conversation scrolls above a fixed input line "
+                        "(experimental)")
     p.add_argument("--version", action="version", version=f"wren {__version__}")
 
     headless = p.add_argument_group("headless runs")

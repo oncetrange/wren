@@ -22,7 +22,8 @@ src/wren/
 ├── skills.py · memory.py · mcp_servers.py · mentions.py · schedules.py
 ├── integrations/   the Pier/Harbor benchmark adapter
 └── cli/            command line, REPL, slash commands, typing while the agent works;
-                    render.py draws things, screen.py is where commands print and ask
+                    render.py draws things, screen.py is where commands print and ask,
+                    fullscreen.py and transcript.py are the full-screen UI
 ```
 
 - The agent only sees `wren.llm.types`; adding a provider means writing one adapter.

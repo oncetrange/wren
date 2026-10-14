@@ -126,7 +126,7 @@ def menu_prompt(keys, entries=ENTRIES):
 
     def prompt():  # created inside run_keys, where the pipe input is active
         session = PromptSession(key_bindings=merge_key_bindings([newline_bindings(), menu.bindings(), probe]))
-        menu.attach(session)
+        menu.attach(session.default_buffer)
         return session.prompt("› ")
 
     return run_keys(keys, prompt), ghosts
@@ -199,7 +199,7 @@ def prediction_prompt(keys, prediction):
 
     def prompt():
         session = PromptSession(key_bindings=menu.bindings())
-        menu.attach(session)
+        menu.attach(session.default_buffer)
         return session.prompt("› ", pre_run=lambda: menu.show_prediction(prediction, session.default_buffer))
 
     return run_keys(keys, prompt)

@@ -40,7 +40,7 @@ class Repl:
         self.screen = ui.screen
         self.prefill = ""  # text to pre-fill the next prompt with (e.g. after /undo)
 
-    def loop(self) -> int:
+    def banner(self) -> None:
         self.screen.print(
             f"[bold]wren[/] {__version__} · model [cyan]{self.agent.model.name}[/] "
             f"({self.agent.model.model}) · {self.agent.ctx.cwd}\n"
@@ -49,7 +49,10 @@ class Repl:
         cps = self.agent.checkpoints
         if cps is not None and not cps.enabled:
             self.screen.print(f"[yellow]file checkpoints disabled ({cps.disabled_reason}); "
-                               "/undo only rewinds the conversation[/]")
+                              "/undo only rewinds the conversation[/]")
+
+    def loop(self) -> int:
+        self.banner()
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         register_shift_enter()
         kb = newline_bindings()
@@ -66,7 +69,7 @@ class Repl:
             key_bindings=merge_key_bindings([kb, self.menu.bindings()]),
             bottom_toolbar=self._toolbar, style=TOOLBAR_STYLE,
         )
-        self.menu.attach(session)
+        self.menu.attach(session.default_buffer)
         while True:
             prefill, self.prefill = self.prefill, ""
             self.menu.prediction = self.predictor.take()
@@ -78,20 +81,23 @@ class Repl:
             except EOFError:
                 self.save_memories()
                 return 0
-            if not text:
-                continue
-            self.predictor.clear()  # a new turn: the old guess no longer applies
-            if text.startswith("/") and not expand_skill(text, self.agent.skills, commands.BUILTIN_NAMES):
-                try:
-                    if self.command(text) == "exit":
-                        return 0
-                except (KeyboardInterrupt, EOFError):
-                    self.screen.print("[dim]cancelled[/]")
-                continue
-            self.run(text)
-            self.usage_line()
-            if self.settings.suggestions and self.agent.status == "done":
-                self.predictor.start()
+            if text and self.handle(text) == "exit":
+                return 0
+
+    def handle(self, text: str) -> str | None:
+        """Run a slash command or send a prompt. "exit" when the session should end."""
+        self.predictor.clear()  # a new turn: the old guess no longer applies
+        if text.startswith("/") and not expand_skill(text, self.agent.skills, commands.BUILTIN_NAMES):
+            try:
+                return self.command(text)
+            except (KeyboardInterrupt, EOFError):
+                self.screen.print("[dim]cancelled[/]")
+                return None
+        self.run(text)
+        self.usage_line()
+        if self.settings.suggestions and self.agent.status == "done":
+            self.predictor.start()
+        return None
 
     def run(self, text: str) -> None:
         """Send a prompt. Meanwhile, what the user types goes to the agent on Enter;
