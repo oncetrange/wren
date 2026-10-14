@@ -2,6 +2,7 @@
 from a pipe, the session on the test's (main) thread."""
 
 import contextlib
+import io
 import signal
 import threading
 import time
@@ -80,7 +81,8 @@ def session(ctx, tmp_path_factory, monkeypatch):
     monkeypatch.setattr(fullscreen, "CONFIG_DIR", home)
 
     def run(script, turns=(), mode="auto", checkpoints=False):
-        ui = FullscreenUI(Console(width=120, color_system=None))
+        out = io.StringIO()
+        ui = FullscreenUI(Console(file=out, width=120, color_system=None))
         agent = Agent(ScriptedProvider(list(turns)), ModelConfig(name="fake", model="fake-1"), ctx, ui,
                       Permissions(mode=mode),
                       checkpoints=Checkpoints(ctx.cwd, root=home / "shadow") if checkpoints else None)
@@ -112,24 +114,35 @@ def session(ctx, tmp_path_factory, monkeypatch):
         if failure:
             traceback.print_exception(failure[0])
             raise failure[0]
+        r.printed = out.getvalue()                         # on the normal screen, once it ended
         return code, plain(ui), r
     return run
 
 
+def plain_lines(fragments) -> str:
+    return "".join(text for _, text, *_ in fragments)
+
+
 def test_prompts_commands_and_exit(session):
-    code, text, r = session(lambda d: (d.line("hello"), d.line("/cost"), d.line("/nope")),
+    code, text, r = session(lambda d: (d.line("hello"), d.line("/cost"), d.line("/nope"), d.line("/help")),
                             turns=[reply("hi there")])
     assert code == 0
     assert "› hello" in text and "hi there" in text
     assert "input 10 · output 5" in text
     assert "unknown command /nope" in text
     assert "context" in r._usage                         # the usage line went to the toolbar
+    assert "PgUp/PgDn scroll the conversation" in text     # /help has the full-screen keys
+    assert "› hello" in r.printed and "hi there" in r.printed  # left in the scrollback on exit
     assert r.agent.provider.requests[0][0].content[0].text == "hello"
 
 
 def test_approving_and_refusing_tool_calls(session, ctx):
+    asked = []
+
     def script(d):
         d.send("make files\r")
+        d.question()
+        asked.append(plain_lines(d.r._question_header()))
         d.answer("y\r")                                    # the first write
         d.answer("no, call it c.txt\r")                    # the second: refused with a message
         wait_for(lambda: not d.r.busy)
@@ -138,7 +151,9 @@ def test_approving_and_refusing_tool_calls(session, ctx):
         call("write_file", "t2", path="b.txt", content="b\n"),
         reply("ok")])
     assert (ctx.cwd / "a.txt").exists() and not (ctx.cwd / "b.txt").exists()
-    assert "Allow?" in text and "+a" in text               # the question and the diff it is about
+    assert "Allow?" in asked[0] and "always for edit" in asked[0]   # asked in the panel
+    assert "Allow?" not in text and "+a" in text           # the conversation keeps the diff,
+    assert "› no, call it c.txt" in text                   # and what was answered
     last = r.agent.provider.requests[-1][-1].content
     assert any(getattr(b, "text", "") == "no, call it c.txt" for b in last)
 
@@ -216,3 +231,23 @@ def test_scrolling_back_stays_put_while_output_arrives():
     assert shown()[-1] == "line 50" and control.below == 0
     control.scroll(1000)
     assert shown()[0] == "line 0"
+
+
+def test_long_output_opens_a_pager(session, ctx):
+    (ctx.cwd / "a.txt").write_text("".join(f"line {i}\n" for i in range(100)))
+
+    def script(d):
+        d.line("change it")
+        d.send("/diff\r")
+        wait_for(lambda: d.r.view.pager is not None and d.r.view.pager.control.position[2] > 0)
+        first, last, total = d.r.view.pager.control.position
+        assert first == 1 and total > 100                  # from the top
+        d.send(" ")                                        # a page down
+        wait_for(lambda: d.r.view.pager.control.position[0] > 1)
+        d.send("G")
+        wait_for(lambda: d.r.view.pager.control.position[1] == total)
+        d.send("q")
+        wait_for(lambda: d.r.view.pager is None and not d.r.busy)
+    _, text, _ = session(script, checkpoints=True, turns=[
+        call("bash", "t1", command="sed -i.bak s/line/LINE/ a.txt && rm a.txt.bak"), reply("ok")])
+    assert "shown in the pager" in text and "+LINE 99" not in text

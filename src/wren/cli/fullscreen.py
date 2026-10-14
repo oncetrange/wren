@@ -18,7 +18,8 @@ the main thread until the UI answers it.
 
 Before the UI starts and after it stops, output and questions fall back to the
 inline forms, so startup prompts and the end-of-session memory review work as
-they always did.
+they always did. Once it stops, the conversation is printed to the normal
+screen, so it stays in the terminal's scrollback as it would inline.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
     Dimension,
+    DynamicContainer,
     FormattedTextControl,
     HSplit,
     Layout,
@@ -52,6 +54,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.processors import AppendAutoSuggestion
+from prompt_toolkit.utils import suspend_to_background_supported
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
@@ -65,7 +68,7 @@ from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
 from wren.cli.repl import TOOLBAR_STYLE, Repl
 from wren.cli.screen import Screen
-from wren.cli.terminal import distinguish_shift_enter, register_shift_enter
+from wren.cli.terminal import distinguish_shift_enter, last_background, register_shift_enter
 from wren.cli.transcript import Block, Transcript, TranscriptControl, to_lines
 from wren.cli.ui import RichUI
 from wren.config import CONFIG_DIR, Config
@@ -83,10 +86,19 @@ class Question:
     """Something the session waits for the user to answer: one of `options`,
     or (without options) a line of text."""
 
-    message: str
+    message: str  # rich markup
     options: list[tuple[Any, str]] | None = None
     index: int = 0
     future: Future = field(default_factory=Future)
+
+
+@dataclass
+class Pager:
+    """Something too long for the screen, shown on its own until closed."""
+
+    transcript: Transcript
+    control: TranscriptControl
+    closed: Future = field(default_factory=Future)
 
 
 class View:
@@ -97,6 +109,7 @@ class View:
         self.control = TranscriptControl(self.transcript)
         self.status: RenderableType | None = None  # the spinner line, while something runs
         self.question: Question | None = None
+        self.pager: Pager | None = None
         self.app: Application | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.context: contextvars.Context | None = None  # the UI thread's, with its app
@@ -127,6 +140,20 @@ class View:
             self.on_question()
         self.call(show)
         return question.future.result()
+
+    def show_pager(self, pager: Pager) -> None:
+        """From the session's thread: show the pager until it is closed."""
+        def show() -> None:
+            self.pager = pager
+            self.on_question()
+        self.call(show)
+        pager.closed.result()
+
+    def close_pager(self) -> None:
+        pager, self.pager = self.pager, None
+        self.on_question()
+        if pager is not None:
+            pager.closed.set_result(None)
 
     def answer(self, value: Any = None, error: BaseException | None = None) -> None:
         """On the UI thread: the current question is answered (or cancelled with `error`)."""
@@ -168,10 +195,13 @@ class FullscreenScreen(Screen):
         index = values.index(default) if default in values else 0
         return self.view.ask(Question(message, list(options), index))
 
-    def ask_text(self, message: str = "  › ") -> str:
+    def ask_text(self, question: str | None = None) -> str:
         if not self.view.running:
-            return super().ask_text(message)
-        return self.view.ask(Question(message))
+            return super().ask_text(question)
+        answer = self.view.ask(Question(question or ""))
+        if answer.strip():  # what was answered stays in the conversation
+            self.view.transcript.add(Text("  › " + answer.strip(), style="dim"))
+        return answer
 
     def status(self, message: str) -> contextlib.AbstractContextManager[Any]:
         if not self.view.running:
@@ -179,7 +209,21 @@ class FullscreenScreen(Screen):
         return _Status(self.view, message)
 
     def page(self, *renderables: RenderableType) -> None:
-        self.print(*renderables)  # the transcript scrolls
+        """Into the conversation when it fits on the screen, otherwise in a pager (like less -F)."""
+        app = self.view.app
+        if not self.view.running or app is None:
+            return super().page(*renderables)
+        size = app.output.get_size()
+        transcript = Transcript(self.view.transcript.color_system)
+        transcript.add(*renderables)
+        lines = len(transcript.lines(size.columns))
+        if lines <= size.rows - 4:
+            self.print(*renderables)
+            return
+        control = TranscriptControl(transcript)
+        control.to_top()
+        self.view.show_pager(Pager(transcript, control))
+        self.print(Text(f"  ({lines} lines, shown in the pager)", style="dim"))
 
     def run_program(self, argv: list[str]) -> int:
         if not self.view.running or self.view.loop is None:
@@ -256,6 +300,11 @@ class FullscreenUI(RichUI):
 
 
 class FullscreenRepl(Repl):
+    keys_help = """
+  Full screen: the mouse wheel or PgUp/PgDn scroll the conversation; to select text, hold
+  Shift (Option in iTerm2) while dragging. Ctrl-G or Ctrl-X Ctrl-E edits the input in $EDITOR,
+  Ctrl-Z suspends wren. Long output (/diff) opens in a pager: ↑↓ PgUp PgDn g G, q closes"""
+
     def __init__(self, agent: Agent, ui: FullscreenUI, config: Config, settings: Settings,
                  memories: Memories | None = None):
         super().__init__(agent, ui, config, settings, memories)
@@ -292,6 +341,9 @@ class FullscreenRepl(Repl):
         finally:
             self.view.call(self.app.exit)
             ui.join()
+            # Back on the normal screen: leave the conversation in its scrollback.
+            for renderable in self.view.transcript.renderables():
+                self.screen.console.print(renderable)
         if self._error is not None:
             raise self._error
         return 0
@@ -313,6 +365,9 @@ class FullscreenRepl(Repl):
         if left := self.agent.unsent():
             self.prefill = "\n".join(left)
             self.screen.print("[dim]not sent to wren; it's back in the input line[/]")
+
+    def terminal_background(self) -> str | None:
+        return last_background()  # asking now would race the UI for the keyboard
 
     def usage_line(self) -> None:
         u = render.usage(self.agent.estimated_context(), self.agent.model.context_window,
@@ -370,7 +425,13 @@ class FullscreenRepl(Repl):
         def prefix(text: str) -> Callable[[int, int], StyleAndTextTuples]:
             return lambda line, wrap: [("class:prompt", text if line == 0 and wrap == 0 else "  ")]
 
-        body = HSplit([
+        paging = Condition(lambda: view.pager is not None)
+        self._pager_status = FormattedTextControl(self._pager_line, focusable=True)
+        pager = HSplit([
+            DynamicContainer(self._pager_window),
+            Window(self._pager_status, height=1, style="class:bottom-toolbar"),
+        ])
+        main = HSplit([
             Window(view.control, wrap_lines=False),
             ConditionalContainer(Window(FormattedTextControl(self._status_lines), dont_extend_height=True),
                                  filter=Condition(lambda: view.status is not None or bool(self.agent.queued))),
@@ -390,10 +451,11 @@ class FullscreenRepl(Repl):
                 filter=asking_text),
             Window(FormattedTextControl(self._toolbar_line), height=1, style="class:bottom-toolbar"),
         ])
+        body = HSplit([ConditionalContainer(main, filter=~paging), ConditionalContainer(pager, filter=paging)])
         view.on_question = self._focus
         app: Application = Application(
             layout=Layout(body, focused_element=self.input),
-            key_bindings=merge_key_bindings([self._bindings(picking), newline_bindings(),
+            key_bindings=merge_key_bindings([self._bindings(picking, paging), newline_bindings(),
                                              self.menu.bindings()]),
             style=TOOLBAR_STYLE, full_screen=True, mouse_support=True, min_redraw_interval=0.05,
         )
@@ -403,7 +465,9 @@ class FullscreenRepl(Repl):
     def _focus(self) -> None:
         """Give the keyboard to the question being asked, or back to the input line."""
         question = self.view.question
-        if question is None:
+        if self.view.pager is not None:
+            self.app.layout.focus(self._pager_status)  # keys go to the pager, typing nowhere
+        elif question is None:
             self.app.layout.focus(self.input)
         else:
             self.view.control.to_bottom()  # what is being asked about is at the end
@@ -414,17 +478,20 @@ class FullscreenRepl(Repl):
                 self.app.layout.focus(self._picker)
         self.app.invalidate()
 
-    def _bindings(self, picking: Condition) -> KeyBindings:
+    def _bindings(self, picking: Condition, paging: Condition) -> KeyBindings:
         kb = KeyBindings()
         view = self.view
+        typing = Condition(lambda: view.question is None and view.pager is None)
 
-        @kb.add("enter", filter=~self.menu.is_open & ~picking)
+        @kb.add("enter", filter=~self.menu.is_open & ~picking & ~paging)
         def _(event) -> None:
             event.current_buffer.validate_and_handle()
 
         @kb.add("c-c")
         def _(event) -> None:
-            if view.question is not None:
+            if view.pager is not None:
+                view.close_pager()
+            elif view.question is not None:
                 cancel = KeyboardInterrupt() if view.question.options is None else None
                 view.answer(None, error=cancel)
             elif self.input.text:
@@ -446,13 +513,63 @@ class FullscreenRepl(Repl):
         def _(event) -> None:
             self.agent.permissions.cycle()
 
-        @kb.add("pageup")
+        @kb.add("pageup", filter=~paging)
         def _(event) -> None:
             view.control.page(1)
 
-        @kb.add("pagedown")
+        @kb.add("pagedown", filter=~paging)
         def _(event) -> None:
             view.control.page(-1)
+
+        @kb.add("c-g", filter=typing)
+        @kb.add("c-x", "c-e", filter=typing)
+        def _(event) -> None:
+            self.input.open_in_editor()  # the edited text comes back in the input line
+
+        @kb.add("c-z", filter=Condition(suspend_to_background_supported))
+        def _(event) -> None:
+            event.app.suspend_to_background()
+
+        # --- the pager
+        def pager_control() -> TranscriptControl:
+            assert view.pager is not None
+            return view.pager.control
+
+        @kb.add("up", filter=paging)
+        @kb.add("k", filter=paging)
+        def _(event) -> None:
+            pager_control().scroll(1)
+
+        @kb.add("down", filter=paging)
+        @kb.add("j", filter=paging)
+        @kb.add("enter", filter=paging)
+        def _(event) -> None:
+            pager_control().scroll(-1)
+
+        @kb.add("pageup", filter=paging)
+        @kb.add("b", filter=paging)
+        def _(event) -> None:
+            pager_control().page(1)
+
+        @kb.add("pagedown", filter=paging)
+        @kb.add("space", filter=paging)
+        def _(event) -> None:
+            pager_control().page(-1)
+
+        @kb.add("home", filter=paging)
+        @kb.add("g", filter=paging)
+        def _(event) -> None:
+            pager_control().to_top()
+
+        @kb.add("end", filter=paging)
+        @kb.add("G", filter=paging)
+        def _(event) -> None:
+            pager_control().to_bottom()
+
+        @kb.add("q", filter=paging)
+        @kb.add("escape", filter=paging, eager=True)
+        def _(event) -> None:
+            view.close_pager()
 
         @kb.add("up", filter=picking)
         @kb.add("c-p", filter=picking)
@@ -553,9 +670,26 @@ class FullscreenRepl(Repl):
 
     def _question_header(self) -> StyleAndTextTuples:
         question = self.view.question
-        message = question.message.strip() if question is not None else ""
-        lines: StyleAndTextTuples = [("bold", message), ("", "  ")] if message and message != "›" else []
-        return [*lines, ("class:menu.hint", "Enter answers · Ctrl-C cancels")]
+        hint: StyleAndTextTuples = [("class:menu.hint", "  Enter answers · Esc Enter for a newline · Ctrl-C cancels")]
+        if question is None or not question.message.strip():
+            return hint
+        shown = to_lines([Text.from_markup(question.message)], self._width(), self.view.transcript.color_system)
+        return [*_join(shown), ("", "\n"), *hint]
+
+    def _pager_window(self) -> Window:
+        pager = self.view.pager
+        if pager is None:
+            return Window()
+        if getattr(self, "_paged", None) is not pager:  # one window per pager, keeping its state
+            self._paged, self._paged_window = pager, Window(pager.control, wrap_lines=False)
+        return self._paged_window
+
+    def _pager_line(self) -> StyleAndTextTuples:
+        if self.view.pager is None:
+            return []
+        first, last, total = self.view.pager.control.position
+        return [("", f"  lines {first}–{last} of {total}"),
+                ("class:menu.hint", " · ↑↓ PgUp PgDn g G · q closes")]
 
     def _toolbar_line(self) -> StyleAndTextTuples:
         parts = to_formatted_text(self._toolbar())

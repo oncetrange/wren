@@ -16,6 +16,7 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.keys import Keys
 
 Background = Literal["dark", "light"]
+_detected: list[Background | None] = []  # the last answer, once asked
 
 # Shift+Enter (and Ctrl/Ctrl+Shift+Enter) as sent by terminals with CSI-u or
 # modifyOtherKeys reporting on. We read them as Esc Enter, which inserts a newline.
@@ -76,6 +77,18 @@ def _reset(stream) -> None:
 
 def detect_background(timeout: float = 0.15) -> Background | None:
     """Ask the terminal for its background color (OSC 11); None if unknown."""
+    found = _detect_background(timeout)
+    _detected[:] = [found]
+    return found
+
+
+def last_background() -> Background | None:
+    """What detect_background found last (without asking: the terminal's
+    replies would be read as keys while a full-screen UI reads the keyboard)."""
+    return _detected[0] if _detected else None
+
+
+def _detect_background(timeout: float) -> Background | None:
     if fgbg := os.environ.get("COLORFGBG"):
         # "15;0" means light-on-dark; the last field is the background palette index.
         bg = fgbg.split(";")[-1]

@@ -30,7 +30,7 @@ from wren.checkpoint import CheckpointError
 from wren.cli import render
 from wren.cli.app import new_sandbox, run_prompt
 from wren.cli.schedule_cmd import print_jobs, print_run
-from wren.cli.terminal import detect_background, shift_enter_help
+from wren.cli.terminal import shift_enter_help
 from wren.cli.text import one_line, session_options
 from wren.config import CONFIG_FILE, ConfigError
 from wren.llm.factory import create_provider
@@ -535,7 +535,7 @@ def _model(repl: Repl, name: str) -> None:
 
 @command("/theme", "dark / light / auto-detected colors")
 def _theme(repl: Repl, arg: str) -> None:
-    detected = detect_background()
+    detected = repl.terminal_background()
     options: list[tuple[Theme, str]] = [
         ("auto", f"auto (detected: {detected or 'unknown, using dark'})"),
         ("dark", "dark terminal background"),
@@ -576,7 +576,7 @@ def _cost(repl: Repl, arg: str) -> None:
 
 @command("/help", "this help")
 def _help(repl: Repl, arg: str) -> None:
-    repl.screen.print(HELP)
+    repl.screen.print(HELP + repl.keys_help)
 
 
 @command("/exit", "quit (or Ctrl-D)", "/quit")

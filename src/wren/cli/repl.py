@@ -20,7 +20,7 @@ from wren.cli.app import run_prompt
 from wren.cli.completion import STYLES as MENU_STYLES
 from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
-from wren.cli.terminal import distinguish_shift_enter, register_shift_enter
+from wren.cli.terminal import detect_background, distinguish_shift_enter, register_shift_enter
 from wren.cli.typeahead import TypeAhead
 from wren.cli.ui import RichUI
 from wren.config import CONFIG_DIR, Config
@@ -33,6 +33,9 @@ TOOLBAR_STYLE = Style.from_dict({"bottom-toolbar": "noreverse", **MENU_STYLES})
 
 
 class Repl:
+    # Keys of this form of the session, added to /help.
+    keys_help = ""
+
     def __init__(self, agent: Agent, ui: RichUI, config: Config, settings: Settings,
                  memories: Memories | None = None):
         self.agent, self.ui, self.config, self.settings = agent, ui, config, settings
@@ -120,6 +123,10 @@ class Repl:
             self.ui.error(f"unknown command {name}; see /help")
             return None
         return found.run(self, arg.strip())
+
+    def terminal_background(self) -> str | None:
+        """The terminal's background color, "dark" or "light", if it says."""
+        return detect_background()
 
     def usage_line(self) -> None:
         self.ui.usage_line(self.agent.estimated_context(), self.agent.model.context_window,

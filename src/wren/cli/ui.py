@@ -101,9 +101,8 @@ class RichUI(AgentUI):
             self._print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
             return Decision(allow=False)
 
-        self._print(render.approval_question(key or tool.permission_key(args)))
         try:
-            answer = self.screen.ask_text().strip()
+            answer = self.screen.ask_text(render.approval_question(key or tool.permission_key(args))).strip()
         except EOFError:
             answer = "n"
         match answer.lower():
@@ -130,8 +129,8 @@ class RichUI(AgentUI):
         if choice in ("accept_edits", "ask"):
             return PlanDecision(True, mode=choice)
         if choice == "revise":
-            self._print("  [bold]What should change?[/] [dim](Enter to skip)[/]")
-            return PlanDecision(False, feedback=self.screen.ask_text().strip())
+            question = "  [bold]What should change?[/] [dim](Enter to skip)[/]"
+            return PlanDecision(False, feedback=self.screen.ask_text(question).strip())
         return PlanDecision(False)
 
     def tool_finished(self, name: str, output: ToolOutput) -> None:

@@ -110,6 +110,15 @@ class TranscriptControl(UIControl):
         """Lines below the window, when scrolled back."""
         return self.offset
 
+    @property
+    def position(self) -> tuple[int, int, int]:
+        """The first and last line shown (from 1) and how many there are."""
+        bottom = self._total - self.offset
+        return max(0, bottom - self._height) + 1, bottom, self._total
+
+    def to_top(self) -> None:
+        self.offset = 1 << 30  # clamped once laid out
+
     def scroll(self, lines: int) -> None:
         """Back (positive) or forward (negative)."""
         self.offset = max(0, min(self.max_offset, self.offset + lines))

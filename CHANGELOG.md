@@ -4,6 +4,8 @@
 
 - `wren --fullscreen` (experimental): a full-screen UI. The conversation
   scrolls above a fixed input line, and pickers and approvals open in its place.
+  Long output opens in a pager, Ctrl-G edits the input in `$EDITOR`, Ctrl-Z
+  suspends, and the conversation is left in the scrollback on exit.
 
 ## 1.0.0 — 2026-10-12
 
