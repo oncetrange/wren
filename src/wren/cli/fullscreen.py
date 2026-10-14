@@ -40,7 +40,7 @@ from typing import Any
 from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import StyleAndTextTuples, to_formatted_text
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import (
@@ -56,13 +56,14 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.processors import AppendAutoSuggestion
 from prompt_toolkit.styles import Style, merge_styles
-from prompt_toolkit.utils import suspend_to_background_supported
+from prompt_toolkit.utils import get_cwidth, suspend_to_background_supported
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
 
 from wren import mentions
 from wren.agent.loop import Agent
+from wren.agent.permissions import LABELS
 from wren.agent.predict import Predictor
 from wren.cli import clipboard, commands, render
 from wren.cli.app import run_prompt
@@ -96,6 +97,57 @@ class Question:
     options: list[tuple[Any, str]] | None = None
     index: int = 0
     future: Future = field(default_factory=Future)
+
+
+@dataclass
+class Item:
+    """A piece of the bottom bar. When the bar doesn't fit, it gives up room
+    in order: the item whose next step has the highest number goes first. An
+    item with a `short` form is shortened at `shorten_at` (default: its
+    priority), then dropped at `priority`, unless that is 0."""
+
+    text: str
+    style: str = "ansigray"
+    priority: int = 0
+    short: str | None = None
+    shorten_at: int | None = None
+
+    def next_step(self) -> int | None:
+        if self.short is not None:
+            return self.priority if self.shorten_at is None else self.shorten_at
+        return self.priority or None
+
+
+def fit_bar(left: list[Item], right: list[Item], width: int) -> StyleAndTextTuples:
+    """`left` and `right` on one line of `width`, the right ones aligned right."""
+    left, right = list(left), list(right)
+
+    def size(items: list[Item]) -> int:
+        return sum(get_cwidth(i.text) for i in items) + 3 * max(0, len(items) - 1)
+
+    def total() -> int:
+        return 2 + size(left) + (2 + size(right) if right else 0)
+
+    while total() > width:
+        candidates = [i for i in left + right if i.next_step() is not None]
+        if not candidates:
+            break
+        worst = max(candidates, key=lambda i: i.next_step() or 0)
+        if worst.short is not None:
+            worst.text, worst.short = worst.short, None
+        else:
+            (left if worst in left else right).remove(worst)
+
+    def join(items: list[Item]) -> StyleAndTextTuples:
+        out: StyleAndTextTuples = []
+        for k, item in enumerate(items):
+            out += [("ansigray", " · ")] if k else []
+            out.append((item.style, item.text))
+        return out
+
+    gap = max(2, width - 2 - size(left) - size(right))
+    line: StyleAndTextTuples = [("", "  "), *join(left), ("", " " * gap), *join(right)]
+    return line
 
 
 @dataclass
@@ -344,7 +396,7 @@ class FullscreenRepl(Repl):
         self.busy = False  # the session is handling a line; Ctrl-C interrupts it
         self._busy_lock = threading.Lock()
         self._session_thread = threading.get_ident()
-        self._usage = ""
+        self._usage: tuple[int, int, int, float | None] | None = None  # (context, window, output, cost)
         self._hint = ""  # shown in the toolbar until the next key
         self.selecting = False  # the mouse is the terminal's, to select text
         self.searching = False
@@ -402,9 +454,8 @@ class FullscreenRepl(Repl):
         return last_background()  # asking now would race the UI for the keyboard
 
     def usage_line(self) -> None:
-        u = render.usage(self.agent.estimated_context(), self.agent.model.context_window,
-                         self.agent.usage.output_tokens, self.agent.cost)
-        self._usage = u.plain.strip()
+        self._usage = (self.agent.estimated_context(), self.agent.model.context_window,
+                       self.agent.usage.output_tokens, self.agent.cost)
         self.view.redraw()
 
     def _prediction_ready(self) -> None:
@@ -471,6 +522,9 @@ class FullscreenRepl(Repl):
             ConditionalContainer(Window(FormattedTextControl(self._status_lines), dont_extend_height=True),
                                  filter=Condition(lambda: view.status is not None or bool(self.agent.queued))),
             Window(height=1, char="─", style="class:rule"),
+            ConditionalContainer(  # completions, above the line they complete
+                Window(FormattedTextControl(lambda: self.menu.rows(self._width())), dont_extend_height=True),
+                filter=self.menu.is_open & no_question & ~searching),
             ConditionalContainer(
                 Window(BufferControl(self.input, input_processors=[AppendAutoSuggestion()]),
                        height=Dimension(min=1, max=12), wrap_lines=True, dont_extend_height=True,
@@ -824,17 +878,34 @@ class FullscreenRepl(Repl):
                 ("class:menu.hint", " · ↑↓ PgUp PgDn g G · q closes")]
 
     def _toolbar_line(self) -> StyleAndTextTuples:
-        parts = to_formatted_text(self._toolbar())
-        extra = []
-        if below := self.view.control.below:
-            extra.append(f"↓ {below} more lines (PgDn)")
+        """The mode and what is going on at the left; the model and context use at the right."""
+        mode = self.agent.permissions.mode
+        icon = {"ask": "⏵", "accept_edits": "⏵⏵", "plan": "⏸", "auto": "⏵⏵⏵"}[mode]
+        color = {"ask": "ansigray", "accept_edits": "ansigreen", "plan": "ansicyan", "auto": "ansired"}[mode]
+        short = {"ask": "ask", "accept_edits": "accept edits", "plan": "plan", "auto": "auto"}[mode]
+        left = [Item(f"{icon} {LABELS[mode]}", color, 0, f"{icon} {short}", shorten_at=2)]
+        if self.agent.ctx.sandbox:
+            left.append(Item("sandbox", "ansigreen", 3))
         if self.selecting:
-            extra.append("selecting text: drag with the mouse · Ctrl-S to scroll again")
-        if self._usage:
-            extra.append(self._usage)
+            left.append(Item("selecting with the terminal · Ctrl-S scrolls again", "ansiyellow", 1,
+                             "selecting · Ctrl-S"))
         if self._hint:
-            extra.append(self._hint)
-        return [*parts, *(("ansigray", " · " + e) for e in extra)]
+            left.append(Item(self._hint, "ansiyellow", 1))
+        if below := self.view.control.below:
+            left.append(Item(f"↓ {below} more lines (PgDn)", "ansigray", 2, f"↓ {below}"))
+        if running := len(self.agent.ctx.jobs.running()):
+            left.append(Item(f"{running} background job{'s' if running != 1 else ''} (/jobs)", "ansigray", 4,
+                             f"{running} job{'s' if running != 1 else ''}"))
+        left.append(Item("shift+tab: mode", "ansigray", 8))
+        right = [Item(self.agent.model.name, "ansigray", 5)]
+        if self._usage is not None:
+            context, window, output, cost = self._usage
+            pct = 100 * context / window if window else 0
+            right.append(Item(f"context {render.fmt_tokens(context)}/{render.fmt_tokens(window)} ({pct:.0f}%)",
+                              "ansiyellow" if pct >= 80 else "ansigray", 6, f"{pct:.0f}%"))
+            if cost is not None:
+                right.append(Item(f"${cost:.4f}", "ansigray", 7))
+        return fit_bar(left, right, self._width())
 
 
 def _join(lines: list[StyleAndTextTuples]) -> StyleAndTextTuples:

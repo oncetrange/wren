@@ -23,7 +23,7 @@ from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.checkpoint import Checkpoints
 from wren.cli import fullscreen, repl
-from wren.cli.fullscreen import FullscreenRepl, FullscreenUI
+from wren.cli.fullscreen import FullscreenRepl, FullscreenUI, Item, fit_bar
 from wren.cli.transcript import Transcript, TranscriptControl, soft_breaks, to_lines
 from wren.cli.transcript import plain as plain_text
 from wren.config import ModelConfig, load_config
@@ -133,7 +133,7 @@ def test_prompts_commands_and_exit(session):
     assert "› hello" in text and "hi there" in text
     assert "input 10 · output 5" in text
     assert "unknown command /nope" in text
-    assert "context" in r._usage                         # the usage line went to the toolbar
+    assert r._usage is not None and "context" in plain_lines(r._toolbar_line())  # usage is in the bar
     assert "PgUp/PgDn scroll the conversation" in text     # /help has the full-screen keys
     assert r.agent.provider.requests[0][0].content[0].text == "hello"
 
@@ -311,7 +311,7 @@ def test_ctrl_s_gives_the_mouse_to_the_terminal(session):
         d.send("\x13")
         wait_for(lambda: d.r.selecting)
         states.append(d.r.app.mouse_support())
-        assert "selecting text" in plain_lines(d.r._toolbar_line())
+        assert "selecting" in plain_lines(d.r._toolbar_line())
     session(script)
     assert states == [True, False]
 
@@ -394,3 +394,34 @@ def test_dragging_to_the_edge_scrolls_along():
         control.create_content(40, 10)
     control.mouse_handler(mouse(MouseEventType.MOUSE_UP, 0, 0))
     assert copied == ["\n".join([f"line {i}" for i in range(17, 25)] + ["l"])]
+
+
+def test_the_bottom_bar_drops_what_matters_least_when_narrow():
+    left = [Item("⏵ ask before edits", priority=0, short="⏵ ask", shorten_at=2),
+            Item("copied 12 characters", priority=1),
+            Item("shift+tab: mode", priority=8)]
+    right = [Item("kimi", priority=5), Item("context 12.0k/200.0k (6%)", priority=6, short="6%"),
+             Item("$0.0123", priority=7)]
+    wide = plain_lines(fit_bar(list(left), list(right), 120))
+    assert "shift+tab: mode" in wide and wide.rstrip().endswith("$0.0123") and len(wide) == 120
+    narrow = plain_lines(fit_bar(list(left), list(right), 60))
+    assert len(narrow) <= 60 and "copied 12 characters" in narrow and "shift+tab" not in narrow
+    assert "kimi" in narrow
+    tiny = plain_lines(fit_bar(list(left), list(right), 30))
+    assert tiny.startswith("  ⏵ ask ·") and "copied" in tiny and "kimi" not in tiny  # shortened first
+
+
+def test_completions_open_as_a_list_above_the_input(session):
+    shown = {}
+
+    def script(d):
+        d.send("/m")
+        wait_for(lambda: d.r.input.text == "/m")
+        shown["list"] = plain_lines(d.r.menu.rows(80, text="/m"))
+        shown["bar"] = plain_lines(d.r._toolbar_line())
+        d.send("\x15")                                     # Ctrl-U clears the line
+        wait_for(lambda: not d.r.input.text)
+    session(script)
+    rows = shown["list"].splitlines()
+    assert rows[0].lstrip().startswith("/memory") and any(r.lstrip().startswith("/mcp") for r in rows)
+    assert "↑↓ choose" in rows[-1] and "/memory" not in shown["bar"]  # the bar keeps its own line

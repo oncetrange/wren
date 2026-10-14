@@ -4,6 +4,8 @@
 
 - A full-screen UI, now the default. The conversation scrolls above an input
   line that is always there, and pickers and approvals open in its place.
+  Completions open as a list above the input line. The bottom bar fits its
+  width, shortening or leaving out the least useful parts first.
   - Ctrl-O shows what tool calls returned, and whole diffs.
   - Ctrl-F finds text in the conversation.
   - Long output opens in a pager.

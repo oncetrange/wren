@@ -154,6 +154,31 @@ class SlashMenu:
         line.append(("class:menu.hint", HINT))
         return line
 
+    def rows(self, width: int, max_rows: int = 8, text: str | None = None) -> StyleAndTextTuples:
+        """The matches as a list, one per line, scrolled to keep the selected
+        one in view (for a full-screen UI, which has the room above the input)."""
+        items = self.items(text)
+        if not items:
+            return []
+        sel = self.index % len(items)
+        start = max(0, min(sel - max_rows // 2, len(items) - max_rows))
+        name_width = min(32, max(len(name) for name, _ in items))
+        lines: StyleAndTextTuples = []
+        for i in range(start, min(len(items), start + max_rows)):
+            name, desc = items[i]
+            room = max(0, width - name_width - 8)
+            desc = desc if len(desc) <= room else desc[:max(0, room - 1)] + "…"
+            if lines:
+                lines.append(("", "\n"))
+            if i == sel:
+                lines += [("class:menu.selected", f" {name:<{name_width}} "), ("class:menu.meta", f"  {desc}")]
+            else:
+                lines += [("", f" {name:<{name_width}} "), ("class:menu.hint", f"  {desc}")]
+        count = f"{sel + 1}/{len(items)} · " if len(items) > max_rows else ""
+        keys = "Tab or ↵ picks" if items[0][0].startswith("@") else "Tab completes · ↵ runs"
+        lines += [("", "\n"), ("class:menu.hint", f" {count}↑↓ choose · {keys}")]
+        return lines
+
     # --- keys ----------------------------------------------------------------
 
     def bindings(self) -> KeyBindings:
