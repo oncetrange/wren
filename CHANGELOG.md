@@ -2,8 +2,26 @@
 
 ## Unreleased
 
-- `wren --fullscreen` (experimental): a full-screen UI. The conversation
-  scrolls above a fixed input line, and pickers and approvals open in its place.
+- A full-screen UI, now the default. The conversation scrolls above an input
+  line that is always there, and pickers and approvals open in its place.
+  Completions open as a list above the input line. The bottom bar fits its
+  width, shortening or leaving out the least useful parts first.
+  - Ctrl-O shows what tool calls returned, and whole diffs.
+  - Ctrl-F finds text in the conversation.
+  - Long output opens in a pager.
+  - Dragging selects text and copies it on release, with wrapped lines
+    joined again; double-click copies a word, triple-click a line.
+  - Ctrl-S hands the mouse to the terminal, for its own selection.
+  - Ctrl-G edits the input in `$EDITOR`, and Ctrl-Z suspends wren.
+- MCP servers connect in the background, so the session opens at once; the
+  first prompt waits for servers still connecting.
+- Reviewing the session for memories at exit (and at compaction) is off by
+  default; `/memory auto` turns it on. Settings now store only what differs
+  from the defaults, so a changed default reaches everyone who didn't choose.
+- `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
+  over SSH.
+- `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
+  the inline UI. `auto` picks full screen, except in Zellij.
 
 ## 1.0.0 — 2026-10-12
 

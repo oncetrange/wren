@@ -202,3 +202,20 @@ def test_streamable_http(tmp_path):
     finally:
         proc.terminate()
         proc.wait(5)
+
+
+def test_the_session_starts_while_servers_connect(ctx, tmp_path):
+    """Servers connect in the background; the first prompt waits for them, then has their tools."""
+    m = McpServers([fake_server(timeout=3), McpServerConfig("broken", command="/nonexistent/server")],
+                   Path.cwd(), log_dir=tmp_path)
+    m.start(timeout=20)
+    try:
+        ui = RecordingUI()
+        agent = Agent(ScriptedProvider([reply("ok")]), ModelConfig(name="fake", model="fake-1"), ctx, ui,
+                      Permissions(), mcp=m)
+        assert not m.ready and not any(name.startswith("mcp__") for name in agent.tools)
+        agent.run("hi")
+        assert m.ready and tool_name("fake", "echo") in agent.tools
+        assert any("'broken' unavailable" in e[1] for e in ui.events if e[0] == "notice")
+    finally:
+        m.close()

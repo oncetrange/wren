@@ -56,6 +56,7 @@ class SlashMenu:
         self.entries = entries
         self.files = files
         self.index = 0
+        self.buffer: Buffer | None = None  # the input it completes (see attach)
         self._last_text = ""
         self._completed: tuple[str, list[str]] = ("\0", [])  # (prefix, paths), cached
         # Predicted next prompt, offered as ghost text when no command is typed.
@@ -64,7 +65,10 @@ class SlashMenu:
     def items(self, text: str | None = None) -> list[tuple[str, str]]:
         """What the menu offers. `text` is what's before the cursor (default: the buffer's)."""
         if text is None:
-            text = get_app().current_buffer.document.text_before_cursor
+            current = get_app().current_buffer
+            if self.buffer is not None and current is not self.buffer:
+                return []  # another input (e.g. the full-screen find line)
+            text = current.document.text_before_cursor
         if text != self._last_text:  # typing resets the selection
             self._last_text, self.index = text, 0
         if commands := matches(text, self.entries()):
@@ -86,6 +90,7 @@ class SlashMenu:
     def attach(self, buffer: Buffer) -> None:
         """Show the ghost text as soon as the input changes (prompt_toolkit's
         own auto-suggest runs asynchronously, a beat later)."""
+        self.buffer = buffer
         buffer.on_text_changed += self._update_ghost
 
     def _update_ghost(self, buf: Buffer) -> None:
@@ -148,6 +153,31 @@ class SlashMenu:
             used += size(i)
         line.append(("class:menu.hint", HINT))
         return line
+
+    def rows(self, width: int, max_rows: int = 8, text: str | None = None) -> StyleAndTextTuples:
+        """The matches as a list, one per line, scrolled to keep the selected
+        one in view (for a full-screen UI, which has the room above the input)."""
+        items = self.items(text)
+        if not items:
+            return []
+        sel = self.index % len(items)
+        start = max(0, min(sel - max_rows // 2, len(items) - max_rows))
+        name_width = min(32, max(len(name) for name, _ in items))
+        lines: StyleAndTextTuples = []
+        for i in range(start, min(len(items), start + max_rows)):
+            name, desc = items[i]
+            room = max(0, width - name_width - 8)
+            desc = desc if len(desc) <= room else desc[:max(0, room - 1)] + "…"
+            if lines:
+                lines.append(("", "\n"))
+            if i == sel:
+                lines += [("class:menu.selected", f" {name:<{name_width}} "), ("class:menu.meta", f"  {desc}")]
+            else:
+                lines += [("", f" {name:<{name_width}} "), ("class:menu.hint", f"  {desc}")]
+        count = f"{sel + 1}/{len(items)} · " if len(items) > max_rows else ""
+        keys = "Tab or ↵ picks" if items[0][0].startswith("@") else "Tab completes · ↵ runs"
+        lines += [("", "\n"), ("class:menu.hint", f" {count}↑↓ choose · {keys}")]
+        return lines
 
     # --- keys ----------------------------------------------------------------
 

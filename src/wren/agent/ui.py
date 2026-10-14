@@ -56,5 +56,8 @@ class AgentUI:
         """Output inside this context belongs to a subagent (shown indented)."""
         return contextlib.nullcontext()
 
+    def waiting(self, text: str | None) -> None:
+        """Something the agent waits for before it can go on; None when done."""
+
     def progress(self, lines: list[str] | None) -> None:
         """Live status lines of subagents running at the same time; None ends them."""

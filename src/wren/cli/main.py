@@ -41,8 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.load()
     # In JSON mode stdout carries only the result object; everything else goes to stderr.
     console = Console(highlight=False, stderr=json_output)
-    fullscreen = args.fullscreen and not args.prompt and sys.stdin.isatty() and sys.stdout.isatty()
-    if fullscreen:
+    interactive = not args.prompt and sys.stdin.isatty() and sys.stdout.isatty()
+    if interactive and app.fullscreen(args.ui or settings.ui):
         ui: RichUI = FullscreenUI(console, background=app.background(settings))
     else:
         ui = RichUI(console, background=app.background(settings))
@@ -87,9 +87,9 @@ def parser() -> argparse.ArgumentParser:
                         "directories, no network (default: [sandbox] enabled in the config, off)")
     p.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
     p.add_argument("--no-checkpoints", action="store_true", help="don't snapshot the workspace before each prompt")
-    p.add_argument("--fullscreen", action="store_true",
-                   help="draw the whole terminal: the conversation scrolls above a fixed input line "
-                        "(experimental)")
+    p.add_argument("--ui", choices=["auto", "fullscreen", "inline"],
+                   help="fullscreen: draw the whole terminal; inline: print into its scrollback "
+                        "(default: the /ui setting, auto: full screen where it works)")
     p.add_argument("--version", action="version", version=f"wren {__version__}")
 
     headless = p.add_argument_group("headless runs")

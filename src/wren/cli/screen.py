@@ -57,10 +57,13 @@ class Screen:
     def confirm(self, message: str, default: bool = False) -> bool:
         return bool(self.pick(message, [(True, "Yes"), (False, "No")], default=default))
 
-    def ask_text(self, message: str = "  › ") -> str:
-        """A line (or several) of text. Ctrl-C propagates; EOFError when there's no input."""
+    def ask_text(self, question: str | None = None) -> str:
+        """A line (or several) of text, under `question` (rich markup) if given.
+        Ctrl-C propagates; EOFError when there's no input."""
+        if question:
+            self.console.print(question)
         with self._keyboard(), distinguish_shift_enter():
-            return pickers.ask_text(message)
+            return pickers.ask_text()
 
     def _keyboard(self) -> contextlib.AbstractContextManager[None]:
         return self.typeahead.paused() if self.typeahead else contextlib.nullcontext()
@@ -83,6 +86,12 @@ class Screen:
         env = {**os.environ, "LESS": os.environ.get("LESS", "FRX")}
         with contextlib.suppress(OSError):
             subprocess.run(pager, shell=True, input=captured.get(), text=True, env=env, check=False)
+
+    def write_terminal(self, sequence: str) -> None:
+        """Send the terminal a control sequence (e.g. OSC 52, to set the clipboard)."""
+        if self.console.is_terminal:
+            self.console.file.write(sequence)
+            self.console.file.flush()
 
     def run_program(self, argv: list[str]) -> int:
         """Hand the terminal to a program (an editor) until it exits."""

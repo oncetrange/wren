@@ -229,7 +229,7 @@ def result_json(agent: Agent, result: str, seconds: float) -> dict:
 
 
 def connect_mcp(config: Config, cwd: Path, args: argparse.Namespace, ui: RichUI) -> McpServers | None:
-    """Connect to the user's MCP servers and the project's trusted ones. Raises ConfigError."""
+    """Start connecting to the user's MCP servers and the project's trusted ones."""
     servers = list(config.mcp)
     project = load_project_mcp(cwd)
     if project and project.servers and _trusted(
@@ -245,11 +245,7 @@ def connect_mcp(config: Config, cwd: Path, args: argparse.Namespace, ui: RichUI)
     if not servers:
         return None
     mcp = McpServers(servers, cwd)
-    with ui.screen.status(f"connecting to MCP server{'s' if len(servers) > 1 else ''}…"):
-        mcp.connect()
-    for state in mcp.servers.values():
-        if state.status != "connected":
-            ui.notice(f"MCP server {state.config.name!r} unavailable: {state.error} (see /mcp)")
+    mcp.start()  # in the background: the agent waits for it before its first request
     return mcp
 
 
@@ -294,6 +290,15 @@ def _trusted(project: shell_hooks.Trustable, *, granted: bool, args: argparse.Na
 
 def permission_mode(args: argparse.Namespace) -> Mode:
     return "auto" if args.yolo else "plan" if args.plan else args.mode
+
+
+def fullscreen(mode: str) -> bool:
+    """Whether to draw the whole terminal. Auto: yes, except where the
+    alternate screen has no scrollback to fall back on (Zellij) or the
+    terminal can't draw it."""
+    if mode != "auto":
+        return mode == "fullscreen"
+    return not os.environ.get("ZELLIJ") and os.environ.get("TERM") != "dumb"
 
 
 def background(settings: Settings) -> str:

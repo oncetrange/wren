@@ -20,6 +20,7 @@ from wren.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from wren.tools import Tool, ToolContext, ToolOutput
 
 MAX_DIFF_LINES = 80
+MAX_DETAIL_LINES = 400  # of a call's output, when its details are shown
 
 
 def fmt_tokens(n: int) -> str:
@@ -51,33 +52,51 @@ def tool_line(name: str, label: str, width: int, depth: int = 0) -> RenderableTy
     return indent(line, depth)
 
 
-def tool_result(name: str, output: ToolOutput, theme: str, depth: int = 0,
-                previewed: bool = False) -> list[RenderableType]:
+def tool_result(name: str, output: ToolOutput, theme: str, depth: int = 0, previewed: bool = False,
+                diff_lines: int = MAX_DIFF_LINES, more: str = "", details: bool = False) -> list[RenderableType]:
     """What a finished call shows: `⎿ summary`, its diff (unless the approval
-    prompt showed it already), a task list, the end of a failed command."""
+    prompt showed it already), a task list, the end of a failed command.
+
+    With `details`, the whole diff and what the call returned to the model, as
+    far as MAX_DETAIL_LINES. `more` is added to the note on what was cut."""
     shown: list[RenderableType] = []
+    if details and depth and not output.is_error:
+        details = False  # a subagent's calls stay one line each
     style = "red" if output.is_error else "dim"
     summary = output.summary or ("error" if output.is_error else "done")
     # A subagent's successful calls are one line each; errors and diffs still show.
     if not (depth and not output.is_error):
         shown.append(indent(Text(f"  ⎿ {summary}", style=style), depth))
     if output.diff and not previewed:
-        shown.append(diff(output.diff, theme, depth))
+        shown.append(diff(output.diff, theme, depth, max_lines=None if details else diff_lines, more=more))
     if output.display:
         shown.append(todos(output.display))
-    if output.is_error and name == "bash":
+    if details:
+        if content := output.content.strip():
+            shown.append(clipped(content, MAX_DETAIL_LINES, depth))
+    elif output.is_error and name == "bash":
         tail = output.content.strip().splitlines()[-8:]
         shown.append(Padding(Text("\n".join(tail), style="dim"), (0, 0, 0, 4 + 4 * depth)))
     return shown
 
 
-def diff(text: str, theme: str, depth: int = 0) -> RenderableType:
-    """A unified diff, colored, cut at MAX_DIFF_LINES."""
+def diff(text: str, theme: str, depth: int = 0, max_lines: int | None = MAX_DIFF_LINES,
+         more: str = "") -> RenderableType:
+    """A unified diff, colored, cut at `max_lines`."""
     lines = text.splitlines()
-    body = "\n".join(lines[:MAX_DIFF_LINES])
-    if len(lines) > MAX_DIFF_LINES:
-        body += f"\n... ({len(lines) - MAX_DIFF_LINES} more lines)"
+    body = "\n".join(lines[:max_lines])
+    if max_lines is not None and len(lines) > max_lines:
+        body += f"\n... ({len(lines) - max_lines} more lines{more})"
     return Padding(Syntax(body, "diff", theme=theme), (0, 0, 0, 4 + 4 * depth))
+
+
+def clipped(text: str, max_lines: int, depth: int = 0) -> RenderableType:
+    """Plain output, dimmed and indented, cut at `max_lines`."""
+    lines = text.splitlines()
+    body = "\n".join(lines[:max_lines])
+    if len(lines) > max_lines:
+        body += f"\n... ({len(lines) - max_lines} more lines)"
+    return Padding(Text(body, style="dim"), (0, 0, 0, 4 + 4 * depth))
 
 
 def command(text: str, theme: str) -> RenderableType:
