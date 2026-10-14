@@ -7,7 +7,9 @@
   - Ctrl-O shows what tool calls returned, and whole diffs.
   - Ctrl-F finds text in the conversation.
   - Long output opens in a pager.
-  - Ctrl-S hands the mouse to the terminal to select text.
+  - Dragging selects text and copies it on release, with wrapped lines
+    joined again; double-click copies a word, triple-click a line.
+  - Ctrl-S hands the mouse to the terminal, for its own selection.
   - Ctrl-G edits the input in `$EDITOR`, and Ctrl-Z suspends wren.
 - `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
   over SSH.

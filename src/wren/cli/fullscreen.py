@@ -64,7 +64,7 @@ from rich.text import Text
 from wren import mentions
 from wren.agent.loop import Agent
 from wren.agent.predict import Predictor
-from wren.cli import commands, render
+from wren.cli import clipboard, commands, render
 from wren.cli.app import run_prompt
 from wren.cli.completion import SlashMenu
 from wren.cli.keys import newline_bindings
@@ -83,7 +83,8 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 MAX_PICKER_ROWS = 10
 FOLDED_DIFF_LINES = 16  # of a diff in the conversation, until Ctrl-O expands it
 STYLE = merge_styles([TOOLBAR_STYLE, Style.from_dict({
-    "search": "bg:ansiyellow fg:ansiblack", "search.current": "bg:ansibrightyellow fg:ansiblack bold"})])
+    "search": "bg:ansiyellow fg:ansiblack", "search.current": "bg:ansibrightyellow fg:ansiblack bold",
+    "selection": "reverse"})])
 
 
 @dataclass
@@ -330,7 +331,8 @@ class FullscreenRepl(Repl):
   The mouse wheel or PgUp/PgDn scroll the conversation
   Ctrl-O shows what tool calls returned and whole diffs (again: back to short)
   Ctrl-F finds text in the conversation: ↑ or Enter older, ↓ newer, Esc closes
-  Ctrl-S gives the mouse to the terminal, to select text (or hold Shift/Option while dragging)
+  Drag to select text in the conversation, double-click a word, triple-click a line: it is copied
+  Ctrl-S gives the mouse to the terminal instead (or hold Shift/Option while dragging)
   /copy copies wren's last reply; Ctrl-G or Ctrl-X Ctrl-E edits the input in $EDITOR
   Ctrl-Z suspends wren; long output (/diff) opens in a pager: ↑↓ PgUp PgDn g G, q closes"""
 
@@ -490,6 +492,7 @@ class FullscreenRepl(Repl):
         ])
         body = HSplit([ConditionalContainer(main, filter=~paging), ConditionalContainer(pager, filter=paging)])
         view.on_question = self._focus
+        view.control.on_copy = self._copied
         app: Application = Application(
             layout=Layout(body, focused_element=self.input),
             key_bindings=merge_key_bindings([self._bindings(picking, paging), newline_bindings(),
@@ -716,6 +719,11 @@ class FullscreenRepl(Repl):
         else:
             where = "no matches"
         return [("bold", f" {where} "), ("class:menu.hint", " ↑ older (or Enter) · ↓ newer · Esc closes ")]
+
+    def _copied(self, text: str) -> None:
+        """Text selected with the mouse goes to the clipboard as the button is released."""
+        where = clipboard.copy(text, self.screen.write_terminal)
+        self._hint = f"copied {len(text)} characters to {where}"
 
     def _move(self, step: int) -> None:
         question = self.view.question

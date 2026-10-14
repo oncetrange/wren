@@ -11,9 +11,12 @@ import traceback
 import pytest
 from conftest import ScriptedProvider, call, reply
 from prompt_toolkit.application import create_app_session
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.text import Text
 
 from wren.agent.loop import Agent
@@ -21,7 +24,8 @@ from wren.agent.permissions import Permissions
 from wren.checkpoint import Checkpoints
 from wren.cli import fullscreen, repl
 from wren.cli.fullscreen import FullscreenRepl, FullscreenUI
-from wren.cli.transcript import Transcript, TranscriptControl, to_lines
+from wren.cli.transcript import Transcript, TranscriptControl, soft_breaks, to_lines
+from wren.cli.transcript import plain as plain_text
 from wren.config import ModelConfig, load_config
 from wren.settings import Settings
 
@@ -310,3 +314,83 @@ def test_ctrl_s_gives_the_mouse_to_the_terminal(session):
         assert "selecting text" in plain_lines(d.r._toolbar_line())
     session(script)
     assert states == [True, False]
+
+
+# --- selecting with the mouse -------------------------------------------------------
+
+
+def mouse(kind, x, y, button=MouseButton.LEFT):
+    return MouseEvent(Point(x, y), kind, button, frozenset())
+
+
+def drag(control, start, end):
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, *start))
+    control.mouse_handler(mouse(MouseEventType.MOUSE_MOVE, *end))
+    control.mouse_handler(mouse(MouseEventType.MOUSE_UP, *end))
+
+
+def test_wrapped_lines_are_found_by_laying_out_unwrapped():
+    wrapped = ["A fairly long paragraph that will", "certainly wrap.", "", " • a list item that is",
+               "   long", " • short"]
+    unwrapped = ["A fairly long paragraph that will certainly wrap.", "",
+                 " • a list item that is long", " • short"]
+    assert soft_breaks(wrapped, unwrapped) == {0: " ", 3: " "}
+    assert soft_breaks(["averylongw", "ord"], ["averylongword"]) == {0: ""}   # cut inside a word
+    assert soft_breaks(["│ a │", "│ b │"], ["│ a b │"]) is None                # a panel: copied as shown
+
+
+def test_copied_text_joins_what_was_wrapped():
+    t = Transcript(None)
+    t.add(Markdown("A fairly long paragraph that will certainly wrap at forty columns wide.\n\n"
+                   "- a list item that is also long enough to wrap around\n- short\n\n"
+                   "```\nprint('a very long line of code that goes past forty columns')\n```"))
+    lines = [plain_text(line) for line in t.lines(40)]
+    last = len(lines) - 1
+    text = t.text(40, (0, 0), (last, len(lines[last])))
+    assert "A fairly long paragraph that will certainly wrap at forty columns wide." in text
+    assert "• a list item that is also long enough to wrap around\n" in text
+    assert "print('a very long line of code that goes past forty columns')" in text
+
+
+def test_dragging_selects_and_copies():
+    t = Transcript(None)
+    for i in range(30):
+        t.add(Text(f"line {i} alpha beta"))
+    control = TranscriptControl(t)
+    copied = []
+    control.on_copy = copied.append
+    content = control.create_content(40, 10)                # lines 20..29 shown
+
+    drag(control, (5, 0), (9, 1))                           # both ends included
+    assert copied == ["20 alpha beta\nline 21 al"]
+    shown = control.create_content(40, 10).get_line(1)
+    assert any("selection" in style for style, *_ in shown)  # highlighted
+
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, 3, 2))   # a click: no selection
+    control.mouse_handler(mouse(MouseEventType.MOUSE_UP, 3, 2))
+    assert control.selection is None and len(copied) == 1
+
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, 9, 4))   # double-click: the word
+    control.mouse_handler(mouse(MouseEventType.MOUSE_UP, 9, 4))
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, 9, 4))
+    assert copied[-1] == "alpha"
+    control.mouse_handler(mouse(MouseEventType.MOUSE_UP, 9, 4))
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, 9, 4))   # triple: the line
+    assert copied[-1] == "line 24 alpha beta"
+    assert content.line_count == 10
+
+
+def test_dragging_to_the_edge_scrolls_along():
+    t = Transcript(None)
+    for i in range(30):
+        t.add(Text(f"line {i}"))
+    control = TranscriptControl(t)
+    copied = []
+    control.on_copy = copied.append
+    control.create_content(40, 10)
+    control.mouse_handler(mouse(MouseEventType.MOUSE_DOWN, 0, 5))   # "line 25"
+    for _ in range(3):
+        control.mouse_handler(mouse(MouseEventType.MOUSE_MOVE, 0, 0))  # at the top edge
+        control.create_content(40, 10)
+    control.mouse_handler(mouse(MouseEventType.MOUSE_UP, 0, 0))
+    assert copied == ["\n".join([f"line {i}" for i in range(17, 25)] + ["l"])]

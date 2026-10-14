@@ -22,7 +22,8 @@ alone.
   - Ctrl-O shows what each tool call returned (a command's output, a file that was read) and whole diffs; press it again for the short form.
   - Ctrl-F finds text in the conversation: ↑ or Enter for older matches, ↓ for newer, Esc closes.
   - Output too long for the screen, such as a big `/diff`, opens in a pager (↑↓, PgUp/PgDn, `g`/`G`, `q` closes).
-  - The mouse wheel needs mouse reporting, so to select text press Ctrl-S (the mouse goes to the terminal until you press it again) or hold Shift (Option in iTerm2) while dragging. `/copy` copies wren's last reply (`/copy 2` the one before) to the clipboard, or through the terminal (OSC 52) over SSH.
+  - Drag over the conversation to select text, double-click for a word, triple-click for a line: it is copied as you let go, with lines that were only wrapped to fit the screen joined again. Dragging to the top or bottom edge scrolls along. Copies go to the clipboard, or through the terminal (OSC 52) over SSH. `/copy` copies wren's last reply (`/copy 2` the one before).
+  - For the terminal's own selection instead, press Ctrl-S (the mouse goes to the terminal until you press it again) or hold Shift (Option in iTerm2) while dragging.
   - Ctrl-G (or Ctrl-X Ctrl-E) edits the input in `$EDITOR`; Ctrl-Z suspends wren.
   - `/ui` (or `wren --ui inline`) switches to the inline UI, which prints into the terminal's own scrollback instead. `auto`, the default, is full screen except in Zellij.
 - **Theme**: syntax colors follow the terminal background (detected via OSC 11); override with `/theme`.
