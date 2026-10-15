@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -36,7 +37,8 @@ IDLE_TIMEOUT = 300  # seconds a tunnel may sit silent
 def expand(patterns: list[str]) -> list[str]:
     hosts: list[str] = []
     for p in patterns:
-        hosts += PACKAGE_HOSTS if p == "@packages" else [p.lower()]
+        if p != "@ask":
+            hosts += PACKAGE_HOSTS if p == "@packages" else [p.lower()]
     return hosts
 
 
@@ -53,8 +55,12 @@ def host_allowed(host: str, patterns: list[str]) -> bool:
 
 
 class Proxy:
-    def __init__(self, allowed: list[str], unix_socket: bool = False):
+    def __init__(self, allowed: list[str], unix_socket: bool = False,
+                 decide: Callable[[str], bool | None] = lambda host: None):
         self.allowed = expand(allowed)
+        # The user's say on a host (their permission rules and answers): True or
+        # False beat the allowlist, None leaves it to the allowlist.
+        self.decide = decide
         # Hosts refused, with when (time.monotonic()), most recent last.
         self.refused: deque[tuple[float, str]] = deque(maxlen=50)
         self._tcp = socket.create_server(("127.0.0.1", 0))
@@ -69,6 +75,10 @@ class Proxy:
         self._closed = False
         for server in filter(None, (self._tcp, self._unix)):
             threading.Thread(target=self._accept, args=(server,), daemon=True, name="wren-proxy").start()
+
+    def permits(self, host: str) -> bool:
+        decided = self.decide(host.lower().rstrip("."))
+        return decided if decided is not None else host_allowed(host, self.allowed)
 
     def refused_since(self, since: float) -> list[str]:
         return list(dict.fromkeys(host for t, host in list(self.refused) if t >= since))
@@ -118,10 +128,9 @@ class Proxy:
                 if url.scheme != "http" or not url.hostname:
                     return _reply(client, 400, "only http:// URLs and CONNECT are proxied")
                 host, port = url.hostname, url.port or 80
-            if not host_allowed(host, self.allowed):
+            if not self.permits(host):
                 self.refused.append((time.monotonic(), host))
-                return _reply(client, 403, f"wren's sandbox doesn't allow connecting to {host}: it "
-                                           "isn't in [sandbox] network")
+                return _reply(client, 403, f"wren's sandbox doesn't allow connecting to {host}")
             try:
                 upstream = socket.create_connection((host, port), timeout=15)
             except OSError as e:

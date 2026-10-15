@@ -246,3 +246,10 @@ def test_the_agent_leaves_the_sandbox_only_with_approval(tmp_path, model):
     assert (sb.cwd / ".git" / "hooks" / "post-commit").read_text() == "hook\n"
     agent = Agent(ScriptedProvider([]), model, ctx, ui)
     assert "# Sandbox" in agent.system and "no network" in agent.system
+
+
+def test_wren_home_is_followed(tmp_path, monkeypatch):
+    monkeypatch.setenv("WREN_HOME", str(tmp_path / "wren"))
+    sb = Sandbox(tmp_path, SandboxConfig(enabled=True))
+    assert sb.cache == (tmp_path / "wren" / "sandbox-cache").resolve() and sb.cache.is_dir()
+    assert (tmp_path / "wren" / "env").resolve() in sb.hidden

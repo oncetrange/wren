@@ -37,6 +37,11 @@ class AgentUI:
         what answering "always" would allow (default: the tool's permission key)."""
         return Decision(allow=False)
 
+    def allow_host(self, host: str) -> Decision | None:
+        """May sandboxed commands reach `host`, which the sandbox's proxy just refused?
+        None when there's nobody to ask."""
+        return None
+
     def review_plan(self, plan: str) -> PlanDecision | None:
         """Approve a plan from plan mode; None when there's nobody to ask."""
         return None

@@ -4,6 +4,7 @@ the history valid when a turn is cut short."""
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING
 
@@ -107,7 +108,37 @@ class ToolRunner:
                     self.agent.ui.notice(f"always allowed in this project: {self.agent.permissions.key(tool, call.input)} "
                                    f"(saved in {self.agent.permissions.project_file})")
 
-        return self._finish(call, tool, self._run_tool(tool, call)), None
+        started = time.monotonic()
+        output = self._run_tool(tool, call)
+        if self.agent.permissions.runs_sandboxed(tool, call.input) and not self.agent.read_only:
+            self._ask_about_hosts(started, output)
+        return self._finish(call, tool, output), None
+
+    def _ask_about_hosts(self, since: float, output: ToolOutput) -> None:
+        """Ask the user about the hosts the sandbox refused during the command, if it
+        asks, and tell the model what they said."""
+        sandbox, permissions = self.agent.ctx.sandbox, self.agent.permissions
+        if sandbox is None or not sandbox.asks:
+            return
+        for host in sandbox.refused_since(since):
+            if permissions.host_decision(host) is not None:  # a deny rule, or answered already
+                continue
+            self.agent.notify(f"wren needs your approval: connect to {host}")
+            decision = self.agent.ui.allow_host(host)
+            if decision is None:
+                continue
+            permissions.answer_host(host, decision.allow, persist=decision.persist)
+            self.agent.log.record("host", host=host, allowed=decision.allow, persist=decision.persist)
+            if decision.allow:
+                note = f"The user allowed {host} in the sandbox: run the command again if it needs it."
+                if decision.persist and permissions.project_file is not None:
+                    self.agent.ui.notice(f"always allowed in this project: net:{host} "
+                                         f"(saved in {permissions.project_file})")
+            else:
+                note = f"The user didn't allow connecting to {host}; don't try to reach it another way."
+                if decision.feedback:
+                    note += f" They said: {decision.feedback}"
+            output.content = f"{output.content}\n\n[{note}]"
 
     def _check(self, call: ToolUseBlock) -> Tool | ToolResultBlock:
         """The call's tool, or an error result if there is no such tool or the arguments are wrong."""

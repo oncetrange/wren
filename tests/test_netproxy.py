@@ -7,9 +7,12 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from conftest import RecordingUI, ScriptedProvider, call, reply
 from test_sandbox import make, needs_sandbox
 
-from wren.config import ConfigError, load_config
+from wren.agent.loop import Agent
+from wren.agent.permissions import Decision, Permissions, load_project_rules
+from wren.config import ConfigError, PermissionRules, load_config
 from wren.netproxy import PACKAGE_HOSTS, Proxy, expand, host_allowed
 from wren.tools import ToolContext
 from wren.tools.shell import SandboxedBash
@@ -128,3 +131,69 @@ def test_sandboxed_commands_get_the_allowed_hosts_and_nothing_else(tmp_path, ups
     no = SandboxedBash().run({"command": f"{py} -c \"{fetch.format(url='http://blocked.invalid/')}\""}, ctx)
     assert no.is_error and "The proxy refused blocked.invalid" in no.content, no.content
     assert "network only to 127.0.0.1" in sb.describe()
+
+
+# --- asking about hosts ---------------------------------------------------------
+
+
+def test_the_users_say_beats_the_allowlist():
+    say = {"no.example": False, "yes.example": True}
+    proxy = Proxy(["no.example", "@ask"], decide=say.get)
+    try:
+        assert proxy.allowed == ["no.example"]
+        assert not proxy.permits("no.example") and proxy.permits("yes.example")
+        assert not proxy.permits("other.example")
+    finally:
+        proxy.close()
+
+
+def test_host_decisions_from_rules_and_answers(tmp_path):
+    rules = PermissionRules(allow=["net:*.example.com", "bash:ls"], deny=["net:evil.example.com"])
+    p = Permissions(rules=rules, sandbox=make(tmp_path, network="ask"), project_file=tmp_path / "rules.toml")
+    assert p.sandbox is not None and p.sandbox.decide("a.example.com") is True   # bound to the sandbox
+    assert p.host_decision("evil.example.com") is False                          # deny beats allow
+    assert p.host_decision("github.com") is None
+    p.answer_host("github.com", True, persist=True)
+    p.answer_host("gitlab.com", False)
+    assert p.host_decision("github.com") is True and p.host_decision("gitlab.com") is False
+    assert load_project_rules(tmp_path / "rules.toml").allow == ["net:github.com"]
+
+
+def test_ask_in_the_config(tmp_path):
+    path = tmp_path / "config.toml"
+    for network, asks, hosts in (('"ask"', True, []), ('["@packages", "@ask"]', True, ["@packages"]),
+                                 ('["pypi.org"]', False, ["pypi.org"]), ('"deny"', False, [])):
+        path.write_text(f"[sandbox]\nnetwork = {network}\n")
+        sb = make(tmp_path, network=load_config(path).sandbox.network)
+        assert (sb.asks, sb.allowed_hosts, sb.proxied) == (asks, hosts, asks or bool(hosts))
+    assert "the user is asked" in make(tmp_path, network="ask").describe()
+
+
+class HostUI(RecordingUI):
+    def __init__(self, answers):
+        super().__init__()
+        self.answers = list(answers)
+
+    def allow_host(self, host):
+        self.events.append(("host", host))
+        return self.answers.pop(0)
+
+
+@needs_sandbox
+def test_a_refused_host_is_asked_about_once_the_command_ends(tmp_path, upstream, model):
+    port, seen = upstream
+    sb = make(tmp_path, network="ask")
+    fetch = ("import os, urllib.request as u; [os.environ.pop(k, None) for k in ('NO_PROXY', 'no_proxy')]; "
+             "o = u.build_opener(u.ProxyHandler({'http': os.environ['HTTP_PROXY']})); "
+             f"print(o.open('http://127.0.0.1:{port}/in').read().decode())")
+    command = f"{sys.executable} -c \"{fetch}\""
+    provider = ScriptedProvider([call("bash", "t1", command=command), call("bash", "t2", command=command),
+                                 reply("done")])
+    ui = HostUI([Decision(allow=True)])
+    Agent(provider, model, ToolContext(cwd=sb.cwd, sandbox=sb), ui,
+          Permissions(mode="ask", sandbox=sb)).run("fetch it")
+    assert [e for e in ui.events if e[0] == "host"] == [("host", "127.0.0.1")]   # asked once
+    first, second = (e[2] for e in ui.events if e[0] == "result")
+    assert first.is_error and "The user allowed 127.0.0.1" in first.content, first.content
+    assert "sandbox: false" not in first.content                       # asked instead
+    assert "hello from upstream" in second.content and seen[-1][0] == "/in", second.content

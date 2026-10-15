@@ -6,7 +6,8 @@ Besides the mode and the session's "always allow" answers there are rules, from
 grant itself anything). A rule is a tool name, or `edit` for both file-writing
 tools, optionally with `:pattern` (`bash:git diff`, `edit:*.lock`,
 `web_fetch:*.python.org`, `mcp__github__*`). Deny beats ask beats allow, and deny
-and ask hold in every mode, auto included.
+and ask hold in every mode, auto included. `net:<host>` rules are about the hosts
+sandboxed commands may reach (`net:github.com`, `net:*.example.com`).
 """
 
 from __future__ import annotations
@@ -68,6 +69,39 @@ class Permissions:
     # The sandbox shell commands run in, if any. Commands inside it need no
     # approval; leaving it, or writing files beyond it, always does.
     sandbox: Sandbox | None = None
+    # This session's answers about hosts for the sandbox's proxy: allowed or not.
+    hosts: dict[str, bool] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.bind(self.sandbox)
+
+    def bind(self, sandbox: Sandbox | None) -> None:
+        """Use this sandbox, and have its proxy follow the rules and answers here."""
+        self.sandbox = sandbox
+        if sandbox is not None:
+            sandbox.decide = self.host_decision
+
+    def host_decision(self, host: str) -> bool | None:
+        """Whether sandboxed commands may reach `host`: a `net:` deny rule or a "no"
+        says False, an answer or allow rule True; None leaves it to [sandbox] network."""
+        def covered(kind: str) -> bool:
+            return any(name == "net" and (not sep or wildcard(pattern.lower(), host))
+                       for name, sep, pattern in (r.partition(":") for r in getattr(self.rules, kind)))
+        if covered("deny"):
+            return False
+        if host in self.hosts:
+            return self.hosts[host]
+        return True if covered("allow") else None
+
+    def answer_host(self, host: str, allow: bool, persist: bool = False) -> None:
+        """Remember the user's answer about a host, for the project too if `persist`."""
+        self.hosts[host] = allow
+        key = f"net:{host}"
+        if allow and persist and self.project_file is not None and key not in self.rules.allow:
+            self.rules.allow.append(key)
+            saved = load_project_rules(self.project_file)
+            saved.allow.append(key)
+            save_project_rules(self.project_file, saved)
 
     def blocked(self, tool: Tool, args: dict[str, Any]) -> str | None:
         """Why the call may not run at all, or None."""

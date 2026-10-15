@@ -113,6 +113,12 @@ def approval_question(key: str) -> str:
             f"· [green]p[/]: always in this project · [red]n[/]o · or type what to do instead")
 
 
+def host_question(host: str) -> str:
+    """The question when the sandbox refused a host; yes holds for the session."""
+    return (f"  [bold]The sandbox refused {escape(host)}. Allow it?[/] [green]y[/]es, in this session "
+            f"· [green]p[/]: always in this project · [red]n[/]o · or type what to do instead")
+
+
 def todos(text: str) -> RenderableType:
     """A formatted task list (agent/todos.py): done struck through, the current one bold."""
     styled = Text()

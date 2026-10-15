@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -74,8 +75,10 @@ class SandboxConfig:
     """[sandbox] in ~/.wren/config.toml."""
 
     enabled: bool = False
-    # "deny": localhost only; "allow": any; or hosts to allow through a proxy
-    # ("pypi.org", "*.example.com", "@packages" for the package registries).
+    # "deny": localhost only; "allow": any; "ask": through a proxy, asking the
+    # user about each new host; or hosts to allow through it ("pypi.org",
+    # "*.example.com", "@packages" for the package registries, "@ask" to ask
+    # about the others).
     network: str | list[str] = "deny"
     # More places commands may write (e.g. a package cache), ~ allowed.
     allow_write: list[str] = field(default_factory=list)
@@ -94,7 +97,10 @@ class Sandbox:
         self.home = _real(home or Path.home())
         self.cwd = _real(cwd)
         temp = {_real(Path(tempfile.gettempdir())), _real(Path("/tmp"))}
-        self.cache = self.home / ".wren" / "sandbox-cache"
+        # wren's own directory (config.CONFIG_DIR, which imports this module).
+        wren_home = _real(Path(os.environ["WREN_HOME"])) if home is None and os.environ.get(
+            "WREN_HOME") else self.home / ".wren"
+        self.cache = wren_home / "sandbox-cache"
         with contextlib.suppress(OSError):  # bwrap binds only what exists
             self.cache.mkdir(parents=True, exist_ok=True)
         # Writable even read-only (plan mode, read-only subagents): scratch space and caches.
@@ -103,8 +109,12 @@ class Sandbox:
         self.protected = [self.cwd / ".git" / "hooks", self.cwd / ".git" / "config"]
         self.hidden = [self.home / p for p in SECRET_PATHS] + [
             _real(Path(p).expanduser()) for p in config.deny_read]
+        if (keys := wren_home / "env") not in self.hidden:
+            self.hidden.append(keys)
         self.sockets = _container_sockets(self.home, temp)
         self.secret_env = set(secret_env)
+        # The user's say on a host (Permissions.host_decision): True, False or None.
+        self.decide: Callable[[str], bool | None] = lambda host: None
         self._proxy: Proxy | None = None
         self._proxy_lock = threading.Lock()
 
@@ -131,7 +141,19 @@ class Sandbox:
     @property
     def allowed_hosts(self) -> list[str]:
         """The allowlist, if the network goes through the proxy."""
-        return self.config.network if isinstance(self.config.network, list) else []
+        network = self.config.network
+        return [h for h in network if h != "@ask"] if isinstance(network, list) else []
+
+    @property
+    def asks(self) -> bool:
+        """Whether the user is asked about hosts that aren't allowed."""
+        network = self.config.network
+        return network == "ask" or (isinstance(network, list) and "@ask" in network)
+
+    @property
+    def proxied(self) -> bool:
+        """The network goes through the proxy."""
+        return bool(self.allowed_hosts) or self.asks
 
     @property
     def running_proxy(self) -> Proxy | None:
@@ -140,13 +162,18 @@ class Sandbox:
 
     def proxy(self) -> Proxy | None:
         """The proxy to the allowed hosts, started on first use."""
-        if not self.allowed_hosts:
+        if not self.proxied:
             return None
         with self._proxy_lock:
             if self._proxy is None:
-                self._proxy = Proxy(self.allowed_hosts, unix_socket=self.platform != "darwin")
+                self._proxy = Proxy(self.allowed_hosts, unix_socket=self.platform != "darwin",
+                                    decide=lambda host: self.decide(host))
                 atexit.register(self._proxy.close)
             return self._proxy
+
+    def refused_since(self, since: float) -> list[str]:
+        """Hosts the proxy refused since then (time.monotonic())."""
+        return self._proxy.refused_since(since) if self._proxy is not None else []
 
     def check(self) -> None:
         """Raise SandboxUnavailable if commands can't be sandboxed here."""
@@ -179,11 +206,14 @@ class Sandbox:
         """The rules, for the model and for error hints."""
         if self.network:
             net = "any network"
-        elif hosts := self.allowed_hosts:
+        elif self.proxied:
             shown = ", ".join("the package registries (PyPI, npm, crates.io, Go, RubyGems, Maven)"
-                              if h == "@packages" else h for h in hosts)
-            net = (f"network only to {shown}, through a proxy set in HTTP(S)_PROXY (other hosts "
-                   "are refused)")
+                              if h == "@packages" else h for h in self.allowed_hosts)
+            allowed = f" to {shown}" if shown else ""
+            others = ("other hosts are refused, and once the command ends the user is asked "
+                      "whether to allow them" if self.asks else "other hosts are refused")
+            net = (f"network only{allowed} through a proxy set in HTTP(S)_PROXY ({others}, along "
+                   "with any connection that doesn't use the proxy)")
         elif self.platform == "darwin":
             net = "no network except localhost"
         else:  # each command gets a network namespace of its own
@@ -199,12 +229,14 @@ class Sandbox:
                      since: float | None = None) -> str | None:
         """A note for the model when a failure looks like the sandbox's doing; `since`
         (time.monotonic()) is when the command started, to name the hosts refused meanwhile."""
-        refused = self._proxy.refused_since(since) if self._proxy and since is not None else []
+        refused = self.refused_since(since) if since is not None else []
         if not refused and not _BLOCKED.search(output):
             return None
         way_out = (" If the task really needs this, run the command again with sandbox: false; the "
                    "user will be asked to approve it." if can_leave else "")
         which = f" The proxy refused {', '.join(refused)}." if refused else ""
+        if refused and self.asks:  # the user is asked about them; the answer follows
+            way_out = ""
         return f"[This may be the sandbox: {self.describe(read_only)}.{which}{way_out}]"
 
     # --- per platform -----------------------------------------------------

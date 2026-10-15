@@ -493,10 +493,16 @@ def _sandbox(repl: Repl, arg: str) -> None:
         return
     if sandbox.network:
         net = "any"
-    elif sandbox.allowed_hosts:
-        net = "only " + ", ".join(sandbox.allowed_hosts) + ", through a proxy"
-        if (proxy := sandbox.running_proxy) is not None and (refused := proxy.refused_since(0)):
+    elif sandbox.proxied:
+        answered = agent.permissions.hosts
+        hosts = [*sandbox.allowed_hosts, *(h for h, ok in answered.items() if ok)]
+        net = ("only " + ", ".join(hosts) if hosts else "no hosts yet") + ", through a proxy"
+        if sandbox.asks:
+            net += "; asks about others"
+        if refused := [h for h in sandbox.refused_since(0) if h not in answered]:
             net += f"; refused lately: {', '.join(refused[-8:])}"
+        if denied := [h for h, ok in answered.items() if not ok]:
+            net += f"; you said no to {', '.join(denied)}"
     else:
         net = "localhost only" if sandbox.platform == "darwin" else "none (localhost is each command's own)"
     repl.screen.print("[bold]sandbox[/] on: commands run without asking; leaving the sandbox, or "

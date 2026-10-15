@@ -323,7 +323,7 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
     )
 
 
-_HOST_PATTERN = re.compile(r"^(@packages|(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)$")
+_HOST_PATTERN = re.compile(r"^(@packages|@ask|(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)$")
 
 
 def _sandbox_config(raw: dict[str, Any]) -> SandboxConfig:
@@ -333,9 +333,9 @@ def _sandbox_config(raw: dict[str, Any]) -> SandboxConfig:
     if isinstance(network, list):
         if bad := [h for h in network if not isinstance(h, str) or not _HOST_PATTERN.match(h)]:
             raise ConfigError(f"[sandbox]: network: not a host: {bad[0]!r} (expected e.g. "
-                              "\"pypi.org\", \"*.example.com\" or \"@packages\")")
-    elif network not in ("deny", "allow"):
-        raise ConfigError(f"[sandbox]: network must be \"deny\", \"allow\" or a list of hosts, "
+                              "\"pypi.org\", \"*.example.com\", \"@packages\" or \"@ask\")")
+    elif network not in ("deny", "allow", "ask"):
+        raise ConfigError(f"[sandbox]: network must be \"deny\", \"allow\", \"ask\" or a list of hosts, "
                           f"got {network!r}")
     for key in ("allow_write", "deny_read"):
         value = raw.get(key, [])

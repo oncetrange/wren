@@ -30,7 +30,7 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
 enabled = true
 allow_write = ["~/.cargo/registry", "~/.cargo/git"]   # e.g. so cargo can update its cache
 deny_read = ["~/work/secrets"]
-network = "deny"                   # or "allow", or a list of hosts, below
+network = "deny"                   # or "allow", "ask", or a list of hosts, below
 ```
 
 cargo keeps its cache inside `~/.cargo`, next to your cargo configuration, so it isn't moved:
@@ -47,6 +47,17 @@ network = ["@packages", "github.com", "*.githubusercontent.com"]
 `@packages` stands for the package registries: PyPI, npm and yarn, crates.io, the Go module
 proxy, RubyGems and Maven Central. `example.com` allows that host only, and `*.example.com`
 allows its subdomains.
+
+With `network = "ask"`, a command can reach a host once you allow it. A host that isn't
+allowed yet is refused at once, and when the command ends wren asks you about it: `y` allows it
+for the session, `p` always in this project, `n` refuses it for the session. The model is told
+what you said, so it can run the command again. `"@ask"` in a list asks about the hosts that
+aren't on it, such as `["@packages", "@ask"]`. Headless runs have nobody to ask, so the
+host stays refused. Read-only subagents don't ask either.
+
+Permission rules can name hosts too, as `net:<host>`. `allow = ["net:github.com"]` lets
+commands reach it, with or without asking, and `deny = ["net:*.example.com"]` refuses those
+hosts even when `network` lists them. `p` saves the same rule for the project.
 
 The traffic goes through a proxy inside wren, which commands get in `HTTP_PROXY` and
 `HTTPS_PROXY`. pip, uv, npm, cargo, go and git over https all use those variables. The sandbox
