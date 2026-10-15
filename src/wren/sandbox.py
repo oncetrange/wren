@@ -5,7 +5,9 @@ directory and the temp directories, can't read where credentials live, and
 has no network beyond localhost, or only to the hosts on an allowlist, through
 a proxy (netproxy.py). Inside the working directory, `.git/hooks`
 and `.git/config` stay read-only: either could make git run code later,
-outside the sandbox. API keys are left out of the environment.
+outside the sandbox. API keys are left out of the environment, and the
+sockets of Docker and other container engines are out of reach: a container
+started through one could mount anything.
 
 macOS uses Seatbelt (`sandbox-exec`), Linux bubblewrap (`bwrap`). When neither
 works, there is no sandbox: wren says so, and commands ask for approval as
@@ -34,6 +36,15 @@ SECRET_PATHS = (
     ".config/gh", ".netrc", ".git-credentials", ".npmrc", ".pypirc", ".cargo/credentials.toml",
     ".wren/env", "Library/Keychains",
 )
+# Container engines' sockets, relative to home, or absolute, or relative to the
+# runtime and temp directories: never connectable inside (any directory, whole).
+_HOME_SOCKETS = (
+    ".docker/run", ".docker/desktop", ".colima", ".lima", ".orbstack", ".rd",
+    ".local/share/containers", "Library/Containers/com.docker.docker",
+)
+_SYSTEM_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "/run/podman", "/run/containerd",
+                   "/run/buildkit")
+_RUNTIME_SOCKETS = ("docker.sock", "podman", "containerd", "buildkit")
 # Environment variables left out inside, besides each model's api_key_env.
 _SECRET_ENV = re.compile(r"(API_KEY|_TOKEN|_SECRET|PASSWORD)$|^(AWS_SECRET|GITHUB_TOKEN|GH_TOKEN)", re.I)
 # Output that suggests the sandbox, not the command, is what failed.
@@ -42,7 +53,8 @@ _BLOCKED = re.compile(
     r"Could not resolve host|Couldn't connect|Network is unreachable|Temporary failure in name resolution|"
     r"Name or service not known|nodename nor servname|Failed to establish a new connection|"
     r"ConnectionRefused|getaddrinfo|ENOTFOUND|EAI_AGAIN|connection refused|"
-    r"403 Forbidden|ProxyError|Tunnel connection failed|CONNECT tunnel failed",
+    r"403 Forbidden|ProxyError|Tunnel connection failed|CONNECT tunnel failed|"
+    r"Cannot connect to the Docker daemon|Cannot connect to Podman",
     re.I)
 
 
@@ -76,6 +88,7 @@ class Sandbox:
         self.protected = [self.cwd / ".git" / "hooks", self.cwd / ".git" / "config"]
         self.hidden = [self.home / p for p in SECRET_PATHS] + [
             _real(Path(p).expanduser()) for p in config.deny_read]
+        self.sockets = _container_sockets(self.home, temp)
         self.secret_env = set(secret_env)
         self._proxy: Proxy | None = None
         self._proxy_lock = threading.Lock()
@@ -159,7 +172,7 @@ class Sandbox:
         where = ", ".join(map(str, self.writable(read_only)))
         guarded = "" if read_only else " (not in .git/hooks or .git/config)"
         return (f"commands may write only in {where}{guarded}, can't read credentials such as "
-                f"~/.ssh, and have {net}")
+                f"~/.ssh, can't use Docker or other container engines, and have {net}")
 
     def blocked_hint(self, output: str, read_only: bool = False, can_leave: bool = True,
                      since: float | None = None) -> str | None:
@@ -179,6 +192,9 @@ class Sandbox:
         def paths(kind: str, items: list[Path]) -> str:
             return " ".join(f'({kind} "{_sb_quote(str(p))}")' for p in items)
 
+        # (remote unix-socket a b) doesn't mean either one: one filter per path.
+        sockets = "(require-any " + " ".join(
+            f'(remote unix-socket (subpath "{_sb_quote(str(p))}"))' for p in self.sockets) + ")"
         lines = [
             "(version 1)",
             "(allow default)",
@@ -193,8 +209,10 @@ class Sandbox:
                 '(allow network* (remote ip "localhost:*"))',
                 '(allow network-bind (local ip "*:*"))',
                 '(allow network-inbound (local ip "localhost:*"))',
-                "(allow network* (remote unix-socket))",
+                # A later deny doesn't override this allow: leave the engines out of it.
+                f"(allow network* (require-all (remote unix-socket) (require-not {sockets})))",
             ]
+        lines.append(f"(deny network-outbound {sockets})")
         return "\n".join(lines) + "\n"
 
     def bwrap_args(self, cwd: Path, read_only: bool = False) -> list[str]:
@@ -211,6 +229,11 @@ class Sandbox:
                 args += ["--tmpfs", str(p)]
             elif p.exists():
                 args += ["--ro-bind", "/dev/null", str(p)]
+        for p in self.sockets:  # a socket under /dev/null connects to nothing
+            if p.is_dir():
+                args += ["--tmpfs", str(p)]
+            elif p.exists():
+                args += ["--ro-bind", "/dev/null", str(p)]
         if not self.network:
             args.append("--unshare-net")
         return args + ["--chdir", str(cwd)]
@@ -218,6 +241,17 @@ class Sandbox:
 
 def _real(p: Path) -> Path:
     return Path(os.path.realpath(p))
+
+
+def _container_sockets(home: Path, temp: set[Path]) -> list[Path]:
+    places = [home / p for p in _HOME_SOCKETS] + [Path(p) for p in _SYSTEM_SOCKETS]
+    places += [t / "podman" for t in temp]  # podman machine on macOS
+    if runtime := os.environ.get("XDG_RUNTIME_DIR"):
+        places += [Path(runtime) / p for p in _RUNTIME_SOCKETS]
+    for var in ("DOCKER_HOST", "CONTAINER_HOST"):  # e.g. unix:///somewhere/docker.sock
+        if (url := os.environ.get(var, "")).startswith("unix://"):
+            places.append(Path(url.removeprefix("unix://")))
+    return sorted({_real(p) for p in places})
 
 
 def _sb_quote(s: str) -> str:

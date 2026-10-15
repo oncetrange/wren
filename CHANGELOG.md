@@ -22,6 +22,9 @@
   over SSH.
 - In the inline UI, a question asked while wren works (an approval, say) no longer
   waits, sometimes for minutes, for the keys typed ahead to be let go.
+- The sandbox keeps commands away from the sockets of Docker, Podman and other
+  container engines. Before, a sandboxed command could start a container that
+  mounted any directory, and so read and write outside the sandbox.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
 

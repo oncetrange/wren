@@ -14,6 +14,10 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
   are still reachable. On Linux, each command has its own localhost, so it can reach only
   servers it started itself.
 - doesn't see API keys and tokens (`*_API_KEY`, `*_TOKEN`, each model's key variable).
+- can't reach Docker, Podman or other container engines through their sockets (Docker
+  Desktop, Colima, OrbStack, Rancher Desktop, Lima, `DOCKER_HOST`): a container started that
+  way could mount any directory. A command that needs Docker has to leave the sandbox, which
+  asks you first.
 
 ```toml
 [sandbox]

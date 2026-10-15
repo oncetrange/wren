@@ -1,7 +1,9 @@
 """Shell commands in an OS sandbox: what they may write, read and reach."""
 
+import os
 import socket
 import sys
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -39,7 +41,7 @@ def test_seatbelt_profile(tmp_path):
     assert profile.index("(deny file-write*)") < profile.index(f'(subpath "{sb.cwd}")')
     assert f'(subpath "{sb.cwd}/.git/hooks")' in profile
     assert '(remote ip "localhost:*")' in profile
-    assert "deny network" not in make(tmp_path, "darwin", network="allow").seatbelt_profile()
+    assert "(deny network*)" not in make(tmp_path, "darwin", network="allow").seatbelt_profile()
     assert sb.wrap(["bash", "-c", "ls"], sb.cwd)[:2] == ["sandbox-exec", "-p"]
 
 
@@ -60,6 +62,19 @@ def test_bwrap_arguments(tmp_path):
     assert "--unshare-net" in args and args[-4:] == ["--", "bash", "-c", "ls"]
     assert args[args.index("--chdir") + 1] == str(sb.cwd / "sub")
     assert "--unshare-net" not in make(tmp_path, "linux", network="allow").wrap(["true"], sb.cwd)
+
+
+def test_container_engines_are_out_of_reach(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "unix:///elsewhere/docker.sock")
+    (tmp_path / "home" / ".colima").mkdir(parents=True)
+    mac, linux = make(tmp_path, "darwin"), make(tmp_path, "linux")
+    deny = mac.seatbelt_profile().splitlines()[-1]
+    assert deny.startswith("(deny network-outbound (require-any (remote unix-socket")
+    assert "(require-not (require-any (remote unix-socket" in mac.seatbelt_profile()
+    for path in (f"{mac.home}/.docker/run", "/elsewhere/docker.sock"):
+        assert f'(remote unix-socket (subpath "{path}"))' in deny
+    assert f"--tmpfs {linux.home}/.colima" in " ".join(linux.wrap(["true"], linux.cwd))
+    assert "Docker" in mac.describe() and mac.blocked_hint("Cannot connect to the Docker daemon at unix://")
 
 
 def test_secrets_leave_the_environment(tmp_path):
@@ -169,6 +184,33 @@ def test_no_network_but_localhost(tmp_path):
     if sys.platform == "darwin":   # on Linux, localhost is the command's own
         assert "local ok" in out
     assert "Error" in out and "sandbox" in out
+
+
+@needs_sandbox
+def test_no_container_engine_socket(tmp_path, monkeypatch):
+    short = Path(tempfile.mkdtemp(dir="/tmp"))           # unix socket paths are short
+    try:
+        engine, other = socket.socket(socket.AF_UNIX), socket.socket(socket.AF_UNIX)
+        engine.bind(str(short / "docker.sock"))
+        other.bind(str(short / "other.sock"))
+        for s in (engine, other):
+            s.listen()
+        monkeypatch.setenv("DOCKER_HOST", f"unix://{short}/docker.sock")
+        sb = make(tmp_path)
+        (sb.cwd / "connect.py").write_text(
+            "import socket, sys\n"
+            "for p in sys.argv[1:]:\n"
+            "    try:\n"
+            "        socket.socket(socket.AF_UNIX).connect(p)\n"
+            "        print(p[-11:], 'ok')\n"
+            "    except OSError as e:\n"
+            "        print(p[-11:], 'no', e)\n")
+        out = run(sb, f"{sys.executable} connect.py {short}/docker.sock {short}/other.sock")
+        assert "docker.sock no" in out and "other.sock ok" in out, out
+    finally:
+        for name in ("docker.sock", "other.sock"):
+            (short / name).unlink(missing_ok=True)
+        os.rmdir(short)
 
 
 @needs_sandbox
