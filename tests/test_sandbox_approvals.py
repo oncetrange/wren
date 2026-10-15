@@ -4,6 +4,7 @@ import io
 import uuid
 from pathlib import Path
 
+import pytest
 from conftest import RecordingUI, ScriptedProvider, call, reply
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
@@ -15,10 +16,13 @@ from wren.agent.loop import Agent
 from wren.agent.permissions import Decision, Permissions
 from wren.agent.subagents import builtin_agent_types
 from wren.cli import repl
+from wren.cli.app import make_sandbox
+from wren.cli.main import parser
 from wren.cli.repl import Repl
 from wren.cli.ui import RichUI
-from wren.config import ModelConfig, PermissionRules, load_config
+from wren.config import Config, ConfigError, ModelConfig, PermissionRules, load_config
 from wren.llm.types import ToolResultBlock
+from wren.sandbox import Sandbox, SandboxConfig, SandboxUnavailable
 from wren.settings import Settings
 from wren.tools import ToolContext
 from wren.tools.files import EditFile, WriteFile
@@ -154,3 +158,25 @@ def test_sandbox_command(ctx, tmp_path_factory, monkeypatch):
     else:
         assert on is not None and "writable" in text and str(Path(ctx.cwd).resolve()) in text
     assert agent.ctx.sandbox is None and type(agent.tools["bash"]) is Bash
+
+
+def test_where_the_sandbox_is_on_by_default(tmp_path, monkeypatch):
+    ui = RecordingUI()
+
+    def sandbox(*argv, enabled="auto", works=True):
+        def check(self):
+            if not works:
+                raise SandboxUnavailable("bwrap is not installed")
+        monkeypatch.setattr(Sandbox, "check", check)
+        config = Config(sandbox=SandboxConfig(enabled=enabled))
+        return make_sandbox(parser().parse_args(list(argv)), config, tmp_path, ui)  # type: ignore[arg-type]
+
+    assert sandbox() is not None and sandbox("-p", "x") is not None
+    assert sandbox().asks                                         # network: ask
+    assert sandbox("--yolo") is None and sandbox("--yolo", "--sandbox") is not None
+    assert sandbox(enabled=False) is None and sandbox("--sandbox", enabled=False) is not None
+    # Where it can't be had: quietly without, unless asked for outright.
+    assert sandbox("-p", "x", works=False) is None and ui.events == []
+    assert sandbox(works=False) is None and "no sandbox here" in ui.events[-1][1]
+    with pytest.raises(ConfigError):
+        sandbox("-p", "x", enabled=True, works=False)

@@ -31,7 +31,7 @@ wren -p "fix the failing test"    # one-shot, non-interactive
 wren -c                           # continue the last session in this directory
 wren -r                           # pick a session to resume (or: wren -r <id>)
 wren --plan                       # start in plan mode: investigate, propose, then act
-wren --sandbox                    # run shell commands in an OS sandbox, without approvals
+wren --no-sandbox                 # ask before commands instead of sandboxing them
 wren --yolo                       # never ask before editing files or running commands
 wren --ui inline                  # print into the terminal's scrollback instead of full screen
 ```
@@ -57,9 +57,9 @@ global instructions from `~/.wren/WREN.md`.
 - **Permission modes and rules**: wren can ask before edits, accept edits, work in read-only plan
   mode, or never ask. Rules that allow, deny or always ask about certain calls last across
   sessions. See [permissions](https://github.com/oncetrange/wren/blob/main/docs/permissions.md).
-- **Sandbox**: shell commands run in Seatbelt on macOS or bubblewrap on Linux. They can write
-  only in the project, can't read credentials, and reach the network only through an allowlist,
-  so they need no approval. See [sandbox](https://github.com/oncetrange/wren/blob/main/docs/sandbox.md).
+- **Sandbox**: shell commands run in Seatbelt on macOS or bubblewrap on Linux, by default. They
+  can write only in the project, can't read credentials, and reach only the hosts you allow, so
+  they need no approval. See [sandbox](https://github.com/oncetrange/wren/blob/main/docs/sandbox.md).
 - **Long sessions**: old tool output is masked and old turns are summarized, while the prompt
   cache stays warm. The full text is kept for `/rewind`. See [usage](https://github.com/oncetrange/wren/blob/main/docs/usage.md).
 - **Subagents**: the model can hand self-contained jobs to fresh agents. Read-only ones run in

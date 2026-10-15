@@ -84,7 +84,8 @@ def parser() -> argparse.ArgumentParser:
                         "sessions (default: on, off with -p)")
     p.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=None,
                    help="run shell commands in a sandbox: writes only in the project and temp "
-                        "directories, no network (default: [sandbox] enabled in the config, off)")
+                        "directories, network only to hosts you allow (default: [sandbox] enabled "
+                        "in the config; auto: where it works, except with --yolo)")
     p.add_argument("--no-web", action="store_true", help="don't offer web_search and web_fetch")
     p.add_argument("--no-checkpoints", action="store_true", help="don't snapshot the workspace before each prompt")
     p.add_argument("--ui", choices=["auto", "fullscreen", "inline"],
