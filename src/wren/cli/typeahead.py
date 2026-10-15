@@ -25,7 +25,9 @@ class TypeAhead:
         self.fd = sys.stdin.fileno() if fd is None else fd
         self.draft = ""
         self._saved: list | None = None
-        self._lock = threading.Lock()  # held while reading, so pausing never loses a key
+        # Held while reading, so pausing never loses a key; only for the read itself,
+        # since a lock taken again at once can keep paused() waiting indefinitely.
+        self._lock = threading.Lock()
         self._paused = False
         self._stopped = threading.Event()
         self._thread: threading.Thread | None = None
@@ -97,16 +99,16 @@ class TypeAhead:
 
     def _read_keys(self) -> None:
         while not self._stopped.is_set():
-            with self._lock:
-                if self._paused:
-                    data = b""
-                else:
-                    ready, _, _ = select.select([self.fd], [], [], 0.05)
-                    data = os.read(self.fd, 1024) if ready else b""
+            if self._paused:
+                self._stopped.wait(0.05)
+                continue
+            if not select.select([self.fd], [], [], 0.05)[0]:
+                continue
+            with self._lock:  # paused meanwhile, or its reader took the keys: leave them
+                ready = not self._paused and select.select([self.fd], [], [], 0)[0]
+                data = os.read(self.fd, 1024) if ready else b""
             if data:
                 self.feed(self._decoder.decode(data))
-            elif self._paused:
-                self._stopped.wait(0.05)
 
     def _cbreak(self) -> None:
         if self._saved is None:

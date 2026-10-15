@@ -20,6 +20,8 @@
   from the defaults, so a changed default reaches everyone who didn't choose.
 - `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
   over SSH.
+- In the inline UI, a question asked while wren works (an approval, say) no longer
+  waits, sometimes for minutes, for the keys typed ahead to be let go.
 - The sandbox keeps commands away from the sockets of Docker, Podman and other
   container engines. Before, a sandboxed command could start a container that
   mounted any directory, and so read and write outside the sandbox.
