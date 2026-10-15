@@ -29,6 +29,9 @@
   pre-commit) use caches of their own, in `~/.wren/sandbox-cache`. `uv run`
   works without `allow_write`, and a sandboxed command can no longer change
   the caches that your own runs use.
+- `[sandbox] network = "ask"`: sandboxed commands reach a host once you
+  allow it. A host not yet allowed is refused at once, and wren asks about it
+  when the command ends. `net:<host>` permission rules allow or deny hosts.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
 

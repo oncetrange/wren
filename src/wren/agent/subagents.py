@@ -253,6 +253,10 @@ class SubagentUI(AgentUI):
         with self.ui.nested():
             return self.ui.confirm(tool, args, label, preview, key=key)
 
+    def allow_host(self, host: str) -> Decision | None:
+        with self.ui.nested():
+            return self.ui.allow_host(host)
+
     def tool_finished(self, name: str, output: ToolOutput) -> None:
         with self.ui.nested():
             self.ui.tool_finished(name, output)

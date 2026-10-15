@@ -18,6 +18,8 @@ A rule is a tool name, or `edit` for both `edit_file` and `write_file`, optional
 - For the file tools, it is matched against the path, relative to the working directory.
   A pattern without `/` also matches a file name, so `edit:*.lock` matches anywhere in the tree.
 - For `web_fetch`, it is matched against the host.
+- `net:<host>` isn't a tool: it is about the hosts sandboxed commands may reach through the
+  sandbox's proxy (`net:github.com`, `net:*.example.com`). See [the sandbox](sandbox.md).
 
 A bare name covers every call of that tool. Tool names can use `*` too, as in
 `mcp__github__*`.

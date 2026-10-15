@@ -425,7 +425,8 @@ class Agent:
     def set_sandbox(self, sandbox: Sandbox | None) -> None:
         """Turn the sandbox for shell commands on or off, mid-session: bash gains or
         loses its way out, and the system prompt says what applies now."""
-        self.ctx.sandbox = self.permissions.sandbox = sandbox
+        self.ctx.sandbox = sandbox
+        self.permissions.bind(sandbox)
         if "bash" in self.tools:
             self.tools["bash"] = SandboxedBash() if sandbox else Bash()
         if self._own_system:

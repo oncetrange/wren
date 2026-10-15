@@ -101,8 +101,17 @@ class RichUI(AgentUI):
             self._print(f"  [yellow]denied (no terminal to ask for approval{hint})[/]")
             return Decision(allow=False)
 
+        return self._decision(render.approval_question(key or tool.permission_key(args)))
+
+    def allow_host(self, host: str) -> Decision | None:
+        self._stop_spin()
+        if not self.interactive:
+            return None
+        return self._decision(render.host_question(host))
+
+    def _decision(self, question: str) -> Decision:
         try:
-            answer = self.screen.ask_text(render.approval_question(key or tool.permission_key(args))).strip()
+            answer = self.screen.ask_text(question).strip()
         except EOFError:
             answer = "n"
         match answer.lower():
