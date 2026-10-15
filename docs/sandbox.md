@@ -18,14 +18,25 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
   Desktop, Colima, OrbStack, Rancher Desktop, Lima, `DOCKER_HOST`): a container started that
   way could mount any directory. A command that needs Docker has to leave the sandbox, which
   asks you first.
+- uses package caches of its own, in `~/.wren/sandbox-cache`: uv, pip, npm, pnpm, yarn, bun,
+  go, gradle and pre-commit are pointed there. Your own caches stay as they are, because a
+  command that could change them could change what runs later outside the sandbox (uv even
+  hard-links its cache into virtual environments). A project whose dependencies are already
+  installed runs without the network; installing a package the sandbox's cache doesn't have
+  yet needs it (see `network` below).
 
 ```toml
 [sandbox]
 enabled = true
-allow_write = ["~/.cache/uv"]      # e.g. so `uv run` can use its cache
+allow_write = ["~/.cargo/registry", "~/.cargo/git"]   # e.g. so cargo can update its cache
 deny_read = ["~/work/secrets"]
 network = "deny"                   # or "allow", or a list of hosts, below
 ```
+
+cargo keeps its cache inside `~/.cargo`, next to your cargo configuration, so it isn't moved:
+cargo needs `allow_write` as above, with the risk above. To share another tool's cache with
+the sandbox, set its variable (such as `UV_CACHE_DIR`) to a directory in `allow_write`; wren
+then leaves it alone.
 
 To let commands reach certain hosts, make `network` a list of them:
 

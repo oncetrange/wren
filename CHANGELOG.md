@@ -25,6 +25,10 @@
 - The sandbox keeps commands away from the sockets of Docker, Podman and other
   container engines. Before, a sandboxed command could start a container that
   mounted any directory, and so read and write outside the sandbox.
+- In the sandbox, package managers (uv, pip, npm, pnpm, yarn, bun, go, gradle,
+  pre-commit) use caches of their own, in `~/.wren/sandbox-cache`. `uv run`
+  works without `allow_write`, and a sandboxed command can no longer change
+  the caches that your own runs use.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
 

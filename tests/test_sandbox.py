@@ -14,7 +14,7 @@ from conftest import RecordingUI, ScriptedProvider, call, reply
 from wren.agent.loop import Agent
 from wren.agent.permissions import Permissions
 from wren.config import ConfigError, PermissionRules, load_config
-from wren.sandbox import Sandbox, SandboxConfig, _unavailable
+from wren.sandbox import CACHE_ENV, Sandbox, SandboxConfig, _unavailable
 from wren.tools import ToolContext, default_tools
 from wren.tools.shell import Bash, SandboxedBash
 
@@ -80,7 +80,17 @@ def test_container_engines_are_out_of_reach(tmp_path, monkeypatch):
 def test_secrets_leave_the_environment(tmp_path):
     env = make(tmp_path).env({"PATH": "/bin", "MY_MODEL_KEY": "k", "OPENAI_API_KEY": "k",
                               "GITHUB_TOKEN": "t", "DB_PASSWORD": "p", "HOME": "/h"})
-    assert env == {"PATH": "/bin", "HOME": "/h"}
+    assert {k: v for k, v in env.items() if k not in CACHE_ENV} == {"PATH": "/bin", "HOME": "/h"}
+
+
+def test_package_managers_get_caches_of_their_own(tmp_path):
+    sb = make(tmp_path, allow_write=[str(tmp_path / "shared")])
+    env = sb.env({"UV_CACHE_DIR": str(tmp_path / "shared" / "uv"), "PIP_CACHE_DIR": "/opt/pip"})
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "shared" / "uv")      # chosen, and writable: kept
+    assert env["PIP_CACHE_DIR"] == str(sb.cache / "pip")               # not writable: replaced
+    assert env["npm_config_cache"] == str(sb.cache / "npm")
+    assert sb.cache.is_dir() and sb.cache in sb.writable(read_only=True)
+    assert str(sb.cache) in sb.describe()
 
 
 def test_hints_only_for_failures_that_look_like_the_sandbox(tmp_path):
