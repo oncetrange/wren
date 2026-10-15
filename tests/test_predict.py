@@ -64,10 +64,10 @@ def test_stale_predictions_are_dropped_but_paid_for(ctx):
     agent = make(ctx, [reply("Done."), reply("old guess")])
     agent.run("x")
     predictor = Predictor(agent)
+    before = set(threading.enumerate())
     predictor.start()
     predictor.clear()                                   # the user already moved on
-    for t in threading.enumerate():
-        if t is not threading.current_thread() and t.daemon:
-            t.join(5)
+    for t in set(threading.enumerate()) - before:       # only the prediction's thread
+        t.join(5)
     assert predictor.take() is None
     assert agent.usage.output_tokens == 10              # both requests counted
