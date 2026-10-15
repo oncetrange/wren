@@ -20,6 +20,8 @@
   from the defaults, so a changed default reaches everyone who didn't choose.
 - `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
   over SSH.
+- In the inline UI, a question asked while wren works (an approval, say) no longer
+  waits, sometimes for minutes, for the keys typed ahead to be let go.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
 

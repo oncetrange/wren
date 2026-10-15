@@ -86,6 +86,22 @@ def lflag(fd: int) -> int:
     return termios.tcgetattr(fd)[3] & ~termios.PENDIN
 
 
+def test_waiting_for_keys_leaves_the_lock_free():
+    # Waiting with it held kept paused() (an approval prompt) waiting for minutes on CI.
+    master, slave = os.openpty()
+    try:
+        with TypeAhead(lambda _: None, fd=slave) as ahead:
+            time.sleep(0.05)
+            samples = []
+            for _ in range(200):
+                samples.append(ahead._lock.locked())
+                time.sleep(0.001)
+            assert sum(samples) < 20
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
 def test_it_reads_a_terminal_and_gives_it_back_when_paused():
     master, slave = os.openpty()
     try:
