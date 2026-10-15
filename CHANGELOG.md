@@ -20,6 +20,9 @@
   from the defaults, so a changed default reaches everyone who didn't choose.
 - `/copy` copies a reply to the clipboard, or through the terminal (OSC 52)
   over SSH.
+- The sandbox keeps commands away from the sockets of Docker, Podman and other
+  container engines. Before, a sandboxed command could start a container that
+  mounted any directory, and so read and write outside the sandbox.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
 
