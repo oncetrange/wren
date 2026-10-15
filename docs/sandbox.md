@@ -1,16 +1,15 @@
 # Sandbox
 
-`wren --sandbox` (or `enabled = true` under `[sandbox]` in `~/.wren/config.toml`) runs the model's
-shell commands, background jobs included, in an OS sandbox. On macOS this uses Seatbelt
-(`sandbox-exec`); on Linux it uses [bubblewrap](https://github.com/containers/bubblewrap)
-(`bwrap`). Inside the sandbox, a command:
+wren runs the model's shell commands, background jobs included, in an OS sandbox. On macOS
+this uses Seatbelt (`sandbox-exec`); on Linux it uses
+[bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`). Inside the sandbox, a command:
 
 - can write only in the project directory and the temp directories. `.git/hooks` and
   `.git/config` stay read-only, because either could make git run code later, outside the
   sandbox. Commits work as usual.
 - can read everything except where credentials live: `~/.ssh`, `~/.aws`, `~/.gnupg`,
   `~/.config/gh`, `~/.netrc`, `~/.wren/env` and the like.
-- has no network, or only to the hosts you allow (see below). On macOS, servers on localhost
+- reaches only the hosts you allow, and asks about others (see below). On macOS, servers on localhost
   are still reachable. On Linux, each command has its own localhost, so it can reach only
   servers it started itself.
 - doesn't see API keys and tokens (`*_API_KEY`, `*_TOKEN`, each model's key variable).
@@ -27,11 +26,15 @@ shell commands, background jobs included, in an OS sandbox. On macOS this uses S
 
 ```toml
 [sandbox]
-enabled = true
+enabled = "auto"                   # the default; or true, or false
 allow_write = ["~/.cargo/registry", "~/.cargo/git"]   # e.g. so cargo can update its cache
 deny_read = ["~/work/secrets"]
-network = "deny"                   # or "allow", "ask", or a list of hosts, below
+network = "ask"                    # the default; or "deny", "allow", or a list of hosts, below
 ```
+
+`enabled = "auto"` sandboxes commands wherever the sandbox works, except with `--yolo`, which
+asks for no guard rails at all. `--sandbox` (or `enabled = true`) sandboxes them with `--yolo`
+too, and `--no-sandbox` (or `enabled = false`) never does.
 
 cargo keeps its cache inside `~/.cargo`, next to your cargo configuration, so it isn't moved:
 cargo needs `allow_write` as above, with the risk above. To share another tool's cache with
@@ -48,7 +51,7 @@ network = ["@packages", "github.com", "*.githubusercontent.com"]
 proxy, RubyGems and Maven Central. `example.com` allows that host only, and `*.example.com`
 allows its subdomains.
 
-With `network = "ask"`, a command can reach a host once you allow it. A host that isn't
+With `network = "ask"`, the default, a command can reach a host once you allow it. A host that isn't
 allowed yet is refused at once, and when the command ends wren asks you about it: `y` allows it
 for the session, `p` always in this project, `n` refuses it for the session. The model is told
 what you said, so it can run the command again. `"@ask"` in a list asks about the hosts that
@@ -96,6 +99,7 @@ for example `allow = ["unsandboxed:git fetch"]`, and deny rules apply inside the
 out.
 
 If the sandbox can't be set up, wren says why. Common causes are bwrap not being installed,
-or Ubuntu 24.04's AppArmor blocking the user namespaces bwrap needs. Interactively, commands
-then ask for approval as before. A headless or `--yolo` run refuses to start, since nobody
-would be asked. Benchmark runs leave the sandbox off: they already run in a container.
+or Ubuntu 24.04's AppArmor blocking the user namespaces bwrap needs, and Windows has none.
+Commands then ask for approval as the permission mode says. With `--sandbox` or
+`enabled = true`, a headless or `--yolo` run refuses to start instead, since nobody would be
+asked. Benchmark runs leave the sandbox off: they already run in a container.

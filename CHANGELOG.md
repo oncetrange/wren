@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The sandbox is on by default** (`[sandbox] enabled = "auto"`): shell
+  commands run in it wherever it works, so they no longer ask for approval in
+  any mode. Its network asks about each new host (`network = "ask"`). Where
+  there is no sandbox (no bwrap, Windows), commands ask as before. `--yolo`
+  leaves it off unless `--sandbox` asks for it, and `--no-sandbox` or
+  `enabled = false` turns it off.
 - A full-screen UI, now the default. The conversation scrolls above an input
   line that is always there, and pickers and approvals open in its place.
   Completions open as a list above the input line. The bottom bar fits its

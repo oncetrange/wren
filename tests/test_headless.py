@@ -4,9 +4,12 @@ import json
 import os
 import subprocess
 import sys
+import uuid
+from pathlib import Path
 
 import pytest
 from fake_anthropic import FakeAnthropic, text_turn, tool_turn
+from test_sandbox import needs_sandbox
 
 
 @pytest.fixture
@@ -64,6 +67,26 @@ def test_prompt_from_stdin_and_max_turns_exit_code(run_wren):
 def test_without_yolo_writes_are_denied_headless(run_wren):
     turns = [tool_turn("bash", {"command": "touch x"}), text_turn("ok")]
     with FakeAnthropic(turns) as server:
-        proc = run_wren(server, "-p", "go", "-m", "fake")
+        proc = run_wren(server, "-p", "go", "-m", "fake", "--no-sandbox")
     assert not (run_wren.project / "x").exists()
     assert "denied" in proc.stdout
+
+
+@needs_sandbox
+def test_headless_commands_run_in_the_sandbox_by_default(run_wren):
+    probe = Path.home() / f".wren-headless-probe-{uuid.uuid4().hex}"
+    turns = [tool_turn("bash", {"command": f"touch x; touch {probe}"}), text_turn("ok")]
+    try:
+        with FakeAnthropic(turns) as server:
+            run_wren(server, "-p", "go", "-m", "fake")
+        assert (run_wren.project / "x").exists()            # ran without asking
+        assert not probe.exists()                           # but in the sandbox
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def test_yolo_leaves_the_automatic_sandbox_off(run_wren):
+    turns = [tool_turn("bash", {"command": "echo \"proxy=$HTTPS_PROXY\" > out.txt"}), text_turn("ok")]
+    with FakeAnthropic(turns) as server:
+        run_wren(server, "-p", "go", "-m", "fake", "--yolo")
+    assert (run_wren.project / "out.txt").read_text() == "proxy=\n"   # no sandbox's proxy

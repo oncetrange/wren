@@ -329,7 +329,7 @@ _HOST_PATTERN = re.compile(r"^(@packages|@ask|(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-
 def _sandbox_config(raw: dict[str, Any]) -> SandboxConfig:
     if unknown := set(raw) - {"enabled", "network", "allow_write", "deny_read"}:
         raise ConfigError(f"[sandbox]: unknown keys {sorted(unknown)}")
-    network = raw.get("network", "deny")
+    network = raw.get("network", "ask")
     if isinstance(network, list):
         if bad := [h for h in network if not isinstance(h, str) or not _HOST_PATTERN.match(h)]:
             raise ConfigError(f"[sandbox]: network: not a host: {bad[0]!r} (expected e.g. "
@@ -341,8 +341,8 @@ def _sandbox_config(raw: dict[str, Any]) -> SandboxConfig:
         value = raw.get(key, [])
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise ConfigError(f"[sandbox]: {key} must be a list of paths")
-    if not isinstance(raw.get("enabled", False), bool):
-        raise ConfigError("[sandbox]: enabled must be true or false")
+    if not isinstance(enabled := raw.get("enabled", "auto"), bool) and enabled != "auto":
+        raise ConfigError("[sandbox]: enabled must be true, false or \"auto\"")
     return SandboxConfig(**raw)
 
 
