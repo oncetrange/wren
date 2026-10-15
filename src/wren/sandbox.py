@@ -7,7 +7,8 @@ a proxy (netproxy.py). Inside the working directory, `.git/hooks`
 and `.git/config` stay read-only: either could make git run code later,
 outside the sandbox. API keys are left out of the environment, and the
 sockets of Docker and other container engines are out of reach: a container
-started through one could mount anything.
+started through one could mount anything. Package managers get caches of
+their own: the user's are left alone, since code from them runs outside later.
 
 macOS uses Seatbelt (`sandbox-exec`), Linux bubblewrap (`bwrap`). When neither
 works, there is no sandbox: wren says so, and commands ask for approval as
@@ -17,6 +18,7 @@ before; nothing runs unsandboxed without the user knowing.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import re
 import shutil
@@ -45,6 +47,15 @@ _HOME_SOCKETS = (
 _SYSTEM_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "/run/podman", "/run/containerd",
                    "/run/buildkit")
 _RUNTIME_SOCKETS = ("docker.sock", "podman", "containerd", "buildkit")
+# Package caches, each pointed at a directory of the sandbox's own: a command that
+# could change the user's caches could change what later runs outside (uv even
+# hard-links them into environments). Kept if already set to somewhere writable.
+CACHE_ENV = {
+    "UV_CACHE_DIR": "uv", "PIP_CACHE_DIR": "pip", "PRE_COMMIT_HOME": "pre-commit",
+    "npm_config_cache": "npm", "npm_config_store_dir": "pnpm", "YARN_CACHE_FOLDER": "yarn",
+    "BUN_INSTALL_CACHE_DIR": "bun", "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
+    "GRADLE_USER_HOME": "gradle",
+}
 # Environment variables left out inside, besides each model's api_key_env.
 _SECRET_ENV = re.compile(r"(API_KEY|_TOKEN|_SECRET|PASSWORD)$|^(AWS_SECRET|GITHUB_TOKEN|GH_TOKEN)", re.I)
 # Output that suggests the sandbox, not the command, is what failed.
@@ -83,8 +94,12 @@ class Sandbox:
         self.home = _real(home or Path.home())
         self.cwd = _real(cwd)
         temp = {_real(Path(tempfile.gettempdir())), _real(Path("/tmp"))}
+        self.cache = self.home / ".wren" / "sandbox-cache"
+        with contextlib.suppress(OSError):  # bwrap binds only what exists
+            self.cache.mkdir(parents=True, exist_ok=True)
         # Writable even read-only (plan mode, read-only subagents): scratch space and caches.
-        self.scratch = [*sorted(temp), *(_real(Path(p).expanduser()) for p in config.allow_write)]
+        self.scratch = [*sorted(temp), self.cache,
+                        *(_real(Path(p).expanduser()) for p in config.allow_write)]
         self.protected = [self.cwd / ".git" / "hooks", self.cwd / ".git" / "config"]
         self.hidden = [self.home / p for p in SECRET_PATHS] + [
             _real(Path(p).expanduser()) for p in config.deny_read]
@@ -150,8 +165,12 @@ class Sandbox:
         return self.bwrap_args(cwd, read_only) + ["--", *argv]
 
     def env(self, env: dict[str, str]) -> dict[str, str]:
-        """The environment without API keys and tokens, and with the proxy, if any."""
+        """The environment without API keys and tokens, with the sandbox's own package
+        caches, and with the proxy, if any."""
         env = {k: v for k, v in env.items() if k not in self.secret_env and not _SECRET_ENV.search(k)}
+        for var, name in CACHE_ENV.items():
+            if not (var in env and self.allows_write(Path(env[var]).expanduser())):
+                env[var] = str(self.cache / name)
         if (proxy := self.proxy()) is not None:
             env.update(proxy.env())
         return env
@@ -172,7 +191,9 @@ class Sandbox:
         where = ", ".join(map(str, self.writable(read_only)))
         guarded = "" if read_only else " (not in .git/hooks or .git/config)"
         return (f"commands may write only in {where}{guarded}, can't read credentials such as "
-                f"~/.ssh, can't use Docker or other container engines, and have {net}")
+                f"~/.ssh, can't use Docker or other container engines, and have {net}. Package "
+                f"managers (uv, pip, npm, pnpm, yarn, bun, go, gradle) use caches of their own in "
+                f"{self.cache}, so packages not downloaded there yet need the network")
 
     def blocked_hint(self, output: str, read_only: bool = False, can_leave: bool = True,
                      since: float | None = None) -> str | None:
