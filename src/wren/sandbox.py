@@ -30,6 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 from wren.netproxy import Proxy
 
@@ -74,12 +75,14 @@ _BLOCKED = re.compile(
 class SandboxConfig:
     """[sandbox] in ~/.wren/config.toml."""
 
-    enabled: bool = False
+    # "auto": where the sandbox works, and not with --yolo; true: always, or refuse
+    # to start (headless or --yolo) when it can't be had.
+    enabled: bool | Literal["auto"] = "auto"
     # "deny": localhost only; "allow": any; "ask": through a proxy, asking the
     # user about each new host; or hosts to allow through it ("pypi.org",
     # "*.example.com", "@packages" for the package registries, "@ask" to ask
     # about the others).
-    network: str | list[str] = "deny"
+    network: str | list[str] = "ask"
     # More places commands may write (e.g. a package cache), ~ allowed.
     allow_write: list[str] = field(default_factory=list)
     # More places commands may not read.

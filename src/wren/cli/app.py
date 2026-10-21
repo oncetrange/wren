@@ -120,14 +120,21 @@ def new_sandbox(config: Config, cwd: Path) -> Sandbox:
 
 
 def make_sandbox(args: argparse.Namespace, config: Config, cwd: Path, ui: RichUI) -> Sandbox | None:
-    """The sandbox for shell commands, if asked for. Raises ConfigError when it
-    can't be had and nobody would approve commands instead (headless, or auto mode)."""
-    if not (config.sandbox.enabled if args.sandbox is None else args.sandbox):
+    """The sandbox for shell commands. "auto" (the default) has one where it works,
+    but not with --yolo, which asks for no guard rails. Asked for outright, raises
+    ConfigError when it can't be had and nobody would approve commands instead
+    (headless, or auto mode)."""
+    wanted = config.sandbox.enabled if args.sandbox is None else args.sandbox
+    if not wanted or (wanted == "auto" and permission_mode(args) == "auto"):
         return None
     sandbox = new_sandbox(config, cwd)
     try:
         sandbox.check()
     except SandboxUnavailable as e:
+        if wanted == "auto":
+            if not args.prompt:
+                ui.notice(f"no sandbox here ({e}): commands ask for approval")
+            return None
         if args.prompt or permission_mode(args) == "auto":
             raise ConfigError(f"no sandbox: {e}. Run without --sandbox (or [sandbox] enabled) "
                               "to run commands unsandboxed.") from None

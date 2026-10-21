@@ -28,6 +28,7 @@ def make(tmp_path: Path, platform: str = sys.platform, **config) -> Sandbox:
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True, exist_ok=True)
     (home / ".ssh" / "id_ed25519").write_text("SECRET\n")
+    config = {"network": "deny", **config}
     return Sandbox(project, SandboxConfig(enabled=True, **config), secret_env=("MY_MODEL_KEY",),
                    home=home, platform=platform)
 
