@@ -72,7 +72,7 @@ global instructions from `~/.wren/WREN.md`.
 - **Headless and scheduled runs**: `wren -p` can print JSON output and stop at a time limit, and
   prompts can run on a cron schedule. See [headless](https://github.com/oncetrange/wren/blob/main/docs/headless.md).
 - **Benchmarks**: wren runs on DeepSWE and other Harbor-format benchmarks, and a harness change
-  can be judged against noise. See [benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md).
+  can be judged against noise, or proposed, screened and judged by wren itself. See [benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md).
 
 ## Models
 

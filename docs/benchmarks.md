@@ -46,3 +46,50 @@ below the best score so far minus delta, and pays for any extra tokens with a ga
 delta (inside the band, only a token saving gets in). Every verdict, rejections included, goes into
 a ledger in `bench/runs/`. The other 103 tasks are held out: `eval <ref> --set heldout` reports a
 result but is never used to choose. Settings are in `bench/config.json`.
+
+## Letting wren improve its own harness
+
+`bench/rsi.py` closes the loop: instead of you proposing each change, wren proposes, implements
+and screens changes to its own source, and `evolve.py`'s rule decides which ones stay. It follows
+the RRSI loop:
+
+```bash
+python bench/rsi.py start r1           # from the incumbent; needs `baseline` and `calibrate` first
+python bench/rsi.py run r1             # rounds until T; resumable; touch bench/runs/rsi/r1/STOP to stop
+python bench/rsi.py run r1 --rounds 1 --no-eval   # analyze and propose only, to look at the candidates
+python bench/rsi.py status r1          # the incumbent's score per round and every edit tried
+```
+
+Each round:
+
+1. **Analyze.** Failed trials of the incumbent are rendered to text, along with a passing trial on
+   tasks that pass only sometimes, since the contrast says the most. A read-only wren digests each
+   one into a blocker, quoted evidence and what was needed instead. The digests are in
+   `bench/runs/rsi/<run>/t<t>/report.md`.
+2. **Propose.** A few candidates are drafted, each in its own git worktree. wren edits its source
+   there, adds tests and declares every independent edit in `RSI_EDITS.json`: its component, its
+   hypothesis and the tasks it should flip. The proposer also reads the edit history, so it
+   doesn't redraw a hypothesis that was measured and failed. Other limits:
+   - an edit budget that shrinks over the run, from `b_max` edits per candidate to `b_min`;
+   - after `stall_window` rounds without a gain above the noise band, an edit on a component
+     never tried;
+   - an offer to remove accepted machinery that stopped paying.
+3. **Screen.** A candidate is checked before it is measured:
+   - its declaration;
+   - the repo's checks (ruff, pyright, pytest);
+   - a scan of the diff for task names, grader files and credentials;
+   - a critic that rejects logic aimed at particular tasks, a gamed grader, or changes it doesn't
+     declare.
+
+   A candidate that fails gets `repair_rounds` attempts to fix what was objected to, and is
+   otherwise dropped. The drop is still recorded.
+4. **Measure and select.** Survivors are pushed (as `evolve-cand/<run>/t<t>-v<i>`) and measured
+   on the evolve split. The best admissible one becomes the incumbent, and `evolve/<run>` moves to
+   it. Every edit goes into `bench/runs/rsi/<run>/history.jsonl` with its measured gain, and every
+   measured candidate goes into the ledger.
+
+The proposer, digester and critic are the installed `wren`, not the one being changed. They run
+with `proposer_model`, `digest_model` and `critic_model` from the `rsi` settings in
+`bench/config.json`. Keep these models apart from the frozen policy model the benchmark runs.
+When the run ends, `evolve.py eval evolve/<run> --set heldout` gives the result on tasks the
+loop never saw.

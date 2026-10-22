@@ -99,6 +99,7 @@ def collect(job_dirs: list[Path], tasks: list[str]) -> tuple[dict, dict]:
                 {m: rewards.get(m) for m in ("reward", "partial", "f2p", "p2p")},
                 "tokens": trial["tokens"],
                 "exception": trial["exception"],
+                "dir": str(trial_dir),
             })
     if harness is None:
         raise SystemExit(f"no trials of these tasks in {[str(j) for j in job_dirs]}")
@@ -273,17 +274,14 @@ def print_tasks(ev: dict, metric: str) -> None:
 
 # --- commands ---
 
-def cmd_eval(args, cfg: dict) -> None:
-    sha = resolve_ref(args.ref)
-    kwargs = dict(cfg["agent_kwargs"])
-    for item in args.ak:
-        key, _, value = item.partition("=")
-        if key == "version":
-            raise SystemExit("the version is the ref; don't pass it with --ak")
-        kwargs[key] = value
-    k = args.k or cfg["k"]
-    tasks = load_split()[args.set]
-    name = unique_name(args.name or f"{sha[:7]}-{args.set}")
+def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: dict,
+             dry_run: bool = False) -> dict | None:
+    """Run Pier on a split with the harness (sha, config kwargs + overrides) and
+    save the measurement as `name`; None on a dry run."""
+    kwargs = {**cfg["agent_kwargs"], **overrides}
+    if "version" in kwargs:
+        raise SystemExit("the version is the ref; don't pass it with --ak")
+    tasks = load_split()[set_name]
     job = f"bench-{name}-{time.strftime('%Y%m%d-%H%M%S')}"
     cmd = ["pier", "run", "-p", cfg["dataset"], "-e", cfg["env"], "-o", "jobs", "--job-name", job,
            "-k", str(k), "-n", str(cfg["n_concurrent"]), "-y",
@@ -294,12 +292,20 @@ def cmd_eval(args, cfg: dict) -> None:
     cmd += [x for t in tasks for x in ("-i", t)]
     print(f"{name}: {len(tasks)} tasks x k={k} = {len(tasks) * k} trials of {sha[:7]}")
     print(" ".join(cmd[:24]) + (" ..." if len(cmd) > 24 else ""))
-    if args.dry_run:
-        return
+    if dry_run:
+        return None
     subprocess.run(cmd, cwd=ROOT, check=False)
-    ev = build_eval(name, [ROOT / "jobs" / job], args.set, k)
-    print(describe(ev, cfg["metric"]))
-    print_tasks(ev, cfg["metric"])
+    return build_eval(name, [ROOT / "jobs" / job], set_name, k)
+
+
+def cmd_eval(args, cfg: dict) -> None:
+    sha = resolve_ref(args.ref)
+    overrides = dict(item.partition("=")[::2] for item in args.ak)
+    name = unique_name(args.name or f"{sha[:7]}-{args.set}")
+    ev = run_eval(sha, overrides, args.set, args.k or cfg["k"], name, cfg, args.dry_run)
+    if ev is not None:
+        print(describe(ev, cfg["metric"]))
+        print_tasks(ev, cfg["metric"])
 
 
 def cmd_score(args, cfg: dict) -> None:
