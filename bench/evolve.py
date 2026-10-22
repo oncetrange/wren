@@ -284,9 +284,25 @@ def job_harness(job_dir: Path) -> dict:
     return {"sha": kwargs.pop("version", None), "kwargs": kwargs, "model": agent.get("model_name")}
 
 
-def finished_trials(job_dir: Path) -> int:
-    """Trials of a Pier job that have a result (graded or not)."""
-    return sum(1 for p in job_dir.iterdir() if (p / "result.json").exists()) if job_dir.exists() else 0
+# What Pier counts as a trial's own outcome (it never retries these); any other
+# exception is the infrastructure failing (a spend limit, a sandbox that vanished).
+OUTCOME_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "VerifierOutputParseError",
+                      "RewardFileEmptyError", "RewardFileNotFoundError"}
+
+
+def job_progress(job_dir: Path) -> tuple[int, set[str]]:
+    """Trials of a Pier job that finished (graded, or failed on their own), and
+    the exception types of those the infrastructure failed."""
+    done, infra = 0, set()
+    for p in job_dir.iterdir() if job_dir.exists() else []:
+        if not (p / "result.json").exists():
+            continue
+        exc = (load_json(p / "result.json").get("exception_info") or {}).get("exception_type")
+        if exc and exc not in OUTCOME_EXCEPTIONS:
+            infra.add(exc)
+        else:
+            done += 1
+    return done, infra
 
 
 def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: dict,
@@ -305,9 +321,11 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
         want = {"sha": sha, "kwargs": {key: str(v) for key, v in kwargs.items()}, "model": cfg["model"]}
         if (ran := job_harness(job_dir)) != want:
             raise SystemExit(f"{job_dir} ran {ran}, not {want}: remove it or measure under another name")
-        print(f"{name}: resuming {job_dir.relative_to(ROOT)}, {finished_trials(job_dir)}/{len(tasks) * k} "
-              "trials done")
+        done, infra = job_progress(job_dir)
+        print(f"{name}: resuming {job_dir.relative_to(ROOT)}, {done}/{len(tasks) * k} trials done"
+              + (f", rerunning those that failed with {', '.join(sorted(infra))}" if infra else ""))
         cmd = ["pier", "job", "resume", "-p", str(job_dir)]
+        cmd += [x for e in sorted(infra) for x in ("-f", e)]
     else:
         cmd = ["pier", "run", "-p", cfg["dataset"], "-e", cfg["env"], "-o", "jobs", "--job-name", job_dir.name,
                "-k", str(k), "-n", str(cfg["n_concurrent"]), "-y",
@@ -321,8 +339,10 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
     if dry_run:
         return None
     subprocess.run(cmd, cwd=ROOT, check=False)
-    if (done := finished_trials(job_dir)) < len(tasks) * k:
-        raise SystemExit(f"{name}: {done}/{len(tasks) * k} trials finished; the same command resumes "
+    done, infra = job_progress(job_dir)
+    if done < len(tasks) * k:
+        failed = f" ({', '.join(sorted(infra))} on the rest)" if infra else ""
+        raise SystemExit(f"{name}: {done}/{len(tasks) * k} trials finished{failed}; the same command resumes "
                          f"{job_dir.relative_to(ROOT)} (or `score {name} {job_dir.relative_to(ROOT)}` "
                          "takes what is there)")
     return build_eval(name, [job_dir], set_name, k)
