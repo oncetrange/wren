@@ -29,7 +29,7 @@ steps and compactions back to Pier. Session logs are kept under the trial's `age
 `bench/evolve.py` decides whether a change to wren (a commit, or agent kwargs such as `mask_at`)
 actually helps, using the selection rules of [RRSI](https://github.com/google-research/rrsi). One
 trial says little: a task that passes once can fail the next time. So changes are measured on a
-fixed evolve split of DeepSWE (`bench/split.json`, 10 tasks) with k trials per task, against a noise
+fixed evolve split of DeepSWE (`bench/split.json`, 30 tasks) with k trials per task, against a noise
 band measured by running the same harness twice:
 
 ```bash
@@ -44,8 +44,13 @@ python bench/evolve.py status                     # incumbent, delta, ledger
 A trial without a grade counts as a failure. A candidate is accepted only if it doesn't fall
 below the best score so far minus delta, and pays for any extra tokens with a gain larger than
 delta (inside the band, only a token saving gets in). Every verdict, rejections included, goes into
-a ledger in `bench/runs/`. The other 103 tasks are held out: `eval <ref> --set heldout` reports a
-result but is never used to choose. Settings are in `bench/config.json`.
+a ledger in `bench/runs/`. The other 83 tasks are held out: `eval <ref> --set heldout` reports a
+result but is never used to choose. Settings are in `bench/config.json`, including the frozen policy
+model the benchmark runs (`deepseek-v4.1-flash-1017`).
+
+A measurement runs as the Pier job `jobs/bench-<name>`. If it is cut off (a dropped connection, a
+closed laptop), the same `eval` command resumes that job, running only the trials without a result;
+`rsi.py run` does the same for its candidates, and finishes a round cut off while being recorded.
 
 ## Letting wren improve its own harness
 
