@@ -150,7 +150,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("cut_off", [False, True])
+def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut_off: bool):
     sha = sh("git", "rev-parse", "HEAD", cwd=repo)
     trial_dir = tmp_path / "trial-b"
     (trial_dir / "agent" / "wren" / "sessions").mkdir(parents=True)
@@ -187,7 +188,21 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(evolve, "run_eval", fake_eval)
     cfg = {**CFG, "rsi": {"T": 2, "candidates": 2, "repair_rounds": 1}}
     rsi.cmd_start(type("A", (), {"run": "r1", "T": None})(), cfg)
-    rsi.cmd_run(type("A", (), {"run": "r1", "rounds": 1, "no_eval": False})(), cfg)
+    args = type("A", (), {"run": "r1", "rounds": 1, "no_eval": False})()
+    if cut_off:   # the round dies after its winner reached the frontier; `run` finishes it
+        real_git = rsi.git
+
+        def failing_git(*cmd: str) -> str:
+            if any("evolve/r1" in c for c in cmd):
+                monkeypatch.setattr(rsi, "git", real_git)
+                raise RuntimeError("connection reset")
+            return real_git(*cmd)
+
+        monkeypatch.setattr(rsi, "git", failing_git)
+        with pytest.raises(RuntimeError):
+            rsi.cmd_run(args, cfg)
+        assert evolve.load_json(evolve.FRONTIER)["incumbent"] == "r1-t0-v2"
+    rsi.cmd_run(args, cfg)
 
     state = rsi.load_state("r1")
     assert state["t"] == 1 and state["trajectory"] == [0.5, 1.0]

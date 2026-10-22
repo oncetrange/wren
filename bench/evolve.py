@@ -49,8 +49,11 @@ def load_json(path: Path) -> dict:
 
 
 def save_json(path: Path, data: dict) -> None:
+    """Write `path` whole or not at all, so a run cut off mid-write can be resumed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1) + "\n")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1) + "\n")
+    tmp.replace(path)
 
 
 # --- reading Pier jobs ---
@@ -274,33 +277,61 @@ def print_tasks(ev: dict, metric: str) -> None:
 
 # --- commands ---
 
+def job_harness(job_dir: Path) -> dict:
+    """The harness a Pier job was started with, from its config.json."""
+    agent = load_json(job_dir / "config.json")["agents"][0]
+    kwargs = {k: str(v) for k, v in (agent.get("kwargs") or {}).items()}
+    return {"sha": kwargs.pop("version", None), "kwargs": kwargs, "model": agent.get("model_name")}
+
+
+def finished_trials(job_dir: Path) -> int:
+    """Trials of a Pier job that have a result (graded or not)."""
+    return sum(1 for p in job_dir.iterdir() if (p / "result.json").exists()) if job_dir.exists() else 0
+
+
 def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: dict,
              dry_run: bool = False) -> dict | None:
     """Run Pier on a split with the harness (sha, config kwargs + overrides) and
-    save the measurement as `name`; None on a dry run."""
+    save the measurement as `name`; None on a dry run.
+
+    The job is jobs/bench-<name>. If it was cut off (no measurement saved yet),
+    the same call resumes it: Pier runs only the trials without a result."""
     kwargs = {**cfg["agent_kwargs"], **overrides}
     if "version" in kwargs:
         raise SystemExit("the version is the ref; don't pass it with --ak")
     tasks = load_split()[set_name]
-    job = f"bench-{name}-{time.strftime('%Y%m%d-%H%M%S')}"
-    cmd = ["pier", "run", "-p", cfg["dataset"], "-e", cfg["env"], "-o", "jobs", "--job-name", job,
-           "-k", str(k), "-n", str(cfg["n_concurrent"]), "-y",
-           "--agent-import-path", AGENT, "-m", cfg["model"], "--ak", f"version={sha}"]
-    cmd += [x for key, v in kwargs.items() for x in ("--ak", f"{key}={v}")]
-    # Pier resolves ${VAR} itself, so the key never lands in the job config.
-    cmd += [x for var in cfg["agent_env"] for x in ("--ae", f"{var}=${{{var}}}")]
-    cmd += [x for t in tasks for x in ("-i", t)]
-    print(f"{name}: {len(tasks)} tasks x k={k} = {len(tasks) * k} trials of {sha[:7]}")
+    job_dir = ROOT / "jobs" / f"bench-{name}"
+    if (job_dir / "config.json").exists():
+        want = {"sha": sha, "kwargs": {key: str(v) for key, v in kwargs.items()}, "model": cfg["model"]}
+        if (ran := job_harness(job_dir)) != want:
+            raise SystemExit(f"{job_dir} ran {ran}, not {want}: remove it or measure under another name")
+        print(f"{name}: resuming {job_dir.relative_to(ROOT)}, {finished_trials(job_dir)}/{len(tasks) * k} "
+              "trials done")
+        cmd = ["pier", "job", "resume", "-p", str(job_dir)]
+    else:
+        cmd = ["pier", "run", "-p", cfg["dataset"], "-e", cfg["env"], "-o", "jobs", "--job-name", job_dir.name,
+               "-k", str(k), "-n", str(cfg["n_concurrent"]), "-y",
+               "--agent-import-path", AGENT, "-m", cfg["model"], "--ak", f"version={sha}"]
+        cmd += [x for key, v in kwargs.items() for x in ("--ak", f"{key}={v}")]
+        # Pier resolves ${VAR} itself, so the key never lands in the job config.
+        cmd += [x for var in cfg["agent_env"] for x in ("--ae", f"{var}=${{{var}}}")]
+        cmd += [x for t in tasks for x in ("-i", t)]
+        print(f"{name}: {len(tasks)} tasks x k={k} = {len(tasks) * k} trials of {sha[:7]}")
     print(" ".join(cmd[:24]) + (" ..." if len(cmd) > 24 else ""))
     if dry_run:
         return None
     subprocess.run(cmd, cwd=ROOT, check=False)
-    return build_eval(name, [ROOT / "jobs" / job], set_name, k)
+    if (done := finished_trials(job_dir)) < len(tasks) * k:
+        raise SystemExit(f"{name}: {done}/{len(tasks) * k} trials finished; the same command resumes "
+                         f"{job_dir.relative_to(ROOT)} (or `score {name} {job_dir.relative_to(ROOT)}` "
+                         "takes what is there)")
+    return build_eval(name, [job_dir], set_name, k)
 
 
 def cmd_eval(args, cfg: dict) -> None:
     sha = resolve_ref(args.ref)
     overrides = dict(item.partition("=")[::2] for item in args.ak)
+    # The first name without a measurement: if its job was cut off, run_eval resumes it.
     name = unique_name(args.name or f"{sha[:7]}-{args.set}")
     ev = run_eval(sha, overrides, args.set, args.k or cfg["k"], name, cfg, args.dry_run)
     if ev is not None:
