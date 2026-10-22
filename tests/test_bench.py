@@ -79,3 +79,36 @@ def test_calibrate_from_repeated_and_single_measurements():
     # Tasks that always pass or always fail carry no trial noise.
     steady = ev("s", {"t1": [1, 1], "t2": [0, 0]})
     assert evolve.calibrate([steady], "reward", z=2.0)["delta"] == 0
+
+
+def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "ROOT", tmp_path)
+    monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")
+    monkeypatch.setattr(evolve, "load_split", lambda: {"evolve": ["a", "b"]})
+    cfg = {"dataset": "tasks", "env": "modal", "n_concurrent": 2, "model": "m", "agent_env": [],
+           "agent_kwargs": {"time_limit": 170}}
+    job = tmp_path / "jobs" / "bench-x"
+    calls: list[list[str]] = []
+
+    def pier(cmd, cwd, check):
+        calls.append(cmd)
+        if cmd[1] == "run":   # dies after one trial
+            job.mkdir(parents=True)
+            (job / "config.json").write_text(json.dumps({"agents": [
+                {"model_name": "m", "kwargs": {"version": "abc", "time_limit": 170}}]}))
+            write_trial(job, "a__1", "a", 1, kwargs={"time_limit": 170})
+        else:
+            write_trial(job, "b__1", "b", 0, kwargs={"time_limit": 170})
+
+    monkeypatch.setattr(evolve.subprocess, "run", pier)
+    with pytest.raises(SystemExit, match="1/2 trials finished"):
+        evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
+    assert not evolve.eval_path("x").exists()
+    # The same call goes on with the job instead of starting over.
+    ev = evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
+    assert calls[1] == ["pier", "job", "resume", "-p", str(job)]
+    assert ev is not None and evolve.aggregate(ev, "reward")["S"] == 0.5
+    # A job of another harness under the name is never resumed into this measurement.
+    evolve.eval_path("x").unlink()
+    with pytest.raises(SystemExit, match="ran"):
+        evolve.run_eval("def", {}, "evolve", 1, "x", cfg)

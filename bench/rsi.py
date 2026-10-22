@@ -525,7 +525,13 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
     run, t = state["run"], state["t"]
     rdir = RSI / run / f"t{t}"
     rdir.mkdir(parents=True, exist_ok=True)
-    fr = load_json(evolve.FRONTIER)
+    # The round's incumbent is pinned when it starts: a round cut off after its
+    # winner reached the frontier is finished again against the same incumbent.
+    if state.get("round", {}).get("t") != t:
+        fr = load_json(evolve.FRONTIER)
+        state["round"] = {"t": t, "incumbent": fr["incumbent"], "S_star": fr["S_star"]}
+        save_state(state)
+    fr = state["round"]
     inc = evolve.load_eval(fr["incumbent"])
     base = inc["harness"]["sha"]
     delta = evolve.delta_of(cfg)
@@ -578,8 +584,14 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
                 "outcome": v["outcome"] if v else c.get("outcome"),
                 "detail": (v["reason"] if v else c.get("detail") or "")[:600],
             })
-    append_history(run, records)
+    # Recorded once: a rerun of a round cut off below doesn't record it twice.
+    if not any(r["t"] == t for r in history):
+        append_history(run, records)
+    logged = ({json.loads(line).get("candidate") for line in evolve.LEDGER.read_text().splitlines()}
+              if evolve.LEDGER.exists() else set())
     for c, ev in zip(ready, measured, strict=True):
+        if ev["name"] in logged:
+            continue
         v = verdicts[c["variant"]]
         evolve.append_ledger({
             "candidate": ev["name"], "incumbent": fr["incumbent"], "harness": ev["harness"],
