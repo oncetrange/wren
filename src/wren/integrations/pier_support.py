@@ -5,9 +5,12 @@ Kept free of Pier imports so it can be tested without installing Pier.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import json
 import shlex
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -87,6 +90,49 @@ def run_command(instruction: str, model: ModelConfig, extra_flags: str = "") -> 
         f"if [ -s {LOG_DIR}/{RESULT_FILE} ]; then cat {LOG_DIR}/{RESULT_FILE}; exit 0; fi; "
         f"tail -n 50 {LOG_DIR}/{STDERR_FILE} >&2; exit $code"
     )
+
+
+# A trial whose session log stops changing this long is hung (a model request
+# that never returns, e.g. once the provider's quota is gone), not working: no
+# shell command runs past 10 minutes, and every model call or tool result logs.
+STALL_S = 20 * 60
+# Prints the sandbox's clock, then the newest session log's mtime once there is one.
+IDLE_COMMAND = (f"f=$(ls -t {WREN_HOME}/sessions/*.jsonl 2>/dev/null | head -n 1); "
+                'echo $(date +%s) ${f:+$(stat -c %Y "$f")}')
+
+
+class AgentStalledError(RuntimeError):
+    """The agent stopped making progress. Not the trial's outcome: rerun it."""
+
+
+async def watch(run: Awaitable[Any], probe: Callable[[], Awaitable[str]],
+                stall_s: int = STALL_S, poll_s: float = 60) -> Any:
+    """Await `run`, polling `probe` (IDLE_COMMAND's output) every poll_s; cancel it
+    and raise AgentStalledError once the session log has been idle for stall_s,
+    counting from the first poll until the log exists."""
+    task = asyncio.ensure_future(run)
+    start = None
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=poll_s)
+            if task.done():
+                break
+            try:
+                clock = [int(v) for v in (await probe()).split()]
+            except Exception:  # a poll that fails says nothing about the agent
+                continue
+            if not clock:
+                continue
+            start = start or clock[0]
+            idle = clock[0] - (clock[1] if len(clock) > 1 else start)
+            if idle > stall_s:
+                raise AgentStalledError(f"no session event for {idle // 60} minutes")
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 def read_run(logs_dir: Path) -> dict | None:

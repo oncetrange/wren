@@ -51,6 +51,16 @@ model the benchmark runs (`deepseek-v4.1-flash-1017`).
 A measurement runs as the Pier job `jobs/bench-<name>`. If it is cut off (a dropped connection, a
 closed laptop), the same `eval` command resumes that job, running only the trials without a result;
 `rsi.py run` does the same for its candidates, and finishes a round cut off while being recorded.
+A trial whose session log goes quiet for 20 minutes (a model request that never returns, as when
+the provider's quota runs out) fails as `AgentStalledError`, which a resume runs again.
+
+Sandboxes are sized with Pier's `limit` policy (`resources` in the config): a trial reserves almost
+nothing, may burst up to the task's spec, and is billed for what it uses, about a seventh of the
+default, with the same rewards and tokens in a trial run. Measurements that are compared must use
+the same policy, so a job started under another one is never resumed into a measurement. To spread
+measurements over several Modal accounts, list their profile names in `bench/runs/accounts.json`
+as `{"profiles": [...]}`: each job runs on one account, and moves to the next when that one hits
+its spend limit.
 
 ## Letting wren improve its own harness
 
