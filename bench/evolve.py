@@ -17,18 +17,28 @@ single trial, and every verdict goes into a ledger, rejected ideas included.
 The commit must be on GitHub (pushed), since the container installs wren from
 there. Settings are in bench/config.json; measurements, the ledger and the
 incumbent are kept in bench/runs/.
+
+On Modal, measurements can be spread over several accounts: list their profile
+names (from `modal token set --profile`) in bench/runs/accounts.json as
+{"profiles": [...]}. A job stays on its account until that one hits its spend
+limit, then resumes on the next; the file also records which job ran where and
+which accounts are spent this month.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import math
+import os
 import random
 import statistics
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,6 +48,7 @@ EVALS = RUNS / "evals"
 LEDGER = RUNS / "ledger.jsonl"
 FRONTIER = RUNS / "frontier.json"
 CALIBRATION = RUNS / "calibration.json"
+ACCOUNTS = RUNS / "accounts.json"
 AGENT = "wren.integrations.pier_agent:WrenAgent"
 
 # What a change touches, so the ledger shows which parts of the harness have paid off.
@@ -305,47 +316,124 @@ def job_progress(job_dir: Path) -> tuple[int, set[str]]:
     return done, infra
 
 
+def out_of_credit(job_dir: Path) -> bool:
+    """Whether a trial of the job was refused because the Modal account hit its spend limit."""
+    for p in job_dir.iterdir() if job_dir.exists() else []:
+        if (p / "result.json").exists():
+            exc = load_json(p / "result.json").get("exception_info") or {}
+            if exc.get("exception_type") == "ResourceExhaustedError" and "spend limit" in (
+                    exc.get("exception_message") or ""):
+                return True
+    return False
+
+
+@contextlib.contextmanager
+def accounts_state():
+    """bench/runs/accounts.json, locked against measurements running at once:
+    {"profiles": [...], "jobs": {job: profile}, "spent": {profile: "YYYY-MM"}}."""
+    ACCOUNTS.parent.mkdir(parents=True, exist_ok=True)
+    with open(ACCOUNTS.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = {"profiles": [], "jobs": {}, "spent": {}}
+        if ACCOUNTS.exists():
+            state |= load_json(ACCOUNTS)
+        yield state
+        if ACCOUNTS.exists() or state["jobs"]:
+            save_json(ACCOUNTS, state)
+
+
+def pick_account(job: str) -> tuple[str | None, list[str]]:
+    """The Modal profile a job runs on: the one it started on while that has credit
+    this month, else the one with credit that was given the fewest jobs. None
+    with no profiles listed (Modal's active one) or none left; then the list."""
+    month = time.strftime("%Y-%m")
+    with accounts_state() as state:
+        live = [p for p in state["profiles"] if state["spent"].get(p) != month]
+        if state["jobs"].get(job) not in live and live:
+            load = Counter(state["jobs"].values())
+            state["jobs"][job] = min(live, key=lambda p: load[p])
+        return (state["jobs"][job] if live else None), state["profiles"]
+
+
+def mark_spent(profile: str) -> None:
+    with accounts_state() as state:
+        state["spent"][profile] = time.strftime("%Y-%m")
+
+
 def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: dict,
              dry_run: bool = False) -> dict | None:
     """Run Pier on a split with the harness (sha, config kwargs + overrides) and
     save the measurement as `name`; None on a dry run.
 
     The job is jobs/bench-<name>. If it was cut off (no measurement saved yet),
-    the same call resumes it: Pier runs only the trials without a result."""
+    the same call resumes it: Pier runs only the trials without a result. One
+    whose Modal account runs out of credit resumes on the next account."""
     kwargs = {**cfg["agent_kwargs"], **overrides}
     if "version" in kwargs:
         raise SystemExit("the version is the ref; don't pass it with --ak")
     tasks = load_split()[set_name]
+    total = len(tasks) * k
     job_dir = ROOT / "jobs" / f"bench-{name}"
+    # How Pier sizes sandboxes: "limit" reserves almost nothing and lets a trial
+    # burst up to the task's spec, billing what it uses (about 1/7 of "auto").
+    resources = {"cpus": "auto", "memory": "auto"} | cfg.get("resources", {})
     if (job_dir / "config.json").exists():
         want = {"sha": sha, "kwargs": {key: str(v) for key, v in kwargs.items()}, "model": cfg["model"]}
         if (ran := job_harness(job_dir)) != want:
             raise SystemExit(f"{job_dir} ran {ran}, not {want}: remove it or measure under another name")
+        env = load_json(job_dir / "config.json").get("environment") or {}
+        ran_res = {"cpus": env.get("cpu_enforcement_policy", "auto"),
+                   "memory": env.get("memory_enforcement_policy", "auto")}
+        if ran_res != resources:
+            raise SystemExit(f"{job_dir} ran with resources {ran_res}, not {resources}: "
+                             "remove it or measure under another name")
         done, infra = job_progress(job_dir)
-        print(f"{name}: resuming {job_dir.relative_to(ROOT)}, {done}/{len(tasks) * k} trials done"
+        print(f"{name}: resuming {job_dir.relative_to(ROOT)}, {done}/{total} trials done"
               + (f", rerunning those that failed with {', '.join(sorted(infra))}" if infra else ""))
-        cmd = ["pier", "job", "resume", "-p", str(job_dir)]
-        cmd += [x for e in sorted(infra) for x in ("-f", e)]
+        cmd = resume_command(job_dir, infra)
     else:
         cmd = ["pier", "run", "-p", cfg["dataset"], "-e", cfg["env"], "-o", "jobs", "--job-name", job_dir.name,
                "-k", str(k), "-n", str(cfg["n_concurrent"]), "-y",
+               "--cpus", resources["cpus"], "--memory", resources["memory"],
                "--agent-import-path", AGENT, "-m", cfg["model"], "--ak", f"version={sha}"]
         cmd += [x for key, v in kwargs.items() for x in ("--ak", f"{key}={v}")]
         # Pier resolves ${VAR} itself, so the key never lands in the job config.
         cmd += [x for var in cfg["agent_env"] for x in ("--ae", f"{var}=${{{var}}}")]
         cmd += [x for t in tasks for x in ("-i", t)]
-        print(f"{name}: {len(tasks)} tasks x k={k} = {len(tasks) * k} trials of {sha[:7]}")
+        print(f"{name}: {len(tasks)} tasks x k={k} = {total} trials of {sha[:7]}")
     print(" ".join(cmd[:24]) + (" ..." if len(cmd) > 24 else ""))
     if dry_run:
         return None
-    subprocess.run(cmd, cwd=ROOT, check=False)
-    done, infra = job_progress(job_dir)
-    if done < len(tasks) * k:
+    while True:
+        env = None
+        if cfg["env"] == "modal":
+            profile, profiles = pick_account(job_dir.name)
+            if profiles and profile is None:
+                raise SystemExit(f"{name}: every Modal account ({', '.join(profiles)}) is spent this month; "
+                                 f"drop one from \"spent\" in {ACCOUNTS.relative_to(ROOT)} once it has credit")
+            if profile:
+                print(f"{name}: on Modal account {profile}")
+                env = os.environ | {"MODAL_PROFILE": profile}
+        else:
+            profile = None
+        subprocess.run(cmd, cwd=ROOT, check=False, env=env)
+        done, infra = job_progress(job_dir)
+        if done >= total:
+            return build_eval(name, [job_dir], set_name, k)
+        if profile and out_of_credit(job_dir):
+            mark_spent(profile)
+            print(f"{name}: Modal account {profile} hit its spend limit at {done}/{total} trials")
+            cmd = resume_command(job_dir, infra)
+            continue
         failed = f" ({', '.join(sorted(infra))} on the rest)" if infra else ""
-        raise SystemExit(f"{name}: {done}/{len(tasks) * k} trials finished{failed}; the same command resumes "
+        raise SystemExit(f"{name}: {done}/{total} trials finished{failed}; the same command resumes "
                          f"{job_dir.relative_to(ROOT)} (or `score {name} {job_dir.relative_to(ROOT)}` "
                          "takes what is there)")
-    return build_eval(name, [job_dir], set_name, k)
+
+
+def resume_command(job_dir: Path, infra: set[str]) -> list[str]:
+    """Pier resuming a job, running again the trials the infrastructure failed."""
+    return ["pier", "job", "resume", "-p", str(job_dir)] + [x for e in sorted(infra) for x in ("-f", e)]
 
 
 def cmd_eval(args, cfg: dict) -> None:

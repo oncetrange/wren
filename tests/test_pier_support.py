@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,51 @@ def test_run_command_writes_the_model_config(tmp_path):
     assert subprocess.run(["bash", "-c", cmd], capture_output=True).returncode == 0
     written = tmp_path / "logs" / "wren" / "config.toml"
     assert load_config(written).models["tokenplan"].base_url == "https://token-plan.example.com/apps/anthropic"
+
+
+def test_watch_stops_a_trial_whose_session_log_goes_quiet():
+    import asyncio
+
+    async def hung():
+        await asyncio.sleep(3600)
+
+    async def finishes():
+        await asyncio.sleep(0.05)
+        return "done"
+
+    clock = iter([1000, 1100, 1300])
+
+    async def probe():   # the log was last written at t=1000
+        return f"{next(clock)} 1000"
+
+    with pytest.raises(support.AgentStalledError, match="no session event"):
+        asyncio.run(support.watch(hung(), probe, stall_s=200, poll_s=0.01))
+
+    async def busy():    # the log keeps changing; a failed poll is ignored
+        busy.n += 1
+        if busy.n == 2:
+            raise OSError("exec refused")
+        return f"{1000 + busy.n * 100} {1000 + busy.n * 100}"
+    busy.n = 0
+    assert asyncio.run(support.watch(finishes(), busy, stall_s=200, poll_s=0.01)) == "done"
+
+    # No session log yet: idle counts from the first poll.
+    starts = iter([5000, 5100, 5300])
+
+    async def no_log():
+        return f"{next(starts)}"
+
+    with pytest.raises(support.AgentStalledError):
+        asyncio.run(support.watch(hung(), no_log, stall_s=200, poll_s=0.01))
+
+
+def test_idle_command_reports_the_newest_session_log(tmp_path: Path):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    cmd = support.IDLE_COMMAND.replace(support.WREN_HOME, str(tmp_path))
+    if sys.platform == "darwin":   # BSD stat
+        cmd = cmd.replace("stat -c %Y", "stat -f %m")
+    assert len(subprocess.run(["sh", "-c", cmd], capture_output=True, text=True).stdout.split()) == 1
+    (sessions / "s.jsonl").write_text("{}\n")
+    now, mtime = map(int, subprocess.run(["sh", "-c", cmd], capture_output=True, text=True).stdout.split())
+    assert 0 <= now - mtime < 60

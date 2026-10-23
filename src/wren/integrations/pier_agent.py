@@ -64,11 +64,17 @@ class WrenAgent(BaseInstalledAgent):
         keys = {model.key_env: self._get_env(model.key_env)} if model.key_env else {}
         env = self.build_process_env(keys)
         env["WREN_HOME"] = support.WREN_HOME
-        await self.exec_as_agent(
+
+        async def probe() -> str:
+            return (await environment.exec(support.IDLE_COMMAND, timeout_sec=60)).stdout or ""
+
+        # A hung trial fails as AgentStalledError, which a resume reruns, instead
+        # of idling to the agent timeout and grading whatever it left.
+        await support.watch(self.exec_as_agent(
             environment,
             command=support.run_command(instruction, model, self.build_cli_flags()),
             env=env,
-        )
+        ), probe)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         run = support.read_run(self.logs_dir)
