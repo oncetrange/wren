@@ -85,13 +85,14 @@ def test_calibrate_from_repeated_and_single_measurements():
 def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(evolve, "ROOT", tmp_path)
     monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")
+    monkeypatch.setattr(evolve, "ACCOUNTS", tmp_path / "accounts.json")
     monkeypatch.setattr(evolve, "load_split", lambda: {"evolve": ["a", "b"]})
     cfg = {"dataset": "tasks", "env": "modal", "n_concurrent": 2, "model": "m", "agent_env": [],
            "agent_kwargs": {"time_limit": 170}}
     job = tmp_path / "jobs" / "bench-x"
     calls: list[list[str]] = []
 
-    def pier(cmd, cwd, check):
+    def pier(cmd, cwd, check, env):
         calls.append(cmd)
         if cmd[1] == "run":   # one trial graded, then the sandbox provider fails the other
             job.mkdir(parents=True)
@@ -115,3 +116,59 @@ def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.Mo
     evolve.eval_path("x").unlink()
     with pytest.raises(SystemExit, match="ran"):
         evolve.run_eval("def", {}, "evolve", 1, "x", cfg)
+    # Nor one sized another way.
+    with pytest.raises(SystemExit, match="resources"):
+        evolve.run_eval("abc", {}, "evolve", 1, "x", cfg | {"resources": {"cpus": "limit", "memory": "limit"}})
+    assert not (tmp_path / "accounts.json").exists()   # no accounts listed: Modal's active profile
+
+
+def test_a_spent_modal_account_hands_the_job_to_the_next(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "ROOT", tmp_path)
+    monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")
+    monkeypatch.setattr(evolve, "ACCOUNTS", tmp_path / "accounts.json")
+    monkeypatch.setattr(evolve, "load_split", lambda: {"evolve": ["a", "b"]})
+    (tmp_path / "accounts.json").write_text(json.dumps({"profiles": ["me", "ann", "bob"],
+                                                        "jobs": {"bench-y": "me"}}))
+    cfg = {"dataset": "tasks", "env": "modal", "n_concurrent": 2, "model": "m", "agent_env": [],
+           "agent_kwargs": {}, "resources": {"cpus": "limit", "memory": "limit"}}
+    job = tmp_path / "jobs" / "bench-x"
+    calls: list[tuple[list[str], str]] = []
+
+    def spend_limit(name: str) -> None:
+        write_trial(job, name, "b", None)
+        r = json.loads((job / name / "result.json").read_text())
+        r["exception_info"] = {"exception_type": "ResourceExhaustedError",
+                               "exception_message": "Workspace ac-1 has exceeded its spend limit"}
+        (job / name / "result.json").write_text(json.dumps(r))
+
+    def pier(cmd, cwd, check, env):
+        calls.append((cmd, env["MODAL_PROFILE"]))
+        if cmd[1] == "run":
+            job.mkdir(parents=True)
+            (job / "config.json").write_text(json.dumps({
+                "agents": [{"model_name": "m", "kwargs": {"version": "abc"}}],
+                "environment": {"cpu_enforcement_policy": "limit", "memory_enforcement_policy": "limit"}}))
+            write_trial(job, "a__1", "a", 1)
+            spend_limit("b__1")
+        elif len(calls) == 2:   # the next account is spent too
+            shutil.rmtree(job / "b__1")
+            spend_limit("b__2")
+        else:
+            shutil.rmtree(job / "b__2")
+            write_trial(job, "b__3", "b", 1)
+
+    monkeypatch.setattr(evolve.subprocess, "run", pier)
+    ev = evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
+    assert ev is not None and evolve.aggregate(ev, "reward")["S"] == 1.0
+    # A new job goes to the account given the fewest jobs; each spent one hands it on.
+    assert [p for _, p in calls] == ["ann", "bob", "me"]
+    run = calls[0][0]
+    assert run[run.index("--cpus"):][:4] == ["--cpus", "limit", "--memory", "limit"]
+    assert calls[1][0][-2:] == ["-f", "ResourceExhaustedError"]
+    state = json.loads((tmp_path / "accounts.json").read_text())
+    assert state["jobs"]["bench-x"] == "me" and set(state["spent"]) == {"ann", "bob"}
+    # With every account spent, a measurement stops before starting Pier.
+    evolve.mark_spent("me")
+    with pytest.raises(SystemExit, match="every Modal account"):
+        evolve.run_eval("abc", {}, "evolve", 1, "z", cfg)
+    assert len(calls) == 3
