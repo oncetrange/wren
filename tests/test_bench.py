@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -92,21 +93,23 @@ def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.Mo
 
     def pier(cmd, cwd, check):
         calls.append(cmd)
-        if cmd[1] == "run":   # dies after one trial
+        if cmd[1] == "run":   # one trial graded, then the sandbox provider fails the other
             job.mkdir(parents=True)
             (job / "config.json").write_text(json.dumps({"agents": [
                 {"model_name": "m", "kwargs": {"version": "abc", "time_limit": 170}}]}))
             write_trial(job, "a__1", "a", 1, kwargs={"time_limit": 170})
-        else:
-            write_trial(job, "b__1", "b", 0, kwargs={"time_limit": 170})
+            write_trial(job, "b__1", "b", None, kwargs={"time_limit": 170})   # RuntimeError
+        else:                 # -f drops the failed trial, which then runs again
+            shutil.rmtree(job / "b__1")
+            write_trial(job, "b__2", "b", 0, kwargs={"time_limit": 170})
 
     monkeypatch.setattr(evolve.subprocess, "run", pier)
-    with pytest.raises(SystemExit, match="1/2 trials finished"):
+    with pytest.raises(SystemExit, match=r"1/2 trials finished \(RuntimeError on the rest\)"):
         evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
     assert not evolve.eval_path("x").exists()
     # The same call goes on with the job instead of starting over.
     ev = evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
-    assert calls[1] == ["pier", "job", "resume", "-p", str(job)]
+    assert calls[1] == ["pier", "job", "resume", "-p", str(job), "-f", "RuntimeError"]
     assert ev is not None and evolve.aggregate(ev, "reward")["S"] == 0.5
     # A job of another harness under the name is never resumed into this measurement.
     evolve.eval_path("x").unlink()
