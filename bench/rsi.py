@@ -60,6 +60,29 @@ EDITABLE = ("src/wren/", "tests/", "docs/")
 FROZEN = ("src/wren/integrations/",)
 EDIT_FIELDS = ("id", "component", "hypothesis", "targets_mode", "why_not_lower_lever",
                "trigger_condition", "predicted_affected", "retroactive_check")
+# Which components a change to a file can be: a declared component must show in the diff,
+# and every change to a mapped file must fall under a declared one (RRSI's component_signals).
+# The first matching prefix wins; other files under src/wren/ (the CLI, providers, new
+# modules) back no component and need none. config is a constant's new value, in any file.
+COMPONENT_SIGNALS = (
+    ("src/wren/agent/prompt.py", ("prompt",)),
+    ("src/wren/agent/plans.py", ("prompt", "control_flow")),
+    ("src/wren/agent/compact.py", ("context_mgmt",)),
+    ("src/wren/agent/conversation.py", ("context_mgmt",)),
+    ("src/wren/agent/subagents.py", ("subagent",)),
+    ("src/wren/agent/remember.py", ("memory",)),
+    ("src/wren/agent/", ("control_flow",)),
+    ("src/wren/tools/memory.py", ("memory",)),
+    ("src/wren/tools/skill.py", ("skill",)),
+    ("src/wren/tools/", ("tools",)),
+    ("src/wren/memory.py", ("memory",)),
+    ("src/wren/skills.py", ("skill",)),
+)
+CONSTANT = re.compile(r"^\+\s*[A-Z][A-Z0-9_]*\s*(?::[^=]+)?=", re.M)
+# Never required by a stalled run's exploration slot: memory can't carry anything from one
+# trial to the next (each starts with an empty ~/.wren, and memory is off headless), and no
+# skill reaches a trial unless the harness ships one. Both can still be declared.
+NOT_EXPLORED = ("memory", "skill")
 # Candidates are drafted in parallel; git commands on the shared repo (worktrees, pushes) take turns.
 _GIT_LOCK = threading.Lock()
 
@@ -122,9 +145,9 @@ def stalled(trajectory: list[float], t: int, window: int, delta: float) -> bool:
 
 
 def untried(history: list[dict]) -> list[str]:
-    """Components no measured edit has touched yet."""
+    """Components no measured edit has touched yet, but those a benchmark trial can't reward."""
     tried = {r["component"] for r in history if r.get("delta_S") is not None}
-    return [c for c in COMPONENTS if c not in tried]
+    return [c for c in COMPONENTS if c not in tried and c not in NOT_EXPLORED]
 
 
 def prune_set(history: list[dict], t: int, n_prune: int) -> list[dict]:
@@ -419,6 +442,34 @@ def check_declaration(edits: object, files: list[str], budget: int, explore: lis
     return problems
 
 
+def file_components(path: str) -> tuple[str, ...]:
+    return next((comps for prefix, comps in COMPONENT_SIGNALS if path.startswith(prefix)), ())
+
+
+def split_diff(diff: str) -> dict[str, str]:
+    """A unified diff by file (its new path)."""
+    out: dict[str, str] = {}
+    for chunk in re.split(r"^(?=diff --git )", diff, flags=re.M):
+        if m := re.match(r"diff --git a/\S+ b/(\S+)", chunk):
+            out[m.group(1)] = chunk
+    return out
+
+
+def check_components(edits: list, diff: str) -> list[str]:
+    """Whether the declared components match what the diff touches; [] if they do."""
+    declared = {str(e.get("component", "")).lower() for e in edits if isinstance(e, dict)}
+    files = split_diff(diff)
+    tuned = {f for f, d in files.items() if f.startswith("src/wren/") and CONSTANT.search(d)}
+    shown = {c for f in files for c in file_components(f)} | ({"config"} if tuned else set())
+    problems = [f"component {c} is declared, but the diff changes nothing that is {c}"
+                for c in sorted(declared & set(COMPONENTS) - shown)]
+    for f in files:
+        comps = (*file_components(f), *(("config",) if f in tuned else ()))
+        if file_components(f) and not declared & set(comps):
+            problems.append(f"{f} changes {' or '.join(comps)}, which no edit declares")
+    return problems
+
+
 def run_checks(wt: Path, checks: list[list[str]]) -> str | None:
     """The repo's own checks in the worktree: None if they pass, else the failing output."""
     for cmd in checks:
@@ -497,6 +548,8 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
             problems = [f"{EDITS_FILE} is missing or not JSON ({e})"]
         else:
             problems = check_declaration(edits, changed_files(wt, base), budget, explore, tasks)
+            if not problems:
+                problems = check_components(edits, diff_text(wt, base))
         out["edits"] = edits if isinstance(edits, list) else []
         stage = "declaration"
         if not problems and (failure := run_checks(wt, rc["checks"])):

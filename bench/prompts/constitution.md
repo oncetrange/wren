@@ -54,9 +54,16 @@ Two regularizers shape what you may propose:
   tasks actually improved and which tasks it broke that it didn't predict. A
   rejected mechanism is negative evidence: don't redraw it unchanged. When the
   incumbent hasn't moved by more than delta for a few rounds, one candidate
-  must try a component no measured edit has touched. Components whose accepted
+  must try a component no measured edit has touched (memory and skill are never
+  required: no trial can reward them today). Components whose accepted
   machinery stopped paying are listed for pruning; removing that machinery is a
   legitimate edit.
+- **Components are checked against the diff.** The bracketed files under
+  Levers decide what a change is: a declared component must show in the diff,
+  and every change to those files must fall under a declared component. A new
+  constant value in any file is config. Files not listed there (the CLI,
+  providers, a new module) count for nothing, so a new module is the component
+  of the file that wires it in.
 
 ## The overfitting trap (read first)
 
