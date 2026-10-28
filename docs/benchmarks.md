@@ -95,10 +95,12 @@ Each round:
    predicting them. Other limits:
    - an edit budget that shrinks over the run, from `b_max` edits per candidate to `b_min`;
    - after `stall_window` rounds without a gain above the noise band, an edit on a component
-     never tried;
+     never tried (other than memory and skill, which no trial can reward today);
    - an offer to remove accepted machinery that stopped paying.
 3. **Screen.** A candidate is checked before it is measured:
-   - its declaration;
+   - its declaration. Each edit's component is then read from the diff: one the diff doesn't
+     show is re-tagged to what it does, and an exploration slot counts only what the diff shows
+     (a system-prompt edit can't pass as subagent work);
    - the repo's checks (ruff, pyright, pytest);
    - a scan of the diff for task names, grader files and credentials;
    - a critic that rejects logic aimed at particular tasks, a gamed grader, or changes it doesn't

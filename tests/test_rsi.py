@@ -38,6 +38,7 @@ def test_stall_untried_and_prune():
         {"t": 5, "component": "context_mgmt", "delta_S": 0.2, "accepted": True},
     ]
     assert "tools" in rsi.untried(history) and "prompt" not in rsi.untried(history)
+    assert "memory" not in rsi.untried(history)   # no trial can reward it: never forced
     # prompt's machinery is in the incumbent, and its edits stopped paying in the last 4 rounds.
     assert [p["component"] for p in rsi.prune_set(history, 6, n_prune=4)] == ["prompt"]
 
@@ -106,6 +107,33 @@ def test_check_declaration():
     assert rsi.check_declaration([EDIT | {"predicted_affected": "b"}], ["src/wren/x.py"], 1, [], tasks)
 
 
+def diff(path: str, *added: str) -> str:
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n"
+            + "".join(f"+{line}\n" for line in added))
+
+
+def test_tag_components():
+    def tags(*components: str, diff_: str) -> list[str]:
+        return rsi.tag_components([EDIT | {"component": c} for c in components], diff_)
+
+    assert tags("tools", diff_=diff("src/wren/tools/shell.py", "    return out")) == ["tools"]
+    # A prompt edit dressed up as subagent work, to fill an exploration slot, is recorded as prompt.
+    assert tags("subagent", diff_=diff("src/wren/agent/prompt.py", '"Delegate to the task tool."')) == ["prompt"]
+    # Text alone is prompt even in a file of another component; code there is that component.
+    assert tags("subagent", diff_=diff("src/wren/agent/subagents.py", '    "Explore first."')) == ["prompt"]
+    assert tags("subagent", diff_=diff("src/wren/agent/subagents.py", "    brief = task")) == ["subagent"]
+    # plans.py holds reminders (prompt) and when they fire (control_flow).
+    assert tags("control_flow", diff_=diff("src/wren/agent/plans.py", "if turns > 3:")) == ["control_flow"]
+    # config is a constant's new value, wherever it lives.
+    assert tags("config", diff_=diff("src/wren/agent/compact.py", "KEEP_TURNS = 6")) == ["config"]
+    assert tags("config", diff_=diff("src/wren/agent/compact.py", "    keep = 6")) == ["context_mgmt"]
+    # Two edits: the mislabelled one takes what the diff shows that the other doesn't claim.
+    both = diff("src/wren/tools/files.py", "x = 1") + diff("src/wren/agent/compact.py", "    keep = 6")
+    assert tags("tools", "subagent", diff_=both) == ["tools", "context_mgmt"]
+    # Tests, docs and unmapped modules show nothing.
+    assert tags("tools", diff_=diff("tests/test_tools.py", "x") + diff("src/wren/cli/app.py", "x")) == ["prompt"]
+
+
 def test_attribute_and_scoreboard():
     inc = {"k": 2, "per_task": {"a": trials(1, 1), "b": trials(0, 0), "c": trials(0, 1), "d": trials(1, 0)}}
     cand = {"k": 2, "per_task": {"a": trials(0, 1), "b": trials(1, 0), "c": trials(1, 1), "d": trials(1, 0)}}
@@ -162,8 +190,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     remote, root = tmp_path / "remote.git", tmp_path / "repo"
     sh("git", "init", "-q", "--bare", str(remote), cwd=tmp_path)
     sh("git", "init", "-q", "-b", "main", str(root), cwd=tmp_path)
-    (root / "src" / "wren").mkdir(parents=True)
-    (root / "src" / "wren" / "prompt.py").write_text("PROMPT = 'be good'\n")
+    (root / "src" / "wren" / "agent").mkdir(parents=True)
+    (root / "src" / "wren" / "agent" / "prompt.py").write_text("PROMPT = 'be good'\n")
     for cmd in (["git", "config", "user.email", "t@t"], ["git", "config", "user.name", "t"],
                 ["git", "add", "-A"], ["git", "commit", "-q", "-m", "init"],
                 ["git", "remote", "add", "origin", str(remote)], ["git", "push", "-q", "origin", "main"]):
@@ -200,7 +228,7 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
         variant = 1 if "candidate 1" in text else 2
         if variant == 1 and "previous attempt" not in text:   # first try: nothing declared
             return {"status": "done", "result": "done"}
-        (cwd / "src" / "wren" / "prompt.py").write_text(f"PROMPT = 'be good, v{variant}'\n")
+        (cwd / "src" / "wren" / "agent" / "prompt.py").write_text(f"PROMPT = 'be good, v{variant}'\n")
         (cwd / rsi.EDITS_FILE).write_text(json.dumps([EDIT | {"hypothesis": f"variant {variant}"}]))
         return {"status": "done", "result": f"changed the prompt (v{variant})"}
 
