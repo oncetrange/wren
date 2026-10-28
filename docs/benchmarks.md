@@ -98,8 +98,9 @@ Each round:
      never tried (other than memory and skill, which no trial can reward today);
    - an offer to remove accepted machinery that stopped paying.
 3. **Screen.** A candidate is checked before it is measured:
-   - its declaration, including whether each declared component shows in the files the diff
-     touches (a system-prompt edit can't be passed off as subagent work);
+   - its declaration. Each edit's component is then read from the diff: one the diff doesn't
+     show is re-tagged to what it does, and an exploration slot counts only what the diff shows
+     (a system-prompt edit can't pass as subagent work);
    - the repo's checks (ruff, pyright, pytest);
    - a scan of the diff for task names, grader files and credentials;
    - a critic that rejects logic aimed at particular tasks, a gamed grader, or changes it doesn't

@@ -108,27 +108,30 @@ def test_check_declaration():
 
 
 def diff(path: str, *added: str) -> str:
-    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n"
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n"
             + "".join(f"+{line}\n" for line in added))
 
 
-def test_check_components():
-    tools = EDIT | {"component": "tools"}
-    assert rsi.check_components([tools], diff("src/wren/tools/shell.py", "    return out")) == []
-    # A prompt edit dressed up as subagent work, to fill an exploration slot.
-    dressed = rsi.check_components([EDIT | {"component": "subagent"}],
-                                   diff("src/wren/agent/prompt.py", "Delegate to the task tool."))
-    assert any("subagent is declared" in p for p in dressed)
-    assert any("prompt.py changes prompt" in p for p in dressed)
+def test_tag_components():
+    def tags(*components: str, diff_: str) -> list[str]:
+        return rsi.tag_components([EDIT | {"component": c} for c in components], diff_)
+
+    assert tags("tools", diff_=diff("src/wren/tools/shell.py", "    return out")) == ["tools"]
+    # A prompt edit dressed up as subagent work, to fill an exploration slot, is recorded as prompt.
+    assert tags("subagent", diff_=diff("src/wren/agent/prompt.py", '"Delegate to the task tool."')) == ["prompt"]
+    # Text alone is prompt even in a file of another component; code there is that component.
+    assert tags("subagent", diff_=diff("src/wren/agent/subagents.py", '    "Explore first."')) == ["prompt"]
+    assert tags("subagent", diff_=diff("src/wren/agent/subagents.py", "    brief = task")) == ["subagent"]
     # plans.py holds reminders (prompt) and when they fire (control_flow).
-    assert rsi.check_components([EDIT | {"component": "control_flow"}], diff("src/wren/agent/plans.py", "x")) == []
-    # config is a constant's new value, wherever it lives; a non-constant change still needs its own.
-    config = EDIT | {"component": "config"}
-    assert rsi.check_components([config], diff("src/wren/agent/compact.py", "KEEP_TURNS = 6")) == []
-    assert rsi.check_components([config], diff("src/wren/agent/compact.py", "    keep = 6"))
-    # Tests, docs and unmapped modules neither back a component nor need one.
-    assert rsi.check_components([tools], diff("src/wren/tools/files.py", "x") + diff("tests/test_tools.py", "x")
-                                + diff("src/wren/cli/app.py", "x")) == []
+    assert tags("control_flow", diff_=diff("src/wren/agent/plans.py", "if turns > 3:")) == ["control_flow"]
+    # config is a constant's new value, wherever it lives.
+    assert tags("config", diff_=diff("src/wren/agent/compact.py", "KEEP_TURNS = 6")) == ["config"]
+    assert tags("config", diff_=diff("src/wren/agent/compact.py", "    keep = 6")) == ["context_mgmt"]
+    # Two edits: the mislabelled one takes what the diff shows that the other doesn't claim.
+    both = diff("src/wren/tools/files.py", "x = 1") + diff("src/wren/agent/compact.py", "    keep = 6")
+    assert tags("tools", "subagent", diff_=both) == ["tools", "context_mgmt"]
+    # Tests, docs and unmapped modules show nothing.
+    assert tags("tools", diff_=diff("tests/test_tools.py", "x") + diff("src/wren/cli/app.py", "x")) == ["prompt"]
 
 
 def test_attribute_and_scoreboard():

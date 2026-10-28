@@ -60,10 +60,10 @@ EDITABLE = ("src/wren/", "tests/", "docs/")
 FROZEN = ("src/wren/integrations/",)
 EDIT_FIELDS = ("id", "component", "hypothesis", "targets_mode", "why_not_lower_lever",
                "trigger_condition", "predicted_affected", "retroactive_check")
-# Which components a change to a file can be: a declared component must show in the diff,
-# and every change to a mapped file must fall under a declared one (RRSI's component_signals).
-# The first matching prefix wins; other files under src/wren/ (the CLI, providers, new
-# modules) back no component and need none. config is a constant's new value, in any file.
+# Which components a change to a file shows (RRSI's component_signals): an edit is recorded
+# under its declared component only when the diff shows it. The first matching prefix wins;
+# other files under src/wren/ (the CLI, providers, new modules) show nothing. A change that
+# only touches strings and comments is prompt, and a constant's new value, in any file, config.
 COMPONENT_SIGNALS = (
     ("src/wren/agent/prompt.py", ("prompt",)),
     ("src/wren/agent/plans.py", ("prompt", "control_flow")),
@@ -79,6 +79,7 @@ COMPONENT_SIGNALS = (
     ("src/wren/skills.py", ("skill",)),
 )
 CONSTANT = re.compile(r"^\+\s*[A-Z][A-Z0-9_]*\s*(?::[^=]+)?=", re.M)
+TEXT_LINE = re.compile(r'^[+-]\s*(?:[frb]?["\']|#)')
 # Never required by a stalled run's exploration slot: memory can't carry anything from one
 # trial to the next (each starts with an empty ~/.wren, and memory is off headless), and no
 # skill reaches a trial unless the harness ships one. Both can still be declared.
@@ -455,19 +456,35 @@ def split_diff(diff: str) -> dict[str, str]:
     return out
 
 
-def check_components(edits: list, diff: str) -> list[str]:
-    """Whether the declared components match what the diff touches; [] if they do."""
-    declared = {str(e.get("component", "")).lower() for e in edits if isinstance(e, dict)}
-    files = split_diff(diff)
-    tuned = {f for f, d in files.items() if f.startswith("src/wren/") and CONSTANT.search(d)}
-    shown = {c for f in files for c in file_components(f)} | ({"config"} if tuned else set())
-    problems = [f"component {c} is declared, but the diff changes nothing that is {c}"
-                for c in sorted(declared & set(COMPONENTS) - shown)]
-    for f in files:
-        comps = (*file_components(f), *(("config",) if f in tuned else ()))
-        if file_components(f) and not declared & set(comps):
-            problems.append(f"{f} changes {' or '.join(comps)}, which no edit declares")
-    return problems
+def text_only(diff: str) -> bool:
+    """Every changed line is a string literal or a comment: model-facing text."""
+    changed = [line for line in diff.splitlines() if line[:1] in "+-"
+               and not line.startswith(("+++", "---")) and line[1:].strip()]
+    return bool(changed) and all(TEXT_LINE.match(line) for line in changed)
+
+
+def evidenced(diff: str) -> list[str]:
+    """The components a diff shows, in COMPONENTS order."""
+    shown: set[str] = set()
+    for f, d in split_diff(diff).items():
+        if comps := file_components(f):
+            shown |= {"prompt"} if text_only(d) else set(comps)
+        if f.startswith("src/wren/") and CONSTANT.search(d):
+            shown.add("config")
+    return [c for c in COMPONENTS if c in shown]
+
+
+def tag_components(edits: list, diff: str) -> list[str]:
+    """The component each edit is recorded under: the declared one if the diff shows it,
+    else one the diff shows and no other edit claims (prompt if it shows none). Like
+    RRSI, a mislabel is re-tagged, not rejected: arguing labels costs a candidate."""
+    shown = evidenced(diff)
+    declared = [str(e.get("component", "")).lower() for e in edits]
+    tags: list[str] = []
+    for d in declared:
+        free = [c for c in shown if c not in declared and c not in tags]
+        tags.append(d if d in shown else (free or shown or ["prompt"])[0])
+    return tags
 
 
 def run_checks(wt: Path, checks: list[list[str]]) -> str | None:
@@ -530,6 +547,7 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
     log = vdir / "propose.log"
     feedback = ""
     edits: list = []
+    tags: list[str] = []
     out: dict = {"variant": variant, "status": "dropped", "edits": []}
     tasks = split["evolve"]
     for attempt in range(rc["repair_rounds"] + 1):
@@ -549,7 +567,10 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
         else:
             problems = check_declaration(edits, changed_files(wt, base), budget, explore, tasks)
             if not problems:
-                problems = check_components(edits, diff_text(wt, base))
+                tags = tag_components(edits, diff_text(wt, base))
+                if explore and not any(c in explore for c in tags):
+                    problems = [f"this round reserves an edit for an untried component ({', '.join(explore)}), "
+                                f"judged by the diff, which reads as {', '.join(dict.fromkeys(tags))}"]
         out["edits"] = edits if isinstance(edits, list) else []
         stage = "declaration"
         if not problems and (failure := run_checks(wt, rc["checks"])):
@@ -573,6 +594,11 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
         out["outcome"] = f"dropped in screening ({out['detail'].split(':')[0]})"
         save_json(saved, out)
         return out
+    for e, tag in zip(edits, tags, strict=True):
+        if tag != str(e.get("component", "")).lower():
+            print(f"  v{variant}: edit {e.get('id')} declared {e.get('component')}, "
+                  f"but the diff reads as {tag}: re-tagged")
+            e["declared_component"], e["component"] = e.get("component"), tag
     git("-C", str(wt), "add", "-A", "--", ".", f":!{EDITS_FILE}")
     summary = "; ".join(f"{e.get('component')}: {e.get('hypothesis')}" for e in edits)
     git("-C", str(wt), "commit", "-q", "-m", f"rsi({run}): round {t}, variant {variant}\n\n{summary}")
@@ -692,6 +718,7 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
         for e, attr in zip(edits, attribution, strict=True):
             records.append({
                 "t": t, "variant": c["variant"], "edit_id": e.get("id"), "component": e.get("component"),
+                **({"declared_component": e["declared_component"]} if "declared_component" in e else {}),
                 "hypothesis": e.get("hypothesis"), "predicted_affected": e.get("predicted_affected"),
                 "bundle": len(c["edits"]), "sha": c.get("sha"),
                 "delta_S": v["delta_S"] if v else None, "delta_C": v["delta_C"] if v else None,

@@ -58,12 +58,14 @@ Two regularizers shape what you may propose:
   required: no trial can reward them today). Components whose accepted
   machinery stopped paying are listed for pruning; removing that machinery is a
   legitimate edit.
-- **Components are checked against the diff.** The bracketed files under
-  Levers decide what a change is: a declared component must show in the diff,
-  and every change to those files must fall under a declared component. A new
-  constant value in any file is config. Files not listed there (the CLI,
-  providers, a new module) count for nothing, so a new module is the component
-  of the file that wires it in.
+- **Components are read from the diff.** The files under Levers decide what a
+  change is: a change that only touches strings and comments is prompt, a new
+  constant value in any file is config, and other changes are the component of
+  their file. Files not listed there (the CLI, providers, a new module) show
+  nothing, so a new module is the component of the file that wires it in. An
+  edit whose declared component the diff doesn't show is recorded under what
+  the diff shows, and an exploration slot is honored only by what the diff
+  shows.
 
 ## The overfitting trap (read first)
 
