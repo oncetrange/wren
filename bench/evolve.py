@@ -202,10 +202,13 @@ def judge(cand: dict, inc: dict, s_star: float, delta: float, cfg: dict) -> dict
         out["reason"] = (f"gain {d_s:+.4f} > delta {delta:.4f}; tokens {d_c:+.1%} "
                          f"{'within' if out['admissible'] else 'over'} budget {budget:+.1%}")
     else:
-        shaped = cfg["w_s"] * d_s - cfg["w_c"] * d_c
+        # Inside the band a gain counts for nothing (it may be noise), but a loss counts
+        # against the tokens saved: otherwise the cheapest way in is an agent that gives up
+        # sooner, scoring a little less on fewer tokens.
+        shaped = cfg["w_s"] * min(d_s, 0.0) - cfg["w_c"] * d_c
         out["admissible"] = shaped > 0
         out["reason"] = (f"gain {d_s:+.4f} within delta {delta:.4f}; "
-                         f"{cfg['w_s']}*dS - {cfg['w_c']}*dC = {shaped:+.4f} "
+                         f"{cfg['w_s']}*min(dS, 0) - {cfg['w_c']}*dC = {shaped:+.4f} "
                          f"{'>' if out['admissible'] else '<='} 0")
     return out
 

@@ -1,5 +1,5 @@
 {
- "_doc": "Settings for bench/evolve.py. A harness is a wren commit plus the agent kwargs it runs with. S is the mean of `metric` over tasks x k trials (a trial without a grade counts 0); C is mean policy tokens (input + output) per trial. delta: noise band, null = use bench/runs/calibration.json. Acceptance follows RRSI Algorithm 2: S' >= S* - delta; a gain above delta may grow tokens by at most beta0 + beta1 * gain (beta1 = 5: one more passing trial of 20 buys 25% more tokens); inside the band, w_s * gain - w_c * token change must be > 0 (w_s = 0: only a token saving gets in). resources: Pier's --cpus/--memory policy; \"limit\" bills what a trial uses instead of the task's full spec, and every measurement that is compared must use the same one.",
+ "_doc": "Settings for bench/evolve.py. A harness is a wren commit plus the agent kwargs it runs with. S is the mean of `metric` over tasks x k trials (a trial without a grade counts 0); C is mean policy tokens (input + output) per trial. delta: noise band, null = use bench/runs/calibration.json. Acceptance follows RRSI Algorithm 2: S' >= S* - delta; a gain above delta may grow tokens by at most beta0 + beta1 * gain (beta1 = 5: one more passing trial of 20 buys 25% more tokens); inside the band, w_s * min(gain, 0) - w_c * token change must be > 0: only a token saving gets in, and a loss must be paid for with it (w_s = 100, w_c = 15: one trial fewer passing of 60 takes 11% fewer tokens). resources: Pier's --cpus/--memory policy; \"limit\" bills what a trial uses instead of the task's full spec, and every measurement that is compared must use the same one.",
  "dataset": "deep-swe/tasks",
  "env": "modal",
  "resources": {"cpus": "limit", "memory": "limit"},
@@ -14,7 +14,7 @@
  "delta_z": 2.0,
  "beta0": 0.10,
  "beta1": 5.0,
- "w_s": 0.0,
+ "w_s": 100.0,
  "w_c": 15.0,
  "rsi": {
   "_doc": "Settings for bench/rsi.py (defaults in rsi.DEFAULTS). The proposer, digester, analyst and critic are the installed `wren` run headless with these models (null: its default model); keep them apart from the policy model above. b_t, the edit budget per candidate, anneals from b_max to b_min over T rounds; after stall_window rounds with no gain above delta, a candidate must try a component never tried.",

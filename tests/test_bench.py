@@ -55,9 +55,13 @@ def test_judge_floor_cost_rule_and_band():
     # A real gain pays for its tokens: +0.2 buys up to 10% + 5 * 0.2 = 110%.
     assert evolve.judge({"S": 0.70, "C": 200.0}, inc, 0.50, 0.1, CFG)["admissible"]
     assert not evolve.judge({"S": 0.70, "C": 220.0}, inc, 0.50, 0.1, CFG)["admissible"]
-    # Inside the band only a token saving gets in (w_s = 0).
-    assert evolve.judge({"S": 0.55, "C": 90.0}, inc, 0.50, 0.1, CFG)["admissible"]
-    assert not evolve.judge({"S": 0.55, "C": 100.0}, inc, 0.50, 0.1, CFG)["admissible"]
+    # Inside the band only a token saving gets in, and a gain there buys nothing.
+    band = CFG | {"w_s": 100.0}
+    assert evolve.judge({"S": 0.55, "C": 90.0}, inc, 0.50, 0.1, band)["admissible"]
+    assert not evolve.judge({"S": 0.55, "C": 100.0}, inc, 0.50, 0.1, band)["admissible"]
+    # A loss must be paid for with tokens: -0.02 costs 100 * 0.02 = 2, worth 2 / 15 = 13% fewer.
+    assert not evolve.judge({"S": 0.48, "C": 90.0}, inc, 0.50, 0.1, band)["admissible"]
+    assert evolve.judge({"S": 0.48, "C": 85.0}, inc, 0.50, 0.1, band)["admissible"]
     # Never below the best incumbent so far minus the band, however cheap.
     v = evolve.judge({"S": 0.45, "C": 10.0}, inc, 0.60, 0.1, CFG)
     assert not v["admissible"] and "floor" in v["reason"]
