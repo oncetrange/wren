@@ -41,6 +41,11 @@ python bench/evolve.py judge <name> --component context_mgmt --hypothesis "..."
 python bench/evolve.py status                     # incumbent, delta, ledger
 ```
 
+The noise band comes from the trials of both measurements, pooled per task: how much S would move
+if each task's trials came out differently, which is far steadier than the gap between the two
+scores, a single draw. `calibrate` still reports that gap, and warns when it is more than twice
+what the trials predict, a sign that something hit many trials of one measurement at once.
+
 A trial without a grade counts as a failure. A candidate is accepted only if it doesn't fall
 below the best score so far minus delta, and pays for any extra tokens with a gain larger than
 delta (inside the band, only a token saving gets in). Every verdict, rejections included, goes into

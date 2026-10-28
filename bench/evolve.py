@@ -6,7 +6,7 @@ single trial, and every verdict goes into a ledger, rejected ideas included.
 
     python bench/evolve.py eval main                  # run Pier on the evolve set, score it
     python bench/evolve.py eval main                  # again: a second measurement of the same harness
-    python bench/evolve.py calibrate <name> <name>    # noise band delta from repeated measurements
+    python bench/evolve.py calibrate <name> <name>    # noise band delta from the trials of two measurements
     python bench/evolve.py baseline <name>            # make a measurement the incumbent
     python bench/evolve.py eval my-branch --ak mask_at=80000
     python bench/evolve.py judge <name> --component context_mgmt --hypothesis "..."
@@ -165,8 +165,12 @@ def bootstrap_se(evals: list[dict], metric: str, reps: int = 2000, seed: int = 7
 
 def calibrate(evals: list[dict], metric: str, z: float) -> dict:
     """delta = z * sd of the difference between two measurements of the same
-    harness: observed directly from repeated measurements when there are two or
-    more, otherwise bootstrapped from the trials of one (which needs k >= 2)."""
+    harness, bootstrapped from the trials of all of them pooled per task (one
+    needs k >= 2). The spread of their scores is reported beside it but not
+    used: two scores are a single draw of the difference, while every task that
+    flips adds to the bootstrap. It is the one estimate that would see noise
+    shared across trials (a slow provider), so a spread far above the bootstrap
+    is flagged."""
     scores = [aggregate(ev, metric)["S"] for ev in evals]
     se = bootstrap_se(evals, metric)
     # The bootstrap sees each task's plug-in variance, low by n/(n-1) for n
@@ -174,12 +178,12 @@ def calibrate(evals: list[dict], metric: str, z: float) -> dict:
     # len(evals) times the trials of one measurement.
     n = sum(ev["k"] for ev in evals)
     sd_boot = math.sqrt(2) * se * math.sqrt(len(evals)) * math.sqrt(n / (n - 1))
-    sd_repeat = statistics.stdev(scores) * math.sqrt(2) if len(scores) >= 2 else 0.0
-    sd = sd_repeat if sd_repeat > 0 else sd_boot
-    return {"delta": round(z * sd, 4), "z": z, "metric": metric, "sd_null": round(sd, 4),
-            "sd_null_bootstrap": round(sd_boot, 4), "S_per_eval": [round(s, 4) for s in scores],
-            "evals": [ev["name"] for ev in evals],
-            "method": "repeated measurements" if sd_repeat > 0 else "bootstrap over trials"}
+    sd_repeat = statistics.stdev(scores) * math.sqrt(2) if len(scores) >= 2 else None
+    return {"delta": round(z * sd_boot, 4), "z": z, "metric": metric, "sd_null": round(sd_boot, 4),
+            "sd_null_repeat": None if sd_repeat is None else round(sd_repeat, 4),
+            "shared_noise_suspected": sd_repeat is not None and sd_repeat > 2 * sd_boot,
+            "S_per_eval": [round(s, 4) for s in scores], "evals": [ev["name"] for ev in evals],
+            "method": "bootstrap over trials"}
 
 
 # --- selection: RRSI Algorithm 2 ---
@@ -471,6 +475,10 @@ def cmd_calibrate(args, cfg: dict) -> None:
     cal = calibrate(evals, cfg["metric"], cfg["delta_z"])
     save_json(CALIBRATION, cal)
     print(f"delta = {cal['delta']:.4f} ({cal['method']}; S per measurement {cal['S_per_eval']})")
+    if cal["shared_noise_suspected"]:
+        print(f"warning: the measurements differ by more than twice the trial noise predicts "
+              f"(sd {cal['sd_null_repeat']:.4f} vs {cal['sd_null']:.4f}): look for something that "
+              f"hit many trials of one of them (provider slowdowns, timeouts), or measure again")
 
 
 def cmd_baseline(args, cfg: dict) -> None:
