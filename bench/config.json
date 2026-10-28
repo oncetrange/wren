@@ -17,7 +17,7 @@
  "w_s": 0.0,
  "w_c": 15.0,
  "rsi": {
-  "_doc": "Settings for bench/rsi.py (defaults in rsi.DEFAULTS). The proposer, digester and critic are the installed `wren` run headless with these models (null: its default model); keep them apart from the policy model above. b_t, the edit budget per candidate, anneals from b_max to b_min over T rounds; after stall_window rounds with no gain above delta, a candidate must try a component never tried.",
+  "_doc": "Settings for bench/rsi.py (defaults in rsi.DEFAULTS). The proposer, digester, analyst and critic are the installed `wren` run headless with these models (null: its default model); keep them apart from the policy model above. b_t, the edit budget per candidate, anneals from b_max to b_min over T rounds; after stall_window rounds with no gain above delta, a candidate must try a component never tried.",
   "T": 8,
   "candidates": 2,
   "b_min": 1,
@@ -28,6 +28,7 @@
   "repair_rounds": 2,
   "proposer_model": "claude",
   "digest_model": "claude",
+  "analyst_model": "claude",
   "critic_model": "claude"
  }
 }

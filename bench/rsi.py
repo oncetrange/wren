@@ -13,7 +13,10 @@ harness changes.
 
 A round t:
   1. analyze: failed (and contrasting passed) trials of the incumbent are rendered
-     to text and digested one at a time by a read-only wren;
+     to text and digested one at a time by a read-only wren; an analyst wren
+     clusters the digests into a three-lens report (failure modes ranked by
+     impact, capability gaps, success habits), asking for follow-up digests
+     first if it needs them, and keeps the names stable across rounds;
   2. propose: in its own git worktree, wren edits its source under the rules of
      prompts/constitution.md, declaring each independent edit (component,
      hypothesis, trigger, predicted tasks, a retroactive check) in RSI_EDITS.json,
@@ -93,14 +96,18 @@ DEFAULTS = {
     "b_min": 1, "b_max": 3,    # edit budget, annealed from b_max to b_min
     "stall_window": 2,         # rounds without a gain above delta before exploring
     "n_prune": 4,              # rounds a component's best recent gain is looked back over
-    "max_digests": 12,         # trials digested per round
+    "max_digests": 12,         # trials digested per round before the analyst reads them
+    "max_followups": 6,        # further digests the analyst may ask for per turn
+    "analyst_rounds": 2,       # analyst turns: follow-ups, then the report
     "repair_rounds": 2,        # attempts to fix a candidate that fails screening
     "wren": "wren",            # the installed wren that does the work, not the one being changed
     "proposer_model": None,    # None: wren's default model; should not be the policy model
     "digest_model": None,
+    "analyst_model": None,
     "critic_model": None,
     "proposer_time_limit": 45,
     "digest_time_limit": 8,
+    "analyst_time_limit": 15,
     "checks": [["uv", "run", "ruff", "check"], ["uv", "run", "pyright"],
                ["uv", "run", "pytest", "-q", "-x", "-p", "no:cacheprovider"]],
     "remote": "origin",
@@ -285,6 +292,9 @@ def _render_block(role: str, b: dict, calls: dict[str, int]) -> str:
             return f"[{role} {b.get('type')}]"
 
 
+LENSES = ("failure", "capability_gap", "success")
+
+
 def choose_trials(ev: dict, metric: str, max_n: int) -> list[dict]:
     """Which trials to digest: on tasks that pass only sometimes a failure and a
     success (the contrast says most), then one failure of each task that never
@@ -350,45 +360,128 @@ def parse_json_reply(text: str) -> dict | None:
     return None
 
 
+def trial_index(ev: dict, task: str, lens: str, metric: str, taken: set) -> int | None:
+    """A logged trial of `task` that suits `lens` (a pass for success, else a
+    failure), preferring one not digested yet; None if there is none."""
+    fits = [j for j, t in enumerate(ev["per_task"].get(task) or [])
+            if t.get("dir") and (((t["scores"] or {}).get(metric) or 0) >= 1) == (lens == "success")]
+    return next((j for j in fits if (task, j, lens) not in taken), fits[0] if fits else None)
+
+
+def task_table(ev: dict, metric: str, digests: list[dict]) -> str:
+    rows = []
+    for task, trials in ev["per_task"].items():
+        values = evolve.task_values(trials, ev["k"], metric)
+        made = [f"{d['lens']} of trial {d['trial']}" for d in digests if d["task"] == task]
+        rows.append((sum(values) / len(values), f"- {task}: {sum(values) / len(values):.2f} "
+                     f"(trials {', '.join(f'{v:g}' for v in values)}; digests: {', '.join(made) or 'none'})"))
+    return "\n".join(r for _, r in sorted(rows))
+
+
 def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
-    """Digest the incumbent's trials into runs/rsi/<run>/t<t>/report.md."""
+    """Digest the incumbent's trials, have the analyst aggregate the digests
+    into a three-lens report (asking for follow-up digests if it needs them),
+    and write both to runs/rsi/<run>/t<t>/report.md."""
     rdir = RSI / run / f"t{t}"
-    report = rdir / "report.md"
-    if report.exists():
-        return report
+    report_md = rdir / "report.md"
+    if report_md.exists():
+        return report_md
     traces, digests = rdir / "traces", rdir / "digests"
     traces.mkdir(parents=True, exist_ok=True)
     digests.mkdir(parents=True, exist_ok=True)
-    chosen = choose_trials(inc, cfg["metric"], rc["max_digests"])
-    for i, c in enumerate(chosen):
-        c["file"] = f"{i:02d}-{c['task']}-{c['lens']}.txt"
-        (traces / c["file"]).write_text(render_trace(c["trial"], c["task"]))
+    metric = cfg["metric"]
 
-    def digest(c: dict) -> dict:
-        out = digests / c["file"].replace(".txt", ".json")
+    def digest(req: dict) -> dict:
+        task, j, lens = req["task"], req["trial"], req["lens"]
+        name = f"{task}-{j}-{lens}{req.get('suffix', '')}"
+        out = digests / f"{name}.json"
         if out.exists():
             return load_json(out)
-        reply = run_wren(rc, prompt("digest", trace=c["file"], task=c["task"], lens=c["lens"]),
+        trace = traces / f"{task}-{j}.txt"
+        if not trace.exists():
+            trace.write_text(render_trace(inc["per_task"][task][j], task))
+        questions = req.get("questions") or []
+        asked = "".join(f"- {q}\n" for q in questions)
+        reply = run_wren(rc, prompt("digest", trace=trace.name, task=task, lens=lens,
+                                    questions=f"\nQuestions to answer:\n{asked}" if asked else ""),
                          traces, model=rc["digest_model"], yolo=False,
                          time_limit=rc["digest_time_limit"], log=rdir / "logs" / "digest.log")
         d = parse_json_reply(reply.get("result") or "") or {"unparsed": reply.get("result")}
-        d = {"task": c["task"], "lens": c["lens"], "trace": f"traces/{c['file']}", **d}
+        d = {"task": task, "trial": j, "lens": lens, "trace": f"traces/{trace.name}",
+             **({"questions": questions} if questions else {}), **d}
         save_json(out, d)
         return d
 
-    with ThreadPoolExecutor(4) as pool:
-        results = list(pool.map(digest, chosen))
-    a = evolve.aggregate(inc, cfg["metric"])
+    def run_digests(reqs: list[dict]) -> list[dict]:
+        with ThreadPoolExecutor(4) as pool:
+            return list(pool.map(digest, reqs))
+
+    done = run_digests([
+        {"task": c["task"], "lens": c["lens"],
+         "trial": next(j for j, x in enumerate(inc["per_task"][c["task"]]) if x is c["trial"])}
+        for c in choose_trials(inc, metric, rc["max_digests"])])
+    prior_path = RSI / run / "analysis.json"
+    prior = load_json(prior_path) if prior_path.exists() else {}
+    report: dict | None = None
+    for step in range(rc["analyst_rounds"]):
+        final = step == rc["analyst_rounds"] - 1
+        cached = rdir / f"analyst-{step}.json"
+        if cached.exists():
+            reply = load_json(cached)
+        else:
+            text = prompt(
+                "analyst", n_tasks=len(inc["per_task"]), k=inc["k"], max_followups=rc["max_followups"],
+                final="This is your last turn: no follow-ups, send the report." if final else
+                      "Each one costs a digester's run: ask only for what would change the report.",
+                table=task_table(inc, metric, done),
+                prior=json.dumps({k: [{label: m.get(label), "description": m.get("description")}
+                                      for m in prior.get(k) or [] if isinstance(m, dict)]
+                                  for k, label in (("failure_modes", "mode"), ("success_habits", "habit"))},
+                                 ensure_ascii=False, indent=1),
+                digests="\n\n".join(f"```json\n{json.dumps(d, indent=1, ensure_ascii=False)}\n```"
+                                      for d in done))
+            result = run_wren(rc, text, rdir, model=rc["analyst_model"], yolo=False,
+                              time_limit=rc["analyst_time_limit"], log=rdir / "logs" / "analyst.log")
+            reply = parse_json_reply(result.get("result") or "") or {}
+            if reply:   # a failed turn is tried again when the round is resumed
+                save_json(cached, reply)
+        if "failure_modes" in reply:
+            report = {k: reply.get(k) or [] for k in ("failure_modes", "capability_gaps", "success_habits")}
+            report["failure_modes"].sort(key=lambda m: -(m.get("n_tasks") or 0))
+            break
+        taken = {(d["task"], d["trial"], d["lens"]) for d in done}
+        reqs = []
+        for r in (reply.get("follow_up") or [])[:rc["max_followups"]]:
+            if not isinstance(r, dict) or r.get("task") not in inc["per_task"]:
+                continue
+            lens = str(r.get("lens")) if r.get("lens") in LENSES else "failure"
+            j = trial_index(inc, r["task"], lens, metric, taken)
+            if j is not None:
+                questions = [str(q) for q in r.get("questions") or []][:5]
+                reqs.append({"task": r["task"], "trial": j, "lens": lens, "questions": questions,
+                             "suffix": f"-f{step + 1}" if (r["task"], j, lens) in taken else ""})
+        if final or not reqs:
+            break
+        done += run_digests(reqs)
+
+    a = evolve.aggregate(inc, metric)
     lines = [f"# Round {t}: how the incumbent {inc['name']} did",
-             f"S = {a['S']:.4f} over {len(inc['per_task'])} tasks x k={inc['k']}; per task:", ""]
-    for task, trials in sorted(inc["per_task"].items()):
-        values = evolve.task_values(trials, inc["k"], cfg["metric"])
-        lines.append(f"- {task}: {sum(values) / len(values):.2f}")
+             f"S = {a['S']:.4f} over {len(inc['per_task'])} tasks x k={inc['k']}; per task, lowest first:",
+             "", task_table(inc, metric, done), "", "## Analysis", ""]
+    if report:
+        save_json(rdir / "analysis.json", report)
+        save_json(prior_path, {k: report[k] for k in ("failure_modes", "success_habits")})
+        lines += ["The analyst's three-lens report: failure modes ranked by impact, capability gaps "
+                  "(these often need a tool or plumbing fix rather than an instruction), and success "
+                  "habits, which your change must not break.", "",
+                  f"```json\n{json.dumps(report, indent=1, ensure_ascii=False)}\n```"]
+    else:
+        lines.append("The analyst produced no report this round: work from the digests.")
     lines += ["", "## Digests", "",
               "One per trial, by a reader of the whole trace. The traces are in traces/.", ""]
-    lines += [f"```json\n{json.dumps(d, indent=1, ensure_ascii=False)}\n```" for d in results]
-    report.write_text("\n".join(lines) + "\n")
-    return report
+    lines += [f"```json\n{json.dumps(d, indent=1, ensure_ascii=False)}\n```" for d in done]
+    report_md.write_text("\n".join(lines) + "\n")
+    return report_md
 
 
 # --- proposing and screening a candidate ---

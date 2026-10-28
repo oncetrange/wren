@@ -85,6 +85,46 @@ def test_choose_trials_puts_contrasts_first():
     assert len(rsi.choose_trials(ev, "reward", 2)) == 2
 
 
+def test_analyze_asks_for_follow_ups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rsi, "RSI", tmp_path / "rsi")
+    inc = {"name": "base", "k": 2, "per_task": {
+        "sometimes": trials(0, 1, dirs=[str(tmp_path / "s0"), str(tmp_path / "s1")]),
+        "never": trials(0, 0, dirs=[str(tmp_path / "n0"), str(tmp_path / "n1")])}}
+    rc = rsi.rsi_config({"rsi": {"max_digests": 2}})
+    calls: list[str] = []
+
+    def fake_wren(rc, text, cwd, *, model, yolo, time_limit, log):
+        calls.append(text)
+        if "batch analyst" not in text:
+            return {"status": "done", "result": '{"blocker": "b"}'}
+        if "last turn" not in text:
+            return {"status": "done", "result": json.dumps({"follow_up": [
+                {"task": "never", "lens": "capability_gap", "questions": ["was grep cut off?"]},
+                {"task": "zz"}]})}
+        return {"status": "done", "result": json.dumps({
+            "failure_modes": [{"mode": "small", "n_tasks": 1}, {"mode": "big", "n_tasks": 2}],
+            "success_habits": [{"habit": "runs_tests", "description": "d"}]})}
+
+    monkeypatch.setattr(rsi, "run_wren", fake_wren)
+    report = rsi.analyze("r1", 0, inc, CFG, rc).read_text()
+    digests = sorted(p.name for p in (tmp_path / "rsi" / "r1" / "t0" / "digests").iterdir())
+    # The contrast pair first, then the follow-up the analyst asked for (an unknown task is skipped).
+    assert digests == ["never-0-capability_gap.json", "sometimes-0-failure.json", "sometimes-1-success.json"]
+    assert any("Questions to answer:\n- was grep cut off?" in c for c in calls)
+    assert "capability_gap of trial 0" in calls[-1]
+    # Failure modes ranked by impact; the names carry over to the next round.
+    assert report.index('"big"') < report.index('"small"') and "must not break" in report
+    assert evolve.load_json(tmp_path / "rsi" / "r1" / "analysis.json")["success_habits"][0]["habit"] == "runs_tests"
+    calls.clear()
+    rsi.analyze("r1", 1, inc, CFG, rc)
+    assert '"habit": "runs_tests"' in next(c for c in calls if "batch analyst" in c)
+    # A resumed round reuses what it has: no wren runs.
+    calls.clear()
+    (tmp_path / "rsi" / "r1" / "t1" / "report.md").unlink()
+    rsi.analyze("r1", 1, inc, CFG, rc)
+    assert calls == []
+
+
 def test_check_declaration():
     good, tasks = [EDIT], ["a", "b"]
     assert rsi.check_declaration(good, ["src/wren/agent/prompt.py"], 1, [], tasks) == []
@@ -221,6 +261,8 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
 
     def fake_wren(rc, text, cwd, *, model, yolo, time_limit, log):
         prompts.append((text, yolo))
+        if not yolo and "batch analyst" in text:
+            return {"status": "done", "result": '{"failure_modes": [{"mode": "turn_exhaustion", "n_tasks": 1}]}'}
         if not yolo and "digesting" in text:
             return {"status": "done", "result": '{"blocker": "ran out of turns"}'}
         if not yolo:
@@ -281,7 +323,7 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     assert all("# Proposer constitution" in p and "# Pattern library" in p for p in proposals)
     assert all("2 tasks of the evolve split, 2 trials each" in p for p in proposals)
     report = rsi.RSI / "r1" / "t0" / "report.md"
-    assert "ran out of turns" in report.read_text()
+    assert "ran out of turns" in report.read_text() and "turn_exhaustion" in report.read_text()
     ledger = [json.loads(line) for line in evolve.LEDGER.read_text().splitlines()]
     assert [r["verdict"] for r in ledger] == ["REJECTED", "ACCEPTED"]
     assert not (tmp_path / "wt" / "r1" / "t0-v1").exists()
