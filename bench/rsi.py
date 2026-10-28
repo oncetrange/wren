@@ -12,8 +12,8 @@ harness changes.
     python bench/rsi.py status <run>
 
 A round t:
-  1. analyze: failed (and contrasting passed) trials of the incumbent are rendered
-     to text and digested one at a time by a read-only wren; an analyst wren
+  1. analyze: failed (and contrasting or always passing) trials of the incumbent are
+     rendered to text and digested one at a time by a read-only wren; an analyst wren
      clusters the digests into a three-lens report (failure modes ranked by
      impact, capability gaps, success habits), asking for follow-up digests
      first if it needs them, and keeps the names stable across rounds;
@@ -97,6 +97,7 @@ DEFAULTS = {
     "stall_window": 2,         # rounds without a gain above delta before exploring
     "n_prune": 4,              # rounds a component's best recent gain is looked back over
     "max_digests": 12,         # trials digested per round before the analyst reads them
+    "stable_digests": 3,       # of those, successes of tasks that always pass
     "max_followups": 6,        # further digests the analyst may ask for per turn
     "analyst_rounds": 2,       # analyst turns: follow-ups, then the report
     "repair_rounds": 2,        # attempts to fix a candidate that fails screening
@@ -295,16 +296,23 @@ def _render_block(role: str, b: dict, calls: dict[str, int]) -> str:
 LENSES = ("failure", "capability_gap", "success")
 
 
-def choose_trials(ev: dict, metric: str, max_n: int) -> list[dict]:
+def choose_trials(ev: dict, metric: str, max_n: int, n_stable: int) -> list[dict]:
     """Which trials to digest: on tasks that pass only sometimes a failure and a
     success (the contrast says most), then one failure of each task that never
-    passes, then further failures, up to max_n. Trials without logs are skipped."""
-    mixed, failing, more = [], [], []
+    passes, then further failures, up to max_n. Of those, n_stable go to the
+    longest run of the tasks that always pass: what they depend on is what a
+    change must not break, and a long run leans on the harness (compaction,
+    recovery, long commands) where a short one barely touches it. Trials without
+    logs are skipped."""
+    mixed, failing, more, stable = [], [], [], []
     for task, trials in sorted(ev["per_task"].items()):
-        trials = [t for t in trials if t.get("dir")]
-        passed = [t for t in trials if ((t["scores"] or {}).get(metric) or 0) >= 1]
-        failed = [t for t in trials if t not in passed]
+        logged = [t for t in trials if t.get("dir")]
+        passed = [t for t in logged if ((t["scores"] or {}).get(metric) or 0) >= 1]
+        failed = [t for t in logged if t not in passed]
         if not failed:
+            if len(passed) == len(trials) >= ev["k"]:   # every trial passed, none missing
+                longest = max(passed, key=lambda t: t.get("tokens") or 0)
+                stable.append({"task": task, "trial": longest, "lens": "success"})
             continue
         if passed:
             mixed += [{"task": task, "trial": failed[0], "lens": "failure"},
@@ -312,7 +320,10 @@ def choose_trials(ev: dict, metric: str, max_n: int) -> list[dict]:
         else:
             failing.append({"task": task, "trial": failed[0], "lens": "failure"})
         more += [{"task": task, "trial": t, "lens": "failure"} for t in failed[1:]]
-    return (mixed + failing + more)[:max_n]
+    stable = sorted(stable, key=lambda c: -(c["trial"].get("tokens") or 0))[:min(n_stable, max_n)]
+    room = max_n - len(stable)
+    first = (mixed + failing)[:room]
+    return first + stable + more[:room - len(first)]
 
 
 def prompt(name: str, **values: object) -> str:
@@ -419,7 +430,7 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
     done = run_digests([
         {"task": c["task"], "lens": c["lens"],
          "trial": next(j for j, x in enumerate(inc["per_task"][c["task"]]) if x is c["trial"])}
-        for c in choose_trials(inc, metric, rc["max_digests"])])
+        for c in choose_trials(inc, metric, rc["max_digests"], rc["stable_digests"])])
     prior_path = RSI / run / "analysis.json"
     prior = load_json(prior_path) if prior_path.exists() else {}
     report: dict | None = None
