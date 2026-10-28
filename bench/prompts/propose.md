@@ -18,8 +18,9 @@ reference: read them first.
 ## What to do
 
 1. Read the analysis of the incumbent's trials (named under "This round"), and
-   the traces it points at where you need more. Look for failure modes that
-   recur across tasks, and for what successful runs depended on.
+   the traces it points at where you need more: the failure modes, ranked by
+   impact, the capability gaps, and the success habits your change must not
+   break.
 2. Read the edit history and the scoreboard under "This round".
 3. Pick the highest-impact failure modes you can move and implement the
    mechanisms in the source, within this round's edit budget.

@@ -79,8 +79,11 @@ Each round:
 
 1. **Analyze.** Failed trials of the incumbent are rendered to text, along with a passing trial on
    tasks that pass only sometimes, since the contrast says the most. A read-only wren digests each
-   one into a blocker, quoted evidence and what was needed instead. The digests are in
-   `bench/runs/rsi/<run>/t<t>/report.md`.
+   one into a blocker, quoted evidence and what was needed instead. An analyst, another read-only
+   wren, then clusters the digests into failure modes ranked by impact, capability gaps (what the
+   agent tried to do but couldn't) and success habits a change must not break. It may first ask
+   for follow-up digests with questions of its own, and keeps the names of earlier rounds when a
+   mechanism recurs. The report and the digests are in `bench/runs/rsi/<run>/t<t>/report.md`.
 2. **Propose.** A few candidates are drafted, each in its own git worktree. wren edits its source
    there, adds tests and declares every independent edit in `RSI_EDITS.json`: its component, its
    hypothesis, the failure mode it targets, why a plain instruction wouldn't do, the condition it
@@ -113,8 +116,8 @@ Each round:
    it. Every edit goes into `bench/runs/rsi/<run>/history.jsonl` with its measured gain and the
    tasks that moved, and every measured candidate goes into the ledger.
 
-The proposer, digester and critic are the installed `wren`, not the one being changed. They run
-with `proposer_model`, `digest_model` and `critic_model` from the `rsi` settings in
-`bench/config.json`. Keep these models apart from the frozen policy model the benchmark runs.
+The proposer, digesters, analyst and critic are the installed `wren`, not the one being changed.
+They run with `proposer_model`, `digest_model`, `analyst_model` and `critic_model` from the `rsi`
+settings in `bench/config.json`. Keep these models apart from the frozen policy model the benchmark runs.
 When the run ends, `evolve.py eval evolve/<run> --set heldout` gives the result on tasks the
 loop never saw.
