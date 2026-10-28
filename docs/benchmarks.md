@@ -83,8 +83,16 @@ Each round:
    `bench/runs/rsi/<run>/t<t>/report.md`.
 2. **Propose.** A few candidates are drafted, each in its own git worktree. wren edits its source
    there, adds tests and declares every independent edit in `RSI_EDITS.json`: its component, its
-   hypothesis and the tasks it should flip. The proposer also reads the edit history, so it
-   doesn't redraw a hypothesis that was measured and failed. Other limits:
+   hypothesis, the failure mode it targets, why a plain instruction wouldn't do, the condition it
+   acts on, the evolve tasks it should flip, and a retroactive check (which cited failures it
+   would have fixed, which success habits it could break, why it generalizes). Its rules are
+   `bench/prompts/constitution.md`: how candidates are judged, hard rules (nothing task-specific,
+   the grader and `src/wren/integrations/` untouched, which settings are injected from outside
+   and so can't be changed), and wren's levers file by file. `bench/prompts/patterns.md` lists
+   known mechanism families with their traps. The proposer also reads the edit history, so it
+   doesn't redraw a hypothesis that was measured and failed, and a scoreboard of how past
+   predictions fared: which predicted tasks improved and which tasks an edit broke without
+   predicting them. Other limits:
    - an edit budget that shrinks over the run, from `b_max` edits per candidate to `b_min`;
    - after `stall_window` rounds without a gain above the noise band, an edit on a component
      never tried;
@@ -100,8 +108,8 @@ Each round:
    otherwise dropped. The drop is still recorded.
 4. **Measure and select.** Survivors are pushed (as `evolve-cand/<run>/t<t>-v<i>`) and measured
    on the evolve split. The best admissible one becomes the incumbent, and `evolve/<run>` moves to
-   it. Every edit goes into `bench/runs/rsi/<run>/history.jsonl` with its measured gain, and every
-   measured candidate goes into the ledger.
+   it. Every edit goes into `bench/runs/rsi/<run>/history.jsonl` with its measured gain and the
+   tasks that moved, and every measured candidate goes into the ledger.
 
 The proposer, digester and critic are the installed `wren`, not the one being changed. They run
 with `proposer_model`, `digest_model` and `critic_model` from the `rsi` settings in

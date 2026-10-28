@@ -10,6 +10,10 @@ from bench import evolve, rsi
 
 CFG = {"beta0": 0.10, "beta1": 5.0, "w_s": 0.0, "w_c": 15.0, "invalid_missing_frac": 0.2,
        "metric": "reward", "k": 2, "model": "policy", "delta": 0.05}
+# A declared edit with every required field.
+EDIT = {"id": "E1", "component": "prompt", "hypothesis": "h", "targets_mode": "m",
+        "why_not_lower_lever": "w", "trigger_condition": "c", "predicted_affected": ["b"],
+        "retroactive_check": "corrective; preservative; transfer"}
 
 
 def trials(*rewards: float | None, tokens: int = 100, dirs: list[str] | None = None) -> list[dict]:
@@ -81,15 +85,40 @@ def test_choose_trials_puts_contrasts_first():
 
 
 def test_check_declaration():
-    good = [{"id": "E1", "component": "prompt", "hypothesis": "h", "predicted_affected": ["x"]}]
-    assert rsi.check_declaration(good, ["src/wren/agent/prompt.py"], 1, []) == []
-    problems = rsi.check_declaration(good * 2, ["bench/evolve.py"], 1, ["tools"])
+    good, tasks = [EDIT], ["a", "b"]
+    assert rsi.check_declaration(good, ["src/wren/agent/prompt.py"], 1, [], tasks) == []
+    problems = rsi.check_declaration(good * 2, ["bench/evolve.py"], 1, ["tools"], tasks)
     assert any("budget" in p for p in problems)
     assert any("untried" in p for p in problems)
     assert any("bench/evolve.py" in p for p in problems)
-    assert rsi.check_declaration([{"id": "E1", "component": "vibes"}], ["src/wren/x.py"], 3, [])
-    assert rsi.check_declaration(good, [], 1, []) == ["no files changed"]
-    assert rsi.check_declaration({}, ["src/wren/x.py"], 1, [])
+    assert rsi.check_declaration([{"id": "E1", "component": "vibes"}], ["src/wren/x.py"], 3, [], tasks)
+    assert rsi.check_declaration(good, [], 1, [], tasks) == ["no files changed"]
+    assert rsi.check_declaration({}, ["src/wren/x.py"], 1, [], tasks)
+    # The adapter that runs wren in the container and reports its tokens is frozen.
+    adapter = rsi.check_declaration(good, ["src/wren/integrations/pier_support.py"], 1, [], tasks)
+    assert any("pier_support.py" in p for p in adapter)
+    # Every required field, and predictions that name evolve tasks.
+    terse = {k: EDIT[k] for k in ("id", "component", "hypothesis", "predicted_affected")}
+    missing = rsi.check_declaration([terse], ["src/wren/x.py"], 1, [], tasks)
+    assert any("retroactive_check" in p and "trigger_condition" in p for p in missing)
+    unknown = rsi.check_declaration([EDIT | {"predicted_affected": ["b", "zz"]}], ["src/wren/x.py"], 1, [], tasks)
+    assert any("zz" in p for p in unknown)
+    assert rsi.check_declaration([EDIT | {"predicted_affected": "b"}], ["src/wren/x.py"], 1, [], tasks)
+
+
+def test_attribute_and_scoreboard():
+    inc = {"k": 2, "per_task": {"a": trials(1, 1), "b": trials(0, 0), "c": trials(0, 1), "d": trials(1, 0)}}
+    cand = {"k": 2, "per_task": {"a": trials(0, 1), "b": trials(1, 0), "c": trials(1, 1), "d": trials(1, 0)}}
+    rows = rsi.attribute([EDIT | {"predicted_affected": ["b", "d"]}, EDIT | {"predicted_affected": []}],
+                         inc, cand, "reward")
+    assert rows[0] == {"predicted_hit": ["b"], "hit_rate": 0.5, "improved": ["b", "c"],
+                       "unpredicted_regressions": ["a"]}
+    assert rows[1]["hit_rate"] is None and rows[1]["unpredicted_regressions"] == ["a"]
+    history = [{"t": 0, "edit_id": "E1", "hypothesis": "h", **rows[0]},
+               {"t": 0, "edit_id": "E2", "delta_S": None}]   # dropped in screening: not on the board
+    board = [json.loads(line) for line in rsi.render_scoreboard(history).splitlines()]
+    assert [r["edit_id"] for r in board] == ["E1"] and board[0]["hit_rate"] == 0.5
+    assert rsi.render_scoreboard([]) == "(nothing measured yet)"
 
 
 def test_precheck_catches_task_names_and_credentials():
@@ -172,8 +201,7 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
         if variant == 1 and "previous attempt" not in text:   # first try: nothing declared
             return {"status": "done", "result": "done"}
         (cwd / "src" / "wren" / "prompt.py").write_text(f"PROMPT = 'be good, v{variant}'\n")
-        (cwd / rsi.EDITS_FILE).write_text(json.dumps([{
-            "id": "E1", "component": "prompt", "hypothesis": f"variant {variant}", "predicted_affected": ["b"]}]))
+        (cwd / rsi.EDITS_FILE).write_text(json.dumps([EDIT | {"hypothesis": f"variant {variant}"}]))
         return {"status": "done", "result": f"changed the prompt (v{variant})"}
 
     def fake_eval(sha, overrides, set_name, k, name, cfg, dry_run=False):
@@ -211,13 +239,19 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     history = rsi.read_history("r1")
     assert [(r["variant"], r["accepted"], r["outcome"]) for r in history] == [
         (1, False, "admissible"), (2, True, "accepted")]
+    # Both predicted b, and both moved it.
+    assert [(r["predicted_hit"], r["hit_rate"], r["unpredicted_regressions"]) for r in history] == [
+        (["b"], 1.0, []), (["b"], 1.0, [])]
     # The winner is committed without the declaration, pushed, and evolve/r1 points at it.
     winner = history[1]["sha"]
     remote_tip = sh("git", "ls-remote", "origin", "refs/heads/evolve/r1", cwd=repo).split()[0]
     assert remote_tip == winner
     assert rsi.EDITS_FILE not in sh("git", "show", "--name-only", "--format=", winner, cwd=repo)
-    # The proposer saw the analysis and was told why its first attempt failed.
+    # The proposer saw the analysis and its rules, and was told why its first attempt failed.
     assert any("previous attempt" in p and "RSI_EDITS.json is missing" in p for p, _ in prompts)
+    proposals = [p for p, yolo in prompts if yolo]
+    assert all("# Proposer constitution" in p and "# Pattern library" in p for p in proposals)
+    assert all("2 tasks of the evolve split, 2 trials each" in p for p in proposals)
     report = rsi.RSI / "r1" / "t0" / "report.md"
     assert "ran out of turns" in report.read_text()
     ledger = [json.loads(line) for line in evolve.LEDGER.read_text().splitlines()]
