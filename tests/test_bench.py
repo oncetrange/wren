@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -70,9 +71,16 @@ def test_calibrate_from_repeated_and_single_measurements():
     a = ev("a", {"t1": [1, 0], "t2": [1, 1]})
     b = ev("b", {"t1": [0, 0], "t2": [1, 1]})
     cal = evolve.calibrate([a, b], "reward", z=2.0)
-    assert cal["method"] == "repeated measurements"
     assert cal["S_per_eval"] == [0.75, 0.5]
-    assert cal["delta"] > 0
+    # Pooled, t1 has four trials, one passing: plug-in variance 3/16, corrected by 4/3 to 1/4;
+    # one measurement's S has variance 2 * 1/4 / 4^2, the difference of two twice that.
+    assert cal["sd_null"] == pytest.approx(math.sqrt(2 * 2 * 0.25 / 16), abs=0.01)
+    assert cal["sd_null_repeat"] == pytest.approx(0.25) and not cal["shared_noise_suspected"]
+    # Every task lost a pass in the second measurement: more than independent trials
+    # explain, as when something hit all of them. Flagged; the band stays the bootstrap's.
+    shocked = evolve.calibrate([ev("x", {f"t{i}": [1, 1] for i in range(20)}),
+                                ev("y", {f"t{i}": [1, 0] for i in range(20)})], "reward", z=2.0)
+    assert shocked["shared_noise_suspected"] and shocked["sd_null"] < shocked["sd_null_repeat"] / 2
     # One coin-flip task of two: the bootstrap's plug-in variance (0.25 per trial)
     # is corrected to the unbiased 0.5, so sd_null = sqrt(2) * sqrt(0.5 / 2) / 2.
     flip = ev("f", {"t1": [1, 0], "t2": [1, 1]})
