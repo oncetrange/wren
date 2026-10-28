@@ -247,8 +247,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-@pytest.mark.parametrize("cut_off", [False, True])
-def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut_off: bool):
+@pytest.mark.parametrize("cut_off,broken", [(False, False), (True, False), (False, True)])
+def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut_off: bool,
+                            broken: bool):
     sha = sh("git", "rev-parse", "HEAD", cwd=repo)
     trial_dir = tmp_path / "trial-b"
     (trial_dir / "agent" / "wren" / "sessions").mkdir(parents=True)
@@ -275,6 +276,8 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
         return {"status": "done", "result": f"changed the prompt (v{variant})"}
 
     def fake_eval(sha, overrides, set_name, k, name, cfg, dry_run=False):
+        if broken and "v1" in name:
+            raise evolve.HarnessBroken(f"{name}: the first 3 trials crashed the harness: NonZeroAgentExitCodeError")
         b = [1, 1] if "v2" in name else [1, 0]
         ev = {"name": name, "set": "evolve", "k": 2, "harness": {"sha": sha, "kwargs": {}, "model": "policy"},
               "per_task": {"a": trials(1, 1), "b": trials(*b)}}
@@ -307,6 +310,11 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     frontier = evolve.load_json(evolve.FRONTIER)
     assert frontier["incumbent"] == "r1-t0-v2" and frontier["S_star"] == 1.0
     history = rsi.read_history("r1")
+    if broken:   # v1 never got a measurement; the round goes on with v2
+        assert [(r["variant"], r["accepted"], r["outcome"], r["delta_S"]) for r in history] == [
+            (1, False, "dropped in the container (smoke)", None), (2, True, "accepted", 0.5)]
+        assert "crashed the harness" in history[0]["detail"]
+        return
     assert [(r["variant"], r["accepted"], r["outcome"]) for r in history] == [
         (1, False, "admissible"), (2, True, "accepted")]
     # Both predicted b, and both moved it.

@@ -787,16 +787,23 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
 
     ready = [c for c in cands if c["status"] == "ready"]
 
-    def measure(c: dict) -> dict:
+    def measure(c: dict) -> dict | None:
         name = f"{run}-t{t}-v{c['variant']}"
         if evolve.eval_path(name).exists():
             return evolve.load_eval(name)
-        ev = evolve.run_eval(c["sha"], {}, "evolve", cfg["k"], name, cfg)
+        try:
+            ev = evolve.run_eval(c["sha"], {}, "evolve", cfg["k"], name, cfg)
+        except evolve.HarnessBroken as e:   # a rerun of the round finds the same job and says so again
+            print(f"  v{c['variant']}: {e}")
+            c.update(status="dropped", outcome="dropped in the container (smoke)", detail=str(e)[:600])
+            return None
         assert ev is not None
         return ev
 
     with ThreadPoolExecutor(max(1, len(ready))) as pool:
         measured = list(pool.map(measure, ready))
+    ready, measured = ([c for c, ev in zip(ready, measured, strict=True) if ev is not None],
+                       [ev for ev in measured if ev is not None])
     a_inc = evolve.aggregate(inc, cfg["metric"])
     verdicts = select(ready, measured, a_inc, fr["S_star"], delta, cfg)
 
