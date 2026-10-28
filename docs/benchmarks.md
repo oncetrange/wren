@@ -48,7 +48,9 @@ what the trials predict, a sign that something hit many trials of one measuremen
 
 A trial without a grade counts as a failure. A candidate is accepted only if it doesn't fall
 below the best score so far minus delta, and pays for any extra tokens with a gain larger than
-delta (inside the band, only a token saving gets in). Every verdict, rejections included, goes into
+delta. Inside the band a gain counts for nothing, since it may be noise: only a token saving gets
+in, and it must also pay for any score it loses, or the cheapest way in would be an agent that
+gives up sooner. Every verdict, rejections included, goes into
 a ledger in `bench/runs/`. The other 83 tasks are held out: `eval <ref> --set heldout` reports a
 result but is never used to choose. Settings are in `bench/config.json`, including the frozen policy
 model the benchmark runs (`deepseek-v4.1-flash-1017`).
