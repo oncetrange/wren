@@ -105,6 +105,9 @@ class Grep(Tool):
             cmd.append("--ignore-case")
         if args.get("glob"):
             cmd += ["--glob", args["glob"]]
+        # Skip the same directories as without ripgrep, which otherwise skips only what
+        # .gitignore lists; given after the caller's glob, these take precedence.
+        cmd += [x for d in sorted(IGNORED_DIRS) for x in ("--glob", f"!{d}")]
         cmd += ["-e", args["pattern"], str(root)]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode > 1:

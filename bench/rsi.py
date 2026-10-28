@@ -14,8 +14,9 @@ harness changes.
 A round t:
   1. analyze: failed (and contrasting passed) trials of the incumbent are rendered
      to text and digested one at a time by a read-only wren;
-  2. propose: in its own git worktree, wren edits its source, declaring each
-     independent edit (component, hypothesis, predicted tasks) in RSI_EDITS.json,
+  2. propose: in its own git worktree, wren edits its source under the rules of
+     prompts/constitution.md, declaring each independent edit (component,
+     hypothesis, trigger, predicted tasks, a retroactive check) in RSI_EDITS.json,
      within the annealed edit budget b_t and the exploration and prune directives
      drawn from the edit history;
   3. screen: the declaration is checked, the repo's checks run, and a critic
@@ -24,9 +25,10 @@ A round t:
      GitHub), judge them against the incumbent and fast-forward evolve/<run> to the
      best admissible one.
 
-Every edit goes into runs/rsi/<run>/history.jsonl with its measured gain, so
-the proposer doesn't redraw a falsified hypothesis. Settings are under "rsi" in
-bench/config.json.
+Every edit goes into runs/rsi/<run>/history.jsonl with its measured gain and
+which tasks moved (its predictions' hits, unpredicted regressions), so the
+proposer doesn't redraw a falsified hypothesis and sees how well it predicts.
+Settings are under "rsi" in bench/config.json.
 """
 
 from __future__ import annotations
@@ -52,9 +54,12 @@ from bench.evolve import COMPONENTS, git, load_json, save_json  # noqa: E402
 RSI = evolve.RUNS / "rsi"
 PROMPTS = evolve.BENCH / "prompts"
 EDITS_FILE = "RSI_EDITS.json"
-# A candidate may change wren itself, its tests and its docs, never the benchmark tooling.
+# A candidate may change wren itself, its tests and its docs, never the benchmark tooling,
+# nor the adapter that runs wren in the task container and reports the tokens C is made of.
 EDITABLE = ("src/wren/", "tests/", "docs/")
-EDIT_FIELDS = ("id", "component", "hypothesis", "predicted_affected")
+FROZEN = ("src/wren/integrations/",)
+EDIT_FIELDS = ("id", "component", "hypothesis", "targets_mode", "why_not_lower_lever",
+               "trigger_condition", "predicted_affected", "retroactive_check")
 # Candidates are drafted in parallel; git commands on the shared repo (worktrees, pushes) take turns.
 _GIT_LOCK = threading.Lock()
 
@@ -156,6 +161,39 @@ def render_history(history: list[dict], n: int = 40) -> str:
     if not kept:
         return "(no edits yet: this is the first round)"
     return "\n".join(json.dumps(r, ensure_ascii=False) for r in reversed(kept))
+
+
+def attribute(edits: list, inc: dict, cand: dict, metric: str) -> list[dict]:
+    """Per declared edit, how its candidate's tasks moved against the incumbent:
+    the predicted tasks that improved, every task that improved, and the tasks
+    it fell on without predicting them (a drop of at least one trial in k)."""
+    def mean(ev: dict, task: str) -> float:
+        values = evolve.task_values(ev["per_task"][task], ev["k"], metric)
+        return sum(values) / len(values)
+    change = {t: mean(cand, t) - mean(inc, t) for t in inc["per_task"] if t in cand["per_task"]}
+    drop = 1 / max(1, cand["k"]) - 1e-9
+    improved = sorted(t for t, d in change.items() if d > 0)
+    worse = sorted(t for t, d in change.items() if d <= -drop)
+    rows = []
+    for e in edits:
+        predicted = [str(p) for p in e.get("predicted_affected") or [] if p in change]
+        hit = [p for p in predicted if change[p] > 0]
+        rows.append({"predicted_hit": hit,
+                     "hit_rate": round(len(hit) / len(predicted), 2) if predicted else None,
+                     "improved": improved[:12],
+                     "unpredicted_regressions": [t for t in worse if t not in predicted][:12]})
+    return rows
+
+
+def render_scoreboard(history: list[dict], n: int = 20) -> str:
+    """How the newest n measured edits' predictions fared, oldest first."""
+    keys = ("t", "variant", "edit_id", "component", "predicted_affected", "predicted_hit",
+            "hit_rate", "improved", "unpredicted_regressions")
+    rows = [{k: r.get(k) for k in keys} | {"hypothesis": str(r.get("hypothesis"))[:160]}
+            for r in history if "predicted_hit" in r][-n:]
+    if not rows:
+        return "(nothing measured yet)"
+    return "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
 
 
 # --- analysis: traces and digests ---
@@ -347,8 +385,10 @@ def diff_text(wt: Path, base: str) -> str:
                           capture_output=True, text=True).stdout
 
 
-def check_declaration(edits: object, files: list[str], budget: int, explore: list[str]) -> list[str]:
-    """What is wrong with a candidate's RSI_EDITS.json and changed files; [] if nothing."""
+def check_declaration(edits: object, files: list[str], budget: int, explore: list[str],
+                      tasks: list[str]) -> list[str]:
+    """What is wrong with a candidate's RSI_EDITS.json and changed files; [] if
+    nothing. `tasks` are the evolve tasks predictions may name."""
     if not isinstance(edits, list) or not edits:
         return [f"{EDITS_FILE} must be a non-empty JSON list of edits"]
     problems = []
@@ -362,13 +402,20 @@ def check_declaration(edits: object, files: list[str], budget: int, explore: lis
             problems.append(f"edit {e.get('id', '?')}: missing {', '.join(missing)}")
         if str(e.get("component", "")).lower() not in COMPONENTS:
             problems.append(f"edit {e.get('id', '?')}: component must be one of {', '.join(COMPONENTS)}")
+        predicted = e.get("predicted_affected")
+        if predicted and not isinstance(predicted, list):
+            problems.append(f"edit {e.get('id', '?')}: predicted_affected must be a list of task names")
+        elif unknown := [str(p) for p in predicted or [] if p not in tasks]:
+            problems.append(f"edit {e.get('id', '?')}: predicted_affected names tasks outside the "
+                            f"evolve split: {', '.join(unknown[:5])}")
     if explore and not any(isinstance(e, dict) and str(e.get("component", "")).lower() in explore
                            for e in edits):
         problems.append(f"this round reserves an edit for an untried component: one of {', '.join(explore)}")
     if not files:
         problems.append("no files changed")
-    if outside := [f for f in files if not f.startswith(EDITABLE)]:
-        problems.append(f"only {', '.join(EDITABLE)} may change, not {', '.join(outside)}")
+    if outside := [f for f in files if not f.startswith(EDITABLE) or f.startswith(FROZEN)]:
+        problems.append(f"only {', '.join(EDITABLE)} may change, and not {', '.join(FROZEN)}: "
+                        f"not {', '.join(outside)}")
     return problems
 
 
@@ -433,10 +480,13 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
     feedback = ""
     edits: list = []
     out: dict = {"variant": variant, "status": "dropped", "edits": []}
+    tasks = split["evolve"]
     for attempt in range(rc["repair_rounds"] + 1):
         text = prompt("propose", context=context, budget=budget, variant=variant,
                       edits_file=EDITS_FILE, components=", ".join(COMPONENTS), policy_model=cfg["model"],
-                      editable=", ".join(EDITABLE), feedback=feedback)
+                      editable=", ".join(EDITABLE), feedback=feedback, n_tasks=len(tasks), k=cfg["k"],
+                      constitution=(PROMPTS / "constitution.md").read_text().strip(),
+                      patterns=(PROMPTS / "patterns.md").read_text().strip())
         result = run_wren(rc, text, wt, model=rc["proposer_model"], yolo=True,
                           time_limit=rc["proposer_time_limit"], log=log)
         out["summary"] = result.get("result")
@@ -446,7 +496,7 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
             edits = []
             problems = [f"{EDITS_FILE} is missing or not JSON ({e})"]
         else:
-            problems = check_declaration(edits, changed_files(wt, base), budget, explore)
+            problems = check_declaration(edits, changed_files(wt, base), budget, explore, tasks)
         out["edits"] = edits if isinstance(edits, list) else []
         stage = "declaration"
         if not problems and (failure := run_checks(wt, rc["checks"])):
@@ -515,8 +565,15 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
                      "(a removal edit's hypothesis starts with \"prune: \"): "
                      + json.dumps(prune, ensure_ascii=False))
     lines += ["", "Edit history, oldest first (delta_S is the measured change in score, delta_C in "
-              "tokens per trial; an edit bundled with others shares their measurement):",
-              render_history(history)]
+              "tokens per trial; an edit bundled with others shares their measurement). A rejected "
+              "mechanism is negative evidence: don't redraw it unchanged. An accepted one carries the "
+              "gain it produced: refine what has known credit, not what merely preceded a rise.",
+              render_history(history),
+              "", "Attribution scoreboard, oldest first: per measured edit, which of its predicted tasks "
+              "improved over the incumbent (hit_rate), every task its candidate improved, and the tasks "
+              "it fell on without predicting them (unpredicted_regressions). With few trials per task, "
+              "a single task's move is partly noise; a pattern across rounds is not.",
+              render_scoreboard(history)]
     return "\n".join(lines), budget, explore
 
 
@@ -572,9 +629,14 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
     verdicts = select(ready, measured, a_inc, fr["S_star"], delta, cfg)
 
     records = []
+    measured_by = {c["variant"]: ev for c, ev in zip(ready, measured, strict=True)}
     for c in cands:
         v = verdicts.get(c["variant"])
-        for e in c["edits"] or [{"id": "C1", "component": None}]:
+        edits = c["edits"] or [{"id": "C1", "component": None}]
+        # An invalid measurement says nothing about which tasks moved.
+        attribution = (attribute(edits, inc, measured_by[c["variant"]], cfg["metric"])
+                       if v and v["outcome"] != "invalid" else [{}] * len(edits))
+        for e, attr in zip(edits, attribution, strict=True):
             records.append({
                 "t": t, "variant": c["variant"], "edit_id": e.get("id"), "component": e.get("component"),
                 "hypothesis": e.get("hypothesis"), "predicted_affected": e.get("predicted_affected"),
@@ -583,6 +645,7 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
                 "S": v["S"] if v else None, "accepted": bool(v and v["winner"]),
                 "outcome": v["outcome"] if v else c.get("outcome"),
                 "detail": (v["reason"] if v else c.get("detail") or "")[:600],
+                **attr,
             })
     # Recorded once: a rerun of a round cut off below doesn't record it twice.
     if not any(r["t"] == t for r in history):

@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 
 from wren.tools import ToolContext, ToolError
@@ -87,7 +89,13 @@ def test_bash_permission_key():
     assert Bash().permission_key({"command": "pytest && rm -rf /"}) == "bash:pytest && rm -rf /"
 
 
-def test_glob_and_grep(ctx: ToolContext):
+@pytest.mark.parametrize("backend", ["python", "ripgrep"])
+def test_glob_and_grep(ctx: ToolContext, monkeypatch: pytest.MonkeyPatch, backend: str):
+    # grep runs ripgrep when it is installed and walks the tree itself otherwise: both skip the same.
+    if backend == "python":
+        monkeypatch.setattr("wren.tools.search.shutil.which", lambda name: None)
+    elif shutil.which("rg") is None:
+        pytest.skip("ripgrep isn't installed")
     (ctx.cwd / "src").mkdir()
     (ctx.cwd / "src/app.py").write_text("def main():\n    return 42\n")
     (ctx.cwd / "node_modules").mkdir()
