@@ -73,16 +73,33 @@ def test_render_trace(tmp_path: Path):
 
 
 def test_choose_trials_puts_contrasts_first():
-    ev = {"per_task": {
+    ev = {"k": 2, "per_task": {
         "always": trials(1, 1, dirs=["a1", "a2"]),
         "never": trials(0, 0, dirs=["n1", "n2"]),
         "sometimes": trials(0, 1, dirs=["s1", "s2"]),
         "unlogged": trials(0, 0),
     }}
-    picked = [(c["task"], c["lens"], c["trial"]["dir"]) for c in rsi.choose_trials(ev, "reward", 10)]
+    picked = [(c["task"], c["lens"], c["trial"]["dir"]) for c in rsi.choose_trials(ev, "reward", 10, 0)]
     assert picked == [("sometimes", "failure", "s1"), ("sometimes", "success", "s2"),
                       ("never", "failure", "n1"), ("never", "failure", "n2")]
-    assert len(rsi.choose_trials(ev, "reward", 2)) == 2
+    assert len(rsi.choose_trials(ev, "reward", 2, 0)) == 2
+
+
+def test_choose_trials_keeps_room_for_the_longest_stable_passes():
+    def passes(*tokens: int, task: str) -> list[dict]:
+        return [{"scores": {"reward": 1}, "tokens": n, "exception": None, "dir": f"{task}{i}"}
+                for i, n in enumerate(tokens)]
+    ev = {"k": 2, "per_task": {
+        **{f"f{i}": trials(0, 0, dirs=[f"f{i}a", f"f{i}b"]) for i in range(5)},
+        "short": passes(10, 20, task="short"), "long": passes(900, 300, task="long"),
+        "mid": passes(100, 50, task="mid"),
+        "half_missing": passes(5000, task="half_missing"),   # a trial missing: not a stable pass
+    }}
+    picked = [(c["task"], c["lens"], c["trial"]["dir"]) for c in rsi.choose_trials(ev, "reward", 6, 2)]
+    # Four failures, then the two longest stable passes, each by its longest trial; the
+    # second failures of each task make way.
+    assert picked[:4] == [(f"f{i}", "failure", f"f{i}a") for i in range(4)]
+    assert picked[4:] == [("long", "success", "long0"), ("mid", "success", "mid0")]
 
 
 def test_analyze_asks_for_follow_ups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

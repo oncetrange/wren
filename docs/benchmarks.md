@@ -88,7 +88,8 @@ python bench/rsi.py status r1          # the incumbent's score per round and eve
 Each round:
 
 1. **Analyze.** Failed trials of the incumbent are rendered to text, along with a passing trial on
-   tasks that pass only sometimes, since the contrast says the most. A read-only wren digests each
+   tasks that pass only sometimes, since the contrast says the most, and the longest runs of a few
+   tasks that always pass: what those lean on is what a change must not break. A read-only wren digests each
    one into a blocker, quoted evidence and what was needed instead. An analyst, another read-only
    wren, then clusters the digests into failure modes ranked by impact, capability gaps (what the
    agent tried to do but couldn't) and success habits a change must not break. It may first ask
