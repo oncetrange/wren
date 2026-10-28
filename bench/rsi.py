@@ -112,6 +112,9 @@ DEFAULTS = {
     "checks": [["uv", "run", "ruff", "check"], ["uv", "run", "pyright"],
                ["uv", "run", "pytest", "-q", "-x", "-p", "no:cacheprovider"]],
     "remote": "origin",
+    "push_retries": 3,         # a failed git push is tried again after 30s
+    "round_retries": 3,        # a round cut off by git or the infrastructure is run again,
+    "retry_wait": 600,         # after this many seconds, up to round_retries times in a row
 }
 
 
@@ -708,11 +711,25 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
     git("-C", str(wt), "commit", "-q", "-m", f"rsi({run}): round {t}, variant {variant}\n\n{summary}")
     sha = git("-C", str(wt), "rev-parse", "HEAD")
     with _GIT_LOCK:
-        git("-C", str(wt), "push", "-q", "--force", rc["remote"], f"HEAD:refs/heads/{branch}")
+        push(rc, "-C", str(wt), "push", "-q", "--force", rc["remote"], f"HEAD:refs/heads/{branch}")
     out.update(status="ready", sha=sha, branch=branch)
     out.pop("detail", None)
     save_json(saved, out)
     return out
+
+
+def push(rc: dict, *args: str) -> None:
+    """A git push, tried again after a pause when it fails: one that fails once is
+    usually the network or the credential helper, which recover."""
+    for attempt in range(rc["push_retries"] + 1):
+        try:
+            git(*args)
+            return
+        except evolve.GitError as e:
+            if attempt == rc["push_retries"]:
+                raise
+            print(f"git push failed ({e.stderr.strip()[-200:] or e.returncode}); trying again in 30s")
+            time.sleep(30)
 
 
 # --- a round ---
@@ -861,7 +878,7 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
         s = verdicts[winner["variant"]]["S"]
         save_json(evolve.FRONTIER, {"incumbent": ev["name"], "S_star": max(fr["S_star"], s),
                                     "metric": cfg["metric"]})
-        git("push", "-q", rc["remote"], f"{winner['sha']}:refs/heads/evolve/{run}")
+        push(rc, "push", "-q", rc["remote"], f"{winner['sha']}:refs/heads/evolve/{run}")
         print(f"round {t}: v{winner['variant']} accepted, S = {s:.4f}")
     else:
         print(f"round {t}: nothing accepted")
@@ -912,7 +929,7 @@ def cmd_start(args, cfg: dict) -> None:
     fr = load_json(evolve.FRONTIER)
     inc = evolve.load_eval(fr["incumbent"])
     sha = inc["harness"]["sha"]
-    git("push", "-q", rc["remote"], f"{sha}:refs/heads/evolve/{args.run}")
+    push(rc, "push", "-q", rc["remote"], f"{sha}:refs/heads/evolve/{args.run}")
     state = {"run": args.run, "T": args.T or rc["T"], "t": 0, "start": fr["incumbent"], "start_sha": sha,
              "trajectory": [evolve.aggregate(inc, cfg["metric"])["S"]],
              "created": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -924,12 +941,26 @@ def cmd_start(args, cfg: dict) -> None:
 def cmd_run(args, cfg: dict) -> None:
     rc = rsi_config(cfg)
     state = load_state(args.run)
-    done = 0
+    done = failures = 0
     while state["t"] < state["T"] and (args.rounds is None or done < args.rounds):
         if (RSI / args.run / "STOP").exists():
             print(f"stopped: remove {RSI / args.run / 'STOP'} to go on")
             return
-        if not run_round(state, cfg, rc, evaluate=not args.no_eval):
+        # A round cut off by git or by trials the infrastructure failed resumes where it
+        # stopped, so it is run again after a pause, unattended; anything else stops the run.
+        try:
+            finished = run_round(state, cfg, rc, evaluate=not args.no_eval)
+        except (evolve.GitError, evolve.MeasurementIncomplete) as e:
+            failures += 1
+            if failures > rc["round_retries"]:
+                raise
+            print(f"round {state['t']} was cut off ({str(e).splitlines()[0][:300]}); running it again in "
+                  f"{rc['retry_wait']}s ({failures}/{rc['round_retries']})")
+            time.sleep(rc["retry_wait"])
+            state = load_state(args.run)
+            continue
+        failures = 0
+        if not finished:
             print(f"candidates are in {RSI / args.run / f't{state["t"]}'}; `run {args.run}` measures them")
             return
         done += 1

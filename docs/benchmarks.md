@@ -58,6 +58,8 @@ model the benchmark runs (`deepseek-v4.1-flash-1017`).
 A measurement runs as the Pier job `jobs/bench-<name>`. If it is cut off (a dropped connection, a
 closed laptop), the same `eval` command resumes that job, running only the trials without a result;
 `rsi.py run` does the same for its candidates, and finishes a round cut off while being recorded.
+Left alone, it also runs again a round cut off by trials the infrastructure failed or by a git
+error (a push failing on the network), after 10 minutes and up to three times in a row.
 The first trials of a measurement to finish double as a smoke test: if the first three all crashed
 the harness (wren exiting non-zero in the container, or not installing), the job is stopped and
 never resumed, since the rest would only crash too. A crash of the infrastructure doesn't count.

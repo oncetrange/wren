@@ -352,3 +352,67 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     ledger = [json.loads(line) for line in evolve.LEDGER.read_text().splitlines()]
     assert [r["verdict"] for r in ledger] == ["REJECTED", "ACCEPTED"]
     assert not (tmp_path / "wt" / "r1" / "t0-v1").exists()
+
+
+def test_git_says_what_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "ROOT", tmp_path)
+    with pytest.raises(evolve.GitError, match="not a git repository"):
+        evolve.git("status")
+
+
+def test_push_tries_again(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rsi.time, "sleep", lambda s: None)
+    tries: list[tuple[str, ...]] = []
+
+    def flaky(*args: str) -> str:
+        tries.append(args)
+        if len(tries) < 3:
+            raise evolve.GitError(128, ["git", *args], "", "fatal: could not read Username")
+        return ""
+
+    monkeypatch.setattr(rsi, "git", flaky)
+    rc = rsi.rsi_config({})
+    rsi.push(rc, "push", "origin", "x")
+    assert len(tries) == 3
+    tries.clear()
+    with pytest.raises(evolve.GitError, match="could not read Username"):
+        rsi.push(rc | {"push_retries": 1}, "push", "origin", "x")
+    assert len(tries) == 2
+
+
+def test_run_goes_on_after_a_round_is_cut_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rsi, "RSI", tmp_path)
+    monkeypatch.setattr(rsi.time, "sleep", lambda s: None)
+    rsi.save_state({"run": "r1", "T": 2, "t": 0, "trajectory": [0.5]})
+    outcomes: list = [evolve.MeasurementIncomplete("r1-t0-v1: 50/60 trials finished")]
+
+    def fake_round(state, cfg, rc, evaluate=True):
+        out = outcomes.pop(0)
+        if isinstance(out, BaseException):
+            raise out
+        state["t"] += 1
+        rsi.save_state(state)
+        return out
+
+    monkeypatch.setattr(rsi, "run_round", fake_round)
+    args = type("A", (), {"run": "r1", "rounds": None, "no_eval": False})()
+    # Without retries, a cut-off round stops the run.
+    with pytest.raises(evolve.MeasurementIncomplete):
+        rsi.cmd_run(args, {"rsi": {"round_retries": 0}})
+    assert rsi.load_state("r1")["t"] == 0
+    # With one, each cut-off round is run again and the run finishes; the count starts
+    # over after a round that finishes.
+    outcomes[:] = [evolve.MeasurementIncomplete("cut off"), True,
+                   evolve.GitError(128, ["git", "push"], "", "x"), True]
+    rsi.cmd_run(args, {"rsi": {"round_retries": 1}})
+    assert rsi.load_state("r1")["t"] == 2 and outcomes == []
+    # Two in a row are one too many.
+    rsi.save_state({"run": "r1", "T": 3, "t": 2, "trajectory": [0.5]})
+    outcomes[:] = [evolve.GitError(128, ["git", "push"], "", "x")] * 2
+    with pytest.raises(evolve.GitError):
+        rsi.cmd_run(args, {"rsi": {"round_retries": 1}})
+    # Anything else stops the run at once.
+    rsi.save_state({"run": "r1", "T": 3, "t": 2, "trajectory": [0.5]})
+    outcomes[:] = [ValueError("a bug")]
+    with pytest.raises(ValueError):
+        rsi.cmd_run(args, {"rsi": {"round_retries": 3}})

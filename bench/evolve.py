@@ -244,8 +244,18 @@ def delta_of(cfg: dict) -> float:
                      "or set delta in bench/config.json")
 
 
+class GitError(subprocess.CalledProcessError):
+    """A failed git command, saying what git said."""
+
+    def __str__(self) -> str:
+        return f"{super().__str__()}\n{(self.stderr or '').strip()[-2000:]}"
+
+
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+    proc = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+    if proc.returncode:
+        raise GitError(proc.returncode, proc.args, proc.stdout, proc.stderr)
+    return proc.stdout.strip()
 
 
 def resolve_ref(ref: str) -> str:
@@ -318,6 +328,10 @@ POLL_SECONDS = 30
 
 class HarnessBroken(Exception):
     """A measurement stopped because the harness crashes in the container."""
+
+
+class MeasurementIncomplete(SystemExit):
+    """A measurement stopped with trials left to run; running it again resumes it."""
 
 
 def agent_crash(result: dict) -> str | None:
@@ -488,7 +502,7 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
             cmd = resume_command(job_dir, infra)
             continue
         failed = f" ({', '.join(sorted(infra))} on the rest)" if infra else ""
-        raise SystemExit(f"{name}: {done}/{total} trials finished{failed}; the same command resumes "
+        raise MeasurementIncomplete(f"{name}: {done}/{total} trials finished{failed}; the same command resumes "
                          f"{job_dir.relative_to(ROOT)} (or `score {name} {job_dir.relative_to(ROOT)}` "
                          "takes what is there)")
 
