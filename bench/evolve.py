@@ -34,6 +34,7 @@ import json
 import math
 import os
 import random
+import signal
 import statistics
 import subprocess
 import sys
@@ -305,6 +306,52 @@ OUTCOME_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "VerifierOutp
                       "RewardFileEmptyError", "RewardFileNotFoundError"}
 
 
+# The first trials of a measurement to finish double as a smoke test: when all of them
+# crashed the harness itself (wren exiting non-zero, or not installing), the candidate is
+# broken in the container and the rest of the job would be spent learning nothing.
+SMOKE_TRIALS = 3
+POLL_SECONDS = 30
+
+
+class HarnessBroken(Exception):
+    """A measurement stopped because the harness crashes in the container."""
+
+
+def agent_crash(result: dict) -> str | None:
+    """How a trial's harness crashed, or None if it didn't: Pier's error when the
+    agent command exits non-zero, or when installing the agent fails."""
+    exc = result.get("exception_info") or {}
+    kind, msg = exc.get("exception_type"), exc.get("exception_message") or ""
+    if kind == "NonZeroAgentExitCodeError" or (kind == "RuntimeError" and msg.startswith("Agent install failed")):
+        return f"{kind}: {msg[:400]}"
+    return None
+
+
+def broken(job_dir: Path) -> list[str] | None:
+    """The crashes, if the first SMOKE_TRIALS trials of the job to finish all crashed."""
+    done = sorted((p / "result.json" for p in job_dir.iterdir() if (p / "result.json").exists())
+                  if job_dir.exists() else [], key=lambda r: r.stat().st_mtime)[:SMOKE_TRIALS]
+    crashes = [c for r in done if (c := agent_crash(load_json(r)))]
+    return crashes if len(done) == SMOKE_TRIALS and len(crashes) == SMOKE_TRIALS else None
+
+
+def run_pier(cmd: list[str], env: dict | None, job_dir: Path) -> None:
+    """Run Pier, interrupting it (as Ctrl-C does, so it cancels its sandboxes) once
+    the job shows the harness is broken."""
+    proc = subprocess.Popen(cmd, cwd=ROOT, env=env)
+    try:
+        while proc.poll() is None:
+            try:
+                proc.wait(POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                if broken(job_dir):
+                    proc.send_signal(signal.SIGINT)
+                    proc.wait(300)
+    except BaseException:
+        proc.kill()
+        raise
+
+
 def job_progress(job_dir: Path) -> tuple[int, set[str]]:
     """Trials of a Pier job that finished (graded, or failed on their own), and
     the exception types of those the infrastructure failed."""
@@ -371,7 +418,9 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
 
     The job is jobs/bench-<name>. If it was cut off (no measurement saved yet),
     the same call resumes it: Pier runs only the trials without a result. One
-    whose Modal account runs out of credit resumes on the next account."""
+    whose Modal account runs out of credit resumes on the next account. Raises
+    HarnessBroken, and never resumes the job, when its first trials all crashed
+    the harness."""
     kwargs = {**cfg["agent_kwargs"], **overrides}
     if "version" in kwargs:
         raise SystemExit("the version is the ref; don't pass it with --ak")
@@ -381,6 +430,9 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
     # How Pier sizes sandboxes: "limit" reserves almost nothing and lets a trial
     # burst up to the task's spec, billing what it uses (about 1/7 of "auto").
     resources = {"cpus": "auto", "memory": "auto"} | cfg.get("resources", {})
+    if crashes := broken(job_dir):
+        raise HarnessBroken(f"{name}: the first {SMOKE_TRIALS} trials of {job_dir.relative_to(ROOT)} "
+                            f"crashed the harness: {crashes[0]}")
     if (job_dir / "config.json").exists():
         want = {"sha": sha, "kwargs": {key: str(v) for key, v in kwargs.items()}, "model": cfg["model"]}
         if (ran := job_harness(job_dir)) != want:
@@ -420,7 +472,10 @@ def run_eval(sha: str, overrides: dict, set_name: str, k: int, name: str, cfg: d
                 env = os.environ | {"MODAL_PROFILE": profile}
         else:
             profile = None
-        subprocess.run(cmd, cwd=ROOT, check=False, env=env)
+        run_pier(cmd, env, job_dir)
+        if crashes := broken(job_dir):
+            raise HarnessBroken(f"{name}: the first {SMOKE_TRIALS} trials of {job_dir.relative_to(ROOT)} "
+                            f"crashed the harness: {crashes[0]}")
         done, infra = job_progress(job_dir)
         if done >= total:
             return build_eval(name, [job_dir], set_name, k)
@@ -445,7 +500,11 @@ def cmd_eval(args, cfg: dict) -> None:
     overrides = dict(item.partition("=")[::2] for item in args.ak)
     # The first name without a measurement: if its job was cut off, run_eval resumes it.
     name = unique_name(args.name or f"{sha[:7]}-{args.set}")
-    ev = run_eval(sha, overrides, args.set, args.k or cfg["k"], name, cfg, args.dry_run)
+    try:
+        ev = run_eval(sha, overrides, args.set, args.k or cfg["k"], name, cfg, args.dry_run)
+    except HarnessBroken as e:
+        raise SystemExit(f"{e}\nfix the harness and measure the fix; if the infrastructure caused "
+                         "the crashes, remove the job to measure this one again") from None
     if ev is not None:
         print(describe(ev, cfg["metric"]))
         print_tasks(ev, cfg["metric"])

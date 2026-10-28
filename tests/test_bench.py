@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -112,7 +115,7 @@ def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.Mo
             shutil.rmtree(job / "b__1")
             write_trial(job, "b__2", "b", 0, kwargs={"time_limit": 170})
 
-    monkeypatch.setattr(evolve.subprocess, "run", pier)
+    monkeypatch.setattr(evolve, "run_pier", lambda cmd, env, job_dir: pier(cmd, evolve.ROOT, False, env))
     with pytest.raises(SystemExit, match=r"1/2 trials finished \(RuntimeError on the rest\)"):
         evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
     assert not evolve.eval_path("x").exists()
@@ -128,6 +131,74 @@ def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.Mo
     with pytest.raises(SystemExit, match="resources"):
         evolve.run_eval("abc", {}, "evolve", 1, "x", cfg | {"resources": {"cpus": "limit", "memory": "limit"}})
     assert not (tmp_path / "accounts.json").exists()   # no accounts listed: Modal's active profile
+
+
+def crash(job: Path, name: str, task: str, kind: str = "NonZeroAgentExitCodeError",
+          msg: str = "Command failed (exit 1): wren -p ...", age: float = 0) -> None:
+    write_trial(job, name, task, None)
+    r = job / name / "result.json"
+    r.write_text(json.dumps(json.loads(r.read_text()) | {
+        "exception_info": {"exception_type": kind, "exception_message": msg}}))
+    os.utime(r, (time.time() - age, time.time() - age))
+
+
+def test_broken_reads_the_first_trials_to_finish(tmp_path: Path):
+    job = tmp_path / "job"
+    assert evolve.broken(job) is None
+    crash(job, "a__1", "a", age=30)
+    crash(job, "b__1", "b", kind="RuntimeError", msg="Agent install failed: pip exited 1", age=20)
+    assert evolve.broken(job) is None   # too few finished to say
+    crash(job, "c__1", "c", age=10)
+    assert len(evolve.broken(job) or []) == 3
+    # One of the first three ran: an infrastructure hiccup, not a broken harness.
+    healthy = tmp_path / "healthy"
+    crash(healthy, "a__1", "a", age=30)
+    write_trial(healthy, "b__1", "b", 0)
+    os.utime(healthy / "b__1" / "result.json", (time.time() - 20, time.time() - 20))
+    crash(healthy, "c__1", "c", age=10)
+    crash(healthy, "d__1", "d")
+    assert evolve.broken(healthy) is None
+    # A sandbox that failed is the infrastructure's, whatever came first.
+    infra = tmp_path / "infra"
+    for i, t in enumerate("abc"):
+        crash(infra, f"{t}__1", t, kind="RuntimeError", msg="sandbox vanished", age=10 * i)
+    assert evolve.broken(infra) is None
+
+
+def test_a_broken_harness_stops_its_measurement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "ROOT", tmp_path)
+    monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")
+    monkeypatch.setattr(evolve, "ACCOUNTS", tmp_path / "accounts.json")
+    monkeypatch.setattr(evolve, "load_split", lambda: {"evolve": ["a", "b", "c", "d"]})
+    cfg = {"dataset": "tasks", "env": "local", "n_concurrent": 4, "model": "m", "agent_env": [],
+           "agent_kwargs": {}}
+    job = tmp_path / "jobs" / "bench-x"
+    calls: list[list[str]] = []
+
+    def pier(cmd, env, job_dir):
+        calls.append(cmd)
+        job.mkdir(parents=True)
+        (job / "config.json").write_text(json.dumps({"agents": [{"model_name": "m", "kwargs": {"version": "abc"}}]}))
+        for i, t in enumerate("abc"):
+            crash(job, f"{t}__1", t, age=30 - 10 * i)
+
+    monkeypatch.setattr(evolve, "run_pier", pier)
+    with pytest.raises(evolve.HarnessBroken, match="crashed the harness: NonZeroAgentExitCodeError"):
+        evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
+    # Running it again doesn't resume the job: the crashes would only repeat.
+    with pytest.raises(evolve.HarnessBroken):
+        evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
+    assert len(calls) == 1 and not evolve.eval_path("x").exists()
+
+
+def test_run_pier_interrupts_a_broken_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "POLL_SECONDS", 0.1)
+    job = tmp_path / "job"
+    for i, t in enumerate("abc"):
+        crash(job, f"{t}__1", t, age=30 - 10 * i)
+    start = time.monotonic()
+    evolve.run_pier([sys.executable, "-c", "import time; time.sleep(60)"], None, job)
+    assert time.monotonic() - start < 30
 
 
 def test_a_spent_modal_account_hands_the_job_to_the_next(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -165,7 +236,7 @@ def test_a_spent_modal_account_hands_the_job_to_the_next(tmp_path: Path, monkeyp
             shutil.rmtree(job / "b__2")
             write_trial(job, "b__3", "b", 1)
 
-    monkeypatch.setattr(evolve.subprocess, "run", pier)
+    monkeypatch.setattr(evolve, "run_pier", lambda cmd, env, job_dir: pier(cmd, evolve.ROOT, False, env))
     ev = evolve.run_eval("abc", {}, "evolve", 1, "x", cfg)
     assert ev is not None and evolve.aggregate(ev, "reward")["S"] == 1.0
     # A new job goes to the account given the fewest jobs; each spent one hands it on.

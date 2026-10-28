@@ -56,6 +56,9 @@ model the benchmark runs (`deepseek-v4.1-flash-1017`).
 A measurement runs as the Pier job `jobs/bench-<name>`. If it is cut off (a dropped connection, a
 closed laptop), the same `eval` command resumes that job, running only the trials without a result;
 `rsi.py run` does the same for its candidates, and finishes a round cut off while being recorded.
+The first trials of a measurement to finish double as a smoke test: if the first three all crashed
+the harness (wren exiting non-zero in the container, or not installing), the job is stopped and
+never resumed, since the rest would only crash too. A crash of the infrastructure doesn't count.
 A trial whose session log goes quiet for 20 minutes (a model request that never returns, as when
 the provider's quota runs out) fails as `AgentStalledError`, which a resume runs again.
 
@@ -117,7 +120,7 @@ Each round:
    A candidate that fails gets `repair_rounds` attempts to fix what was objected to, and is
    otherwise dropped. The drop is still recorded.
 4. **Measure and select.** Survivors are pushed (as `evolve-cand/<run>/t<t>-v<i>`) and measured
-   on the evolve split. The best admissible one becomes the incumbent, and `evolve/<run>` moves to
+   on the evolve split; one whose first trials crash the harness is dropped there. The best admissible one becomes the incumbent, and `evolve/<run>` moves to
    it. Every edit goes into `bench/runs/rsi/<run>/history.jsonl` with its measured gain and the
    tasks that moved, and every measured candidate goes into the ledger.
 
