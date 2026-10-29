@@ -22,9 +22,10 @@ def trials(*rewards: float | None, tokens: int = 100, dirs: list[str] | None = N
 
 
 def test_edit_budget_anneals_from_b_max_to_b_min():
-    table = [rsi.edit_budget(t, 8, 1, 3) for t in range(8)]
-    assert table[0] == 3 and table[-1] == 2 and rsi.edit_budget(8, 8, 1, 3) == 1
-    assert table == sorted(table, reverse=True)
+    assert [rsi.edit_budget(t, 8, 1, 3) for t in range(8)] == [3, 3, 3, 3, 2, 2, 2, 1]
+    table = [rsi.edit_budget(t, 20, 1, 4) for t in range(20)]
+    assert table[0] == 4 and table[-1] == 1 and table == sorted(table, reverse=True)
+    assert rsi.edit_budget(1, 1, 1, 3) == 3 and rsi.edit_budget(9, 8, 1, 3) == 1
 
 
 def test_stall_untried_and_prune():
