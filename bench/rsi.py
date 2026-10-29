@@ -926,9 +926,9 @@ def select(ready: list[dict], measured: list[dict], a_inc: dict, s_star: float, 
     out: dict[int, dict] = {}
     for c, ev in zip(ready, measured, strict=True):
         a = evolve.aggregate(ev, cfg["metric"])
-        if a["missing"] > cfg["invalid_missing_frac"] * a["n"]:
+        if problem := evolve.incomplete(ev, cfg):
             v = {"admissible": False, "delta_S": None, "delta_C": None, "outcome": "invalid",
-                 "reason": f"{a['missing']}/{a['n']} trials have no grade: not a measurement"}
+                 "reason": problem}
         else:
             v = evolve.judge(a, a_inc, s_star, delta, cfg)
             v["outcome"] = "admissible" if v["admissible"] else "rejected"

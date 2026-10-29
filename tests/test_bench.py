@@ -97,6 +97,33 @@ def test_calibrate_from_repeated_and_single_measurements():
     assert evolve.calibrate([steady], "reward", z=2.0)["delta"] == 0
 
 
+def test_calibrate_and_baseline_refuse_a_measurement_missing_trials(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch):
+    for name in ("EVALS", "CALIBRATION", "FRONTIER", "LEDGER"):
+        monkeypatch.setattr(evolve, name, tmp_path / name.lower())
+    harness = {"sha": "abc", "kwargs": {}, "model": "m"}
+
+    def save(name: str, graded: int) -> None:   # 10 trials, the first `graded` with a grade
+        trials = [{"scores": {"reward": 1.0} if i < graded else None, "tokens": 1, "exception": None}
+                  for i in range(10)]
+        evolve.save_json(evolve.eval_path(name), {"name": name, "set": "evolve", "k": 2, "harness": harness,
+                                                  "per_task": {f"t{i}": trials[2 * i:2 * i + 2] for i in range(5)}})
+
+    cfg = {**CFG, "metric": "reward", "invalid_missing_frac": 0.2, "delta_z": 2.0}
+    save("full", 10)
+    save("short", 7)   # 3 of 10 missing: over 20%
+    save("most", 8)    # 2 of 10: just within
+    with pytest.raises(SystemExit, match="short: 3/10 trials have no grade"):
+        evolve.cmd_calibrate(type("A", (), {"names": ["full", "short"]})(), cfg)
+    assert not evolve.CALIBRATION.exists()
+    with pytest.raises(SystemExit, match="short: 3/10"):
+        evolve.cmd_baseline(type("A", (), {"name": "short"})(), cfg)
+    assert not evolve.FRONTIER.exists() and not evolve.LEDGER.exists()
+    evolve.cmd_calibrate(type("A", (), {"names": ["full", "most"]})(), cfg)
+    evolve.cmd_baseline(type("A", (), {"name": "most"})(), cfg)
+    assert evolve.load_json(evolve.FRONTIER)["incumbent"] == "most"
+
+
 def test_a_measurement_cut_off_is_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(evolve, "ROOT", tmp_path)
     monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")

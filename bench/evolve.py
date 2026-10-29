@@ -146,6 +146,15 @@ def aggregate(ev: dict, metric: str) -> dict:
     }
 
 
+def incomplete(ev: dict, cfg: dict) -> str | None:
+    """Why a measurement can't be used, if too many of its trials have no grade:
+    an infrastructure problem, and the zeros they count as aren't the harness's."""
+    a = aggregate(ev, cfg["metric"])
+    if a["missing"] > cfg["invalid_missing_frac"] * a["n"]:
+        return f"{ev['name']}: {a['missing']}/{a['n']} trials have no grade: not a measurement"
+    return None
+
+
 def bootstrap_se(evals: list[dict], metric: str, reps: int = 2000, seed: int = 7) -> float:
     """Standard error of S from trial-to-trial noise alone: trials are resampled
     within each task, the tasks themselves stay fixed (every harness runs the same ones)."""
@@ -546,6 +555,10 @@ def cmd_calibrate(args, cfg: dict) -> None:
     evals = [load_eval(n) for n in args.names]
     if len({json.dumps(ev["harness"], sort_keys=True) for ev in evals}) > 1:
         raise SystemExit("calibration needs measurements of one and the same harness")
+    # Missing trials count as failures, which would read as noise; a band from them
+    # would set every later verdict.
+    if problems := [p for ev in evals if (p := incomplete(ev, cfg))]:
+        raise SystemExit("; ".join(problems) + ". Resume them with the same `eval` command.")
     if len(evals) == 1 and evals[0]["k"] < 2:
         raise SystemExit("one measurement with k=1 says nothing about noise: measure again, or use k >= 2")
     cal = calibrate(evals, cfg["metric"], cfg["delta_z"])
@@ -561,6 +574,8 @@ def cmd_baseline(args, cfg: dict) -> None:
     ev = load_eval(args.name)
     if ev["set"] != "evolve":
         raise SystemExit("the incumbent is measured on the evolve set")
+    if problem := incomplete(ev, cfg):   # S* would be set low, and every candidate judged against it
+        raise SystemExit(f"{problem}. Resume it with the same `eval` command.")
     a = aggregate(ev, cfg["metric"])
     save_json(FRONTIER, {"incumbent": args.name, "S_star": a["S"], "metric": cfg["metric"]})
     append_ledger({"candidate": args.name, "harness": ev["harness"], "verdict": "BASELINE",
@@ -583,9 +598,8 @@ def cmd_judge(args, cfg: dict) -> None:
         raise SystemExit(f"component must be one of {COMPONENTS}")
     delta = delta_of(cfg)
     a_inc, a_cand = aggregate(inc, cfg["metric"]), aggregate(cand, cfg["metric"])
-    if a_cand["missing"] > cfg["invalid_missing_frac"] * a_cand["n"]:
-        raise SystemExit(f"{a_cand['missing']}/{a_cand['n']} trials have no grade: an infrastructure "
-                         f"problem, not a measurement. Run it again.")
+    if problem := incomplete(cand, cfg):
+        raise SystemExit(f"{problem}: an infrastructure problem. Run it again.")
     verdict = judge(a_cand, a_inc, fr["S_star"], delta, cfg)
     print(describe(inc, cfg["metric"]) + "  (incumbent)")
     print(describe(cand, cfg["metric"]))
