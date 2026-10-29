@@ -72,7 +72,8 @@ global instructions from `~/.wren/WREN.md`.
 - **Headless and scheduled runs**: `wren -p` can print JSON output and stop at a time limit, and
   prompts can run on a cron schedule. See [headless](https://github.com/oncetrange/wren/blob/main/docs/headless.md).
 - **Benchmarks**: wren runs on DeepSWE and other Harbor-format benchmarks, and a harness change
-  can be judged against noise, or proposed, screened and judged by wren itself. See [benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md).
+  can be judged against noise, or proposed, screened and judged by wren itself. See [benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md)
+  and [self-improvement](https://github.com/oncetrange/wren/blob/main/docs/rsi.md).
 
 ## Models
 
@@ -104,7 +105,7 @@ gateway), in `~/.wren/config.toml`. See [models](https://github.com/oncetrange/w
 | [MCP servers](https://github.com/oncetrange/wren/blob/main/docs/mcp.md) · [Hooks](https://github.com/oncetrange/wren/blob/main/docs/hooks.md) | connecting tools, and rules that run as shell commands |
 | [Background commands and the web](https://github.com/oncetrange/wren/blob/main/docs/tools.md) | long-running commands, `web_search`, `web_fetch` |
 | [Headless and scheduled runs](https://github.com/oncetrange/wren/blob/main/docs/headless.md) | `wren -p`, JSON output, cron schedules |
-| [Benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md) | the Pier/Harbor adapter, and measuring a harness change |
+| [Benchmarks](https://github.com/oncetrange/wren/blob/main/docs/benchmarks.md) · [Self-improvement](https://github.com/oncetrange/wren/blob/main/docs/rsi.md) | the Pier/Harbor adapter, measuring a harness change, and wren improving its own harness |
 | [Architecture](https://github.com/oncetrange/wren/blob/main/docs/architecture.md) | how the code is laid out |
 | [Changelog](https://github.com/oncetrange/wren/blob/main/CHANGELOG.md) | what changed in each release |
 
