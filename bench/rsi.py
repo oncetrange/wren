@@ -13,10 +13,12 @@ harness changes.
 
 A round t:
   1. analyze: failed (and contrasting or always passing) trials of the incumbent are
-     rendered to text and digested one at a time by a read-only wren; an analyst wren
-     clusters the digests into a three-lens report (failure modes ranked by
-     impact, capability gaps, success habits), asking for follow-up digests
-     first if it needs them, and keeps the names stable across rounds;
+     rendered to text and digested one at a time by a read-only wren, as are tasks
+     an earlier candidate flipped, against the candidate's run and diff; an analyst
+     wren clusters the digests into a report (failure modes ranked by impact,
+     capability gaps, success habits, mechanisms of earlier candidates that helped
+     or hurt), asking for follow-up digests first if it needs them, and keeps the
+     names stable across rounds;
   2. propose: in its own git worktree, wren edits its source under the rules of
      prompts/constitution.md, declaring each independent edit (component,
      hypothesis, trigger, predicted tasks, a retroactive check) in RSI_EDITS.json,
@@ -98,6 +100,7 @@ DEFAULTS = {
     "n_prune": 4,              # rounds a component's best recent gain is looked back over
     "max_digests": 12,         # trials digested per round before the analyst reads them
     "stable_digests": 3,       # of those, successes of tasks that always pass
+    "contrast_digests": 3,     # of those, at most, comparisons with an earlier candidate
     "max_followups": 6,        # further digests the analyst may ask for per turn
     "analyst_rounds": 2,       # analyst turns: follow-ups, then the report
     "repair_rounds": 2,        # attempts to fix a candidate that fails screening
@@ -334,6 +337,61 @@ def choose_trials(ev: dict, metric: str, max_n: int, n_stable: int) -> list[dict
     return first + stable + more[:room - len(first)]
 
 
+def choose_contrasts(run: str, inc: dict, history: list[dict], metric: str, max_n: int) -> tuple[list[dict], int]:
+    """Tasks on which an earlier candidate of the run came out the other way from
+    the incumbent, worth a digest that compares the two runs: what the candidate's
+    change did there, even if the candidate was rejected. Only strong ones: a full
+    flip (all of one's trials passed, none of the other's), or a task that two or
+    more candidates moved the same way; at a few trials per task a single partial
+    move is mostly chance. One per task, full flips first, then the most recurrent,
+    gains before losses, the newest candidate first. Returns the chosen ones and
+    how many strong ones there were."""
+    def rate(ev: dict, task: str) -> float:
+        values = evolve.task_values(ev["per_task"][task], ev["k"], metric)
+        return sum(values) / len(values)
+
+    def logged(ev: dict, task: str, passing: bool) -> int | None:
+        return next((j for j, x in enumerate(ev["per_task"][task]) if x.get("dir")
+                     and (((x["scores"] or {}).get(metric) or 0) >= 1) == passing), None)
+
+    moves: dict[tuple[str, str], list[dict]] = {}
+    seen = set()
+    for r in reversed(history):   # newest first
+        name = f"{run}-t{r['t']}-v{r['variant']}"
+        if r.get("delta_S") is None or name == inc["name"] or name in seen:
+            continue   # never measured, or not a measurement
+        seen.add(name)
+        if not evolve.eval_path(name).exists():
+            continue
+        cand = evolve.load_eval(name)
+        for task in inc["per_task"]:
+            if task not in cand["per_task"]:
+                continue
+            gap = rate(cand, task) - rate(inc, task)
+            if abs(gap) < 0.5 - 1e-9:
+                continue
+            direction = "gain" if gap > 0 else "loss"
+            i, c = logged(inc, task, direction == "loss"), logged(cand, task, direction == "gain")
+            if i is not None and c is not None:
+                moves.setdefault((task, direction), []).append(
+                    {"task": task, "lens": "contrast", "direction": direction, "candidate": name,
+                     "t": r["t"], "variant": r["variant"], "trial": i, "cand_trial": c,
+                     "full": abs(gap) >= 1 - 1e-9, "recurrence": 0})
+    strong = []
+    for found in moves.values():
+        best = max(found, key=lambda m: m["full"])   # max keeps the first, the newest, on a tie
+        best["recurrence"] = len(found)
+        if best["full"] or len(found) >= 2:
+            strong.append(best)
+    strong.sort(key=lambda m: (not m["full"], -m["recurrence"], m["direction"] != "gain", -m["t"]))
+    chosen, tasks = [], set()
+    for m in strong:
+        if m["task"] not in tasks and len(chosen) < max_n:
+            chosen.append(m)
+            tasks.add(m["task"])
+    return chosen, len(strong)
+
+
 def prompt(name: str, **values: object) -> str:
     return Template((PROMPTS / f"{name}.md").read_text()).substitute(
         {k: str(v) for k, v in values.items()})
@@ -408,15 +466,17 @@ def task_table(ev: dict, metric: str, digests: list[dict]) -> str:
     rows = []
     for task, trials in ev["per_task"].items():
         values = evolve.task_values(trials, ev["k"], metric)
-        made = [f"{d['lens']} of trial {d['trial']}" for d in digests if d["task"] == task]
+        made = [f"contrast of trial {d['trial']} with {d['candidate']}" if d["lens"] == "contrast"
+                else f"{d['lens']} of trial {d['trial']}" for d in digests if d["task"] == task]
         rows.append((sum(values) / len(values), f"- {task}: {sum(values) / len(values):.2f} "
                      f"(trials {', '.join(f'{v:g}' for v in values)}; digests: {', '.join(made) or 'none'})"))
     return "\n".join(r for _, r in sorted(rows))
 
 
 def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
-    """Digest the incumbent's trials, have the analyst aggregate the digests
-    into a three-lens report (asking for follow-up digests if it needs them),
+    """Digest the incumbent's trials and its contrasts with earlier candidates, have
+    the analyst aggregate the digests into a report (asking for follow-up digests if
+    it needs them),
     and write both to runs/rsi/<run>/t<t>/report.md."""
     rdir = RSI / run / f"t{t}"
     report_md = rdir / "report.md"
@@ -448,14 +508,49 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
         save_json(out, d)
         return d
 
+    def contrast(req: dict) -> dict:
+        task, j, name = req["task"], req["trial"], req["candidate"]
+        out = digests / f"{task}-contrast-{name}.json"
+        if out.exists():
+            return load_json(out)
+        cand = evolve.load_eval(name)
+        inc_trace, cand_trace = traces / f"{task}-{j}.txt", traces / f"{name}-{task}-{req['cand_trial']}.txt"
+        if not inc_trace.exists():
+            inc_trace.write_text(render_trace(inc["per_task"][task][j], task))
+        if not cand_trace.exists():   # two traces in one read: each gets half the room of a single one
+            cand_trace.write_text(render_trace(cand["per_task"][task][req["cand_trial"]], task, limit=75_000))
+        vdir = RSI / run / f"t{req['t']}" / f"v{req['variant']}"
+        diff = traces / f"{name}.diff"
+        diff.write_text((vdir / "diff.patch").read_text() if (vdir / "diff.patch").exists() else "")
+        saved = load_json(vdir / "candidate.json") if (vdir / "candidate.json").exists() else {}
+        verdict = next((f"{r.get('outcome')} (delta_S {r.get('delta_S')})" for r in history
+                        if (r["t"], r["variant"]) == (req["t"], req["variant"])), "measured")
+        gain = req["direction"] == "gain"
+        reply = call_wren(rc, prompt("contrast", task=task, inc_trace=inc_trace.name, cand_trace=cand_trace.name,
+                                     diff=diff.name, candidate=name, verdict=verdict,
+                                     inc_outcome="failed" if gain else "passed",
+                                     cand_outcome="passed" if gain else "failed",
+                                     edits=json.dumps(saved.get("edits") or [], indent=1, ensure_ascii=False)),
+                          traces, retries=rc["wren_retries"], model=rc["digest_model"], yolo=False,
+                          time_limit=rc["digest_time_limit"], log=rdir / "logs" / "digest.log")
+        d = parse_json_reply(reply.get("result") or "") or {"unparsed": reply.get("result")}
+        d = {"task": task, "trial": j, "lens": "contrast", "candidate": name, "direction": req["direction"],
+             "candidate_verdict": verdict, "traces": [f"traces/{inc_trace.name}", f"traces/{cand_trace.name}"],
+             **d}
+        save_json(out, d)
+        return d
+
     def run_digests(reqs: list[dict]) -> list[dict]:
         with ThreadPoolExecutor(4) as pool:
-            return list(pool.map(digest, reqs))
+            return list(pool.map(lambda r: contrast(r) if r["lens"] == "contrast" else digest(r), reqs))
 
-    done = run_digests([
+    history = read_history(run)
+    contrasts, n_strong = choose_contrasts(run, inc, history, metric,
+                                           min(rc["contrast_digests"], rc["max_digests"]))
+    done = run_digests(contrasts + [
         {"task": c["task"], "lens": c["lens"],
          "trial": next(j for j, x in enumerate(inc["per_task"][c["task"]]) if x is c["trial"])}
-        for c in choose_trials(inc, metric, rc["max_digests"], rc["stable_digests"])])
+        for c in choose_trials(inc, metric, rc["max_digests"] - len(contrasts), rc["stable_digests"])])
     prior_path = RSI / run / "analysis.json"
     prior = load_json(prior_path) if prior_path.exists() else {}
     report: dict | None = None
@@ -483,7 +578,8 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
             if reply:   # a failed turn is tried again when the round is resumed
                 save_json(cached, reply)
         if "failure_modes" in reply:
-            report = {k: reply.get(k) or [] for k in ("failure_modes", "capability_gaps", "success_habits")}
+            report = {k: reply.get(k) or [] for k in ("failure_modes", "capability_gaps", "success_habits",
+                                                      "candidate_mechanisms")}
             report["failure_modes"].sort(key=lambda m: -(m.get("n_tasks") or 0))
             break
         taken = {(d["task"], d["trial"], d["lens"]) for d in done}
@@ -504,18 +600,22 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
     a = evolve.aggregate(inc, metric)
     lines = [f"# Round {t}: how the incumbent {inc['name']} did",
              f"S = {a['S']:.4f} over {len(inc['per_task'])} tasks x k={inc['k']}; per task, lowest first:",
-             "", task_table(inc, metric, done), "", "## Analysis", ""]
+             "", task_table(inc, metric, done), "",
+             f"Tasks an earlier candidate of this run flipped against the incumbent (or that several "
+             f"moved): {n_strong}, of which {len(contrasts)} compared.", "", "## Analysis", ""]
     if report:
         save_json(rdir / "analysis.json", report)
         save_json(prior_path, {k: report[k] for k in ("failure_modes", "success_habits")})
-        lines += ["The analyst's three-lens report: failure modes ranked by impact, capability gaps "
-                  "(these often need a tool or plumbing fix rather than an instruction), and success "
-                  "habits, which your change must not break.", "",
+        lines += ["The analyst's report: failure modes ranked by impact, capability gaps (these often "
+                  "need a tool or plumbing fix rather than an instruction), success habits, which your "
+                  "change must not break, and the mechanisms of earlier candidates that visibly helped "
+                  "or hurt on a task.", "",
                   f"```json\n{json.dumps(report, indent=1, ensure_ascii=False)}\n```"]
     else:
         lines.append("The analyst produced no report this round: work from the digests.")
     lines += ["", "## Digests", "",
-              "One per trial, by a reader of the whole trace. The traces are in traces/.", ""]
+              "One per trial, by a reader of the whole trace, or, for a contrast, of the incumbent's "
+              "and an earlier candidate's runs of a task. The traces are in traces/.", ""]
     lines += [f"```json\n{json.dumps(d, indent=1, ensure_ascii=False)}\n```" for d in done]
     report_md.write_text("\n".join(lines) + "\n")
     return report_md
@@ -792,7 +892,9 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
                      + json.dumps(prune, ensure_ascii=False))
     lines += ["", "Edit history, oldest first (delta_S is the measured change in score, delta_C in "
               "tokens per trial; an edit bundled with others shares their measurement). A rejected "
-              "mechanism is negative evidence: don't redraw it unchanged. An accepted one carries the "
+              "mechanism is negative evidence: don't redraw it unchanged, unless the analysis's "
+              "candidate_mechanisms shows it helped on its own; then isolate or refine it, and say "
+              "so in the hypothesis. An accepted one carries the "
               "gain it produced: refine what has known credit, not what merely preceded a rise.",
               render_history(history),
               "", "Attribution scoreboard, oldest first: per measured edit, which of its predicted tasks "

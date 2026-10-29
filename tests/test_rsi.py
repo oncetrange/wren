@@ -365,6 +365,75 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     assert not (tmp_path / "wt" / "r1" / "t0-v1").exists()
 
 
+def logged(*rewards: float | None) -> list[dict]:
+    return trials(*rewards, dirs=[f"/d{i}" for i in range(len(rewards))])
+
+
+def test_choose_contrasts_takes_strong_moves_of_earlier_candidates(tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(evolve, "EVALS", tmp_path)
+    inc = {"name": "r1-t1-v2", "k": 2, "per_task": {
+        "full_gain": logged(0, 0), "full_loss": logged(1, 1), "partial": logged(0, 0),
+        "recurrent": logged(0, 0), "unlogged": trials(0, 0), "steady": logged(1, 1)}}
+    cands = {
+        "r1-t0-v1": {"full_gain": [1, 1], "full_loss": [0, 0], "partial": [1, 0], "recurrent": [1, 0]},
+        "r1-t1-v1": {"full_gain": [1, 1], "recurrent": [0, 1], "unlogged": [1, 1]},
+        "r1-t2-v1": {"steady": [0, 0]},   # dropped in screening: never measured
+    }
+    same = {t: [x["scores"]["reward"] for x in ts] for t, ts in inc["per_task"].items()}
+    for name, rewards in cands.items():   # on the tasks not given, as the incumbent did
+        evolve.save_json(evolve.eval_path(name), {"name": name, "k": 2, "per_task": {
+            t: logged(*rewards.get(t, same[t])) for t in inc["per_task"]}})
+    history = [{"t": 0, "variant": 1, "delta_S": 0.1}, {"t": 1, "variant": 1, "delta_S": -0.1},
+               {"t": 1, "variant": 2, "delta_S": 0.2},   # the incumbent itself
+               {"t": 2, "variant": 1, "delta_S": None}]
+    chosen, n_strong = rsi.choose_contrasts("r1", inc, history, "reward", 3)
+    # Full flips first (the gain before the loss, the newest candidate first), then the task
+    # two candidates moved; a single partial move, a task without logs, the incumbent and an
+    # unmeasured candidate are left out.
+    assert [(c["task"], c["direction"], c["candidate"]) for c in chosen] == [
+        ("full_gain", "gain", "r1-t1-v1"), ("full_loss", "loss", "r1-t0-v1"), ("recurrent", "gain", "r1-t1-v1")]
+    assert n_strong == 3 and chosen[0]["recurrence"] == 2
+    # The incumbent's trial that failed (for a gain) and the candidate's that passed.
+    assert (chosen[2]["trial"], chosen[2]["cand_trial"]) == (0, 1)
+    assert [c["task"] for c in rsi.choose_contrasts("r1", inc, history, "reward", 1)[0]] == ["full_gain"]
+    assert rsi.choose_contrasts("r1", inc, [], "reward", 3) == ([], 0)
+
+
+def test_analyze_compares_an_earlier_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rsi, "RSI", tmp_path / "rsi")
+    monkeypatch.setattr(evolve, "EVALS", tmp_path / "evals")
+    inc = {"name": "base", "k": 2, "per_task": {"hard": logged(0, 0), "easy": logged(1, 1)}}
+    evolve.save_json(evolve.eval_path("r1-t0-v1"), {"name": "r1-t0-v1", "k": 2, "per_task": {
+        "hard": logged(1, 1), "easy": logged(1, 1)}})
+    vdir = tmp_path / "rsi" / "r1" / "t0" / "v1"
+    evolve.save_json(vdir / "candidate.json", {"edits": [EDIT | {"trigger_condition": "after 30 reads"}]})
+    (vdir / "diff.patch").write_text("+NUDGE = 30\n")
+    rsi.append_history("r1", [{"t": 0, "variant": 1, "delta_S": 0.05, "outcome": "admissible"}])
+    texts: list[str] = []
+
+    def fake_wren(rc, text, cwd, *, model, yolo, time_limit, log):
+        texts.append(text)
+        if "comparing two trajectories" in text:
+            assert (cwd / "r1-t0-v1.diff").read_text() == "+NUDGE = 30\n"
+            return {"status": "done", "result": '{"caused_by_edit": "yes", "which_edit": "E1"}'}
+        if "batch analyst" in text:
+            return {"status": "done", "result": json.dumps({"failure_modes": [], "candidate_mechanisms": [
+                {"candidate": "r1-t0-v1", "edit": "E1", "effect": "helped"}]})}
+        return {"status": "done", "result": '{"blocker": "b"}'}
+
+    monkeypatch.setattr(rsi, "run_wren", fake_wren)
+    report = rsi.analyze("r1", 1, inc, CFG, rsi.rsi_config({"rsi": {"max_digests": 3}})).read_text()
+    contrast = evolve.load_json(tmp_path / "rsi" / "r1" / "t1" / "digests" / "hard-contrast-r1-t0-v1.json")
+    assert contrast["caused_by_edit"] == "yes" and contrast["candidate_verdict"] == "admissible (delta_S 0.05)"
+    prompt = next(t for t in texts if "comparing two trajectories" in t)
+    assert "after 30 reads" in prompt and "`hard-0.txt`: the incumbent harness, which failed" in prompt
+    assert "contrast of trial 0 with r1-t0-v1" in report and "or that several moved): 1, of which 1" in report
+    assert '"effect": "helped"' in report
+    # The other digests fill the remaining room.
+    assert "batch analyst" in texts[-1] and len(texts) == 4
+
+
 def test_call_wren_tries_a_failed_wren_again(monkeypatch: pytest.MonkeyPatch):
     waits: list[float] = []
     monkeypatch.setattr(rsi.time, "sleep", waits.append)
