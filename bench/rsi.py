@@ -24,11 +24,13 @@ A round t:
      hypothesis, trigger, predicted tasks, a retroactive check) in RSI_EDITS.json,
      within the annealed edit budget b_t and the exploration and prune directives
      drawn from the edit history;
-  3. screen: the declaration is checked, the repo's checks run, and a critic
-     rejects benchmark-specific logic; a failing candidate gets bounded repairs;
+  3. screen: the declaration is checked and each edit's component read from the
+     diff, the repo's checks run, the added lines are scanned for task names,
+     grader files and credentials, and a critic rejects benchmark-specific logic;
+     a failing candidate gets bounded repairs;
   4. measure the survivors (pushed, since the task containers install wren from
-     GitHub), judge them against the incumbent and fast-forward evolve/<run> to the
-     best admissible one.
+     GitHub; one whose first trials crash the harness is dropped), judge them
+     against the incumbent and fast-forward evolve/<run> to the best admissible one.
 
 Every edit goes into runs/rsi/<run>/history.jsonl with its measured gain and
 which tasks moved (its predictions' hits, unpredicted regressions), so the
