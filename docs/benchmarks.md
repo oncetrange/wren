@@ -46,7 +46,9 @@ if each task's trials came out differently, which is far steadier than the gap b
 scores, a single draw. `calibrate` still reports that gap, and warns when it is more than twice
 what the trials predict, a sign that something hit many trials of one measurement at once.
 
-A trial without a grade counts as a failure. A candidate is accepted only if it doesn't fall
+A trial without a grade counts as a failure, but a measurement with more than a fifth of its
+trials ungraded (`invalid_missing_frac`) had an infrastructure problem: `calibrate`, `baseline`
+and `judge` refuse it until it is resumed. A candidate is accepted only if it doesn't fall
 below the best score so far minus delta, and pays for any extra tokens with a gain larger than
 delta. Inside the band a gain counts for nothing, since it may be noise: only a token saving gets
 in, and it must also pay for any score it loses, or the cheapest way in would be an agent that

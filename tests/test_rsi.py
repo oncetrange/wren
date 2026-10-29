@@ -226,13 +226,13 @@ def test_parse_json_reply():
 def test_select_picks_the_best_admissible():
     inc = {"S": 0.5, "C": 100.0}
     ready = [{"variant": 1}, {"variant": 2}, {"variant": 3}]
-    measured = [{"k": 2, "per_task": {"a": trials(1, 1), "b": trials(1, 0)}},       # S 0.75: admissible
-                {"k": 2, "per_task": {"a": trials(1, 1), "b": trials(1, 1)}},       # S 1.0: best
-                {"k": 2, "per_task": {"a": trials(None, None), "b": trials(1, 1)}}]  # half ungraded
+    measured = [{"name": "v1", "k": 2, "per_task": {"a": trials(1, 1), "b": trials(1, 0)}},       # S 0.75: admissible
+                {"name": "v2", "k": 2, "per_task": {"a": trials(1, 1), "b": trials(1, 1)}},       # S 1.0: best
+                {"name": "v3", "k": 2, "per_task": {"a": trials(None, None), "b": trials(1, 1)}}]  # half ungraded
     v = rsi.select(ready, measured, inc, 0.5, 0.05, CFG)
     assert v[2]["winner"] and v[2]["outcome"] == "accepted"
     assert v[1]["admissible"] and not v[1]["winner"]
-    assert v[3]["outcome"] == "invalid"
+    assert v[3]["outcome"] == "invalid" and v[3]["reason"].startswith("v3: 2/4 trials have no grade")
     v = rsi.select(ready[:1], measured[:1], {"S": 0.9, "C": 100.0}, 0.9, 0.05, CFG)
     assert not v[1]["winner"] and v[1]["outcome"] == "rejected"
 
