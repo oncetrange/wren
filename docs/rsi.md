@@ -31,7 +31,8 @@ How to run it is in [benchmarks.md](benchmarks.md). This page explains how it wo
 - **Split**: `bench/split.json` divides the 113 DeepSWE tasks into 30 **evolve** tasks, used to
   choose, and 83 **held-out** tasks, used only to report a result. The split never changes.
 - **Measurement**: one run of a harness on a split, k trials per task (k = 2: 60 trials on evolve).
-- **S**: the share of trial slots that pass. **C**: mean policy tokens (input + output) per trial.
+- **S**: the share of trial slots that pass. **C**: mean policy tokens (input + output) per trial,
+  over the trials that report them.
 - **Incumbent**: the harness to beat. **S\***: the best score an incumbent has had in the run.
 - **δ (delta)**: the noise band, how much S moves between two measurements of the same harness.
 - **Candidate**: a proposed harness. **Edit**: one independent mechanism in a candidate; a
@@ -50,7 +51,9 @@ measurement is not used for anything until it is resumed and complete.
 
 Trials that end in an agent or verifier timeout, or a verifier that produced no reward, are the
 trial's own result. Any other exception (a spend limit, a vanished sandbox) is an infrastructure
-failure, and resuming the measurement runs that trial again.
+failure, and resuming the measurement runs that trial again. A job is resumed only under the
+harness and the sandbox sizing it started with, and two measurements are compared only if they ran
+the same tasks with the same policy model.
 
 ### The noise band
 
@@ -93,12 +96,15 @@ Among the admissible candidates of a round, the highest S wins, and fewer tokens
 ### Records
 
 Every verdict, rejections included, is appended to `bench/runs/ledger.jsonl`. The incumbent and S\*
-are in `bench/runs/frontier.json`, and δ in `bench/runs/calibration.json`.
+are in `bench/runs/frontier.json`, and δ in `bench/runs/calibration.json`. These belong to the
+benchmark, not to one run: an accepted change, by hand or by a run, moves the same incumbent, and a
+later run starts from wherever it is, under the same S\*.
 
 ## A round
 
-A run starts from the incumbent (`evolve.py baseline`) with a calibrated δ and goes for T rounds
-(T = 8). Each round has four steps.
+A run starts from the current incumbent (`evolve.py baseline` makes the first one) and needs a
+calibrated δ. `start` points the branch `evolve/<run>` at the incumbent's commit, and the run goes
+for T rounds (T = 8). Each round has four steps.
 
 ### 1. Analyze
 
@@ -106,7 +112,7 @@ The incumbent's trials are rendered to text: the grade, every session's model tu
 before any compaction or masking, the tail of wren's stderr and of the verifier's output, up to
 150,000 characters.
 
-**Which trials.** Up to `max_digests` = 12 per round:
+**Which trials.** Up to `max_digests` = 12 per round, of the trials whose logs were kept:
 
 1. on tasks that pass only sometimes, a failure and a success, since the contrast says most;
 2. one failure of each task that never passes;
@@ -138,7 +144,9 @@ ask for up to `max_followups` = 6 more digests, choosing the task and lens and a
 its own, for example when digests contradict each other or a failure looks like the harness's
 plumbing. Then it reports:
 
-- failure modes, ranked by impact;
+- failure modes, each with the tasks it affects. They are ranked by the score those tasks lose:
+  each task's share of failing trials, summed, so a task that never passes weighs twice one that
+  passes half the time;
 - capability gaps: these often need a tool or plumbing fix rather than an instruction;
 - success habits a change must not break;
 - candidate mechanisms: edits of earlier candidates that the contrasts showed helped or hurt.
@@ -149,7 +157,8 @@ and every digest.
 
 ### 2. Propose
 
-Each round drafts `candidates` = 2 candidates in parallel, each in its own git worktree. A
+Each round drafts `candidates` = 2 candidates in parallel, each in its own git worktree and each
+from the incumbent, independently of the others. A
 writing wren (`--yolo`) edits wren's source there and adds tests. It may change `src/wren/`,
 `tests/` and `docs/`, but not `src/wren/integrations/`, the benchmark adapter that also reports the
 tokens C is made of.
@@ -177,11 +186,12 @@ The proposer reads:
     memory is off headless, and no skill reaches a trial unless the harness ships one;
   - **pruning**: components with accepted machinery whose edits gained nothing in the last
     `n_prune` = 4 rounds are listed, and removing that machinery is a legitimate edit;
-  - **the edit history**: the latest 40 edits with their measured ΔS and ΔC and verdicts. A
-    rejected mechanism is not to be redrawn unchanged, unless the candidate mechanisms show it
-    helped on its own; then it may come back isolated or refined;
-  - **the scoreboard**: for each measured edit, which of its predicted tasks improved, every task
-    its candidate improved, and the tasks it fell on without predicting them.
+  - **the edit history**: the latest 40 edits with their measured ΔS and ΔC and verdicts, of
+    which at most 4 that were never measured (dropped in screening), so failed drafts don't crowd
+    out measurements. A rejected mechanism is not to be redrawn unchanged, unless the candidate
+    mechanisms show it helped on its own; then it may come back isolated or refined;
+  - **the scoreboard**: for each of the latest 20 measured edits, which of its predicted tasks
+    improved, every task its candidate improved, and the tasks it fell on without predicting them.
 
 It declares each edit in `RSI_EDITS.json`:
 
@@ -201,8 +211,8 @@ It declares each edit in `RSI_EDITS.json`:
 
 A candidate is checked before any measurement is spent on it:
 
-1. **Its declaration**: present, within the budget, every field filled, a known component, and
-   only allowed files changed.
+1. **Its declaration**: present, within the budget, every field filled, a known component,
+   predictions that name evolve tasks only, and only allowed files changed.
 2. **Its components, from the diff.** Each changed file shows a component by its path
    (`agent/prompt.py` is prompt, `agent/compact.py` context_mgmt, `tools/` tools, and so on). A
    change only to strings and comments is prompt, and a new value for a constant is config. When
@@ -221,7 +231,8 @@ A candidate is checked before any measurement is spent on it:
    - a check, retry or wait without a bound.
 
 A candidate that fails a step goes back to the proposer with the objections, up to
-`repair_rounds` = 2 times. If it still fails, it is dropped, and the drop is recorded.
+`repair_rounds` = 2 times. The proposer fixes it in the same worktree, starting over only if the
+objections are to the idea itself. If it still fails, it is dropped, and the drop is recorded.
 
 ### 4. Measure and select
 
@@ -236,8 +247,9 @@ if any, becomes the incumbent: `frontier.json` is updated and the branch `evolve
 it. Every edit goes into the run's history with its candidate's ΔS and ΔC, its verdict, and how
 the tasks moved against the incumbent. Every measured candidate goes into the ledger.
 
-After the last round, `evolve.py eval evolve/<run> --set heldout` measures the final harness on
-tasks the loop never saw. That is the run's result.
+After the last round, the starting harness and the final one (`evolve/<run>`, pushed to the
+remote; fetch it first) are both measured on the held-out tasks, which the loop never saw. The difference between those two measurements is
+the run's result: the evolve scores were used to choose, so they overstate it.
 
 ## Keeping it honest
 
@@ -276,6 +288,10 @@ A run is meant to go for days without anyone watching, and to survive being cut 
   then 120 s). If it still fails, the round is cut off with nothing of that step saved, so it is
   done again later. The proposer isn't retried in place, since a failed run may have left half an
   edit; the rerun starts its worktree over from the base.
+- **A reply that can't be read is still an answer.** When a role's wren finishes but its reply
+  isn't the JSON asked for, nothing is retried: a digest is kept as unparsed text, which the analyst
+  still reads; an analyst without a report leaves the proposer to work from the digests, and
+  `report.md` says so; a critic that can't be read three times rejects the candidate.
 - **Cut-off rounds are run again**: a failed `git push` is retried after 30 s. A round cut off by
   git, by trials the infrastructure failed, or by a wren that couldn't run is run again after
   `retry_wait` = 10 minutes. After `round_retries` = 3 such failures in a row, the run stops.
