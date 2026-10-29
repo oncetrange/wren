@@ -40,6 +40,15 @@
   when the command ends. `net:<host>` permission rules allow or deny hosts.
 - `/ui`, `wren --ui` and the `ui` setting choose between the full-screen and
   the inline UI. `auto` picks full screen, except in Zellij.
+- Benchmarks:
+  - `bench/rsi.py` lets wren improve its own harness: each round it analyzes how the
+    incumbent failed, proposes and implements changes to its own source, screens them,
+    and keeps the best one `evolve.py` admits. See [docs/rsi.md](docs/rsi.md).
+  - `evolve.py` resumes a measurement that was cut off, stops one whose first trials
+    crash the harness, fails a trial whose session goes quiet for 20 minutes, sizes
+    sandboxes by what a trial uses, and can spread jobs over several Modal accounts.
+  - The noise band comes from the trials of both measurements rather than the gap
+    between two scores, and a loss inside the band must be paid for in tokens.
 
 ## 1.0.0 — 2026-10-12
 

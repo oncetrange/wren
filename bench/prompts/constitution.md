@@ -38,7 +38,9 @@ admissible ones the highest S wins:
   beta0 + beta1 x gain. A gain that also saves tokens always passes.
 - **Inside the noise band only a token saving gets in.** A candidate whose
   gain is within delta is kept only if it cuts tokens. A coin-flip gain never
-  counts.
+  counts, and a loss within delta must be paid for with the tokens saved
+  (w_s x min(gain, 0) - w_c x token change > 0): a harness that gives up
+  sooner, scoring a little less on fewer tokens, doesn't get in.
 
 The run's outcome is reported on held-out tasks the loop never sees. A change
 that only helps the evolve tasks scores nothing there.
