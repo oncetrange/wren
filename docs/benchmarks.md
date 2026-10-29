@@ -92,9 +92,13 @@ Each round:
 1. **Analyze.** Failed trials of the incumbent are rendered to text, along with a passing trial on
    tasks that pass only sometimes, since the contrast says the most, and the longest runs of a few
    tasks that always pass: what those lean on is what a change must not break. A read-only wren digests each
-   one into a blocker, quoted evidence and what was needed instead. An analyst, another read-only
+   one into a blocker, quoted evidence and what was needed instead. Where an earlier candidate of the
+   run, rejected or not, came out the other way on a task (all its trials against none, or several
+   candidates moving it), a digest compares the two runs with the candidate's diff: whether its change
+   caused the difference, or it was chance. An analyst, another read-only
    wren, then clusters the digests into failure modes ranked by impact, capability gaps (what the
-   agent tried to do but couldn't) and success habits a change must not break. It may first ask
+   agent tried to do but couldn't), success habits a change must not break, and the mechanisms of
+   earlier candidates that visibly helped or hurt, which a later candidate may isolate or refine. It may first ask
    for follow-up digests with questions of its own, and keeps the names of earlier rounds when a
    mechanism recurs. The report and the digests are in `bench/runs/rsi/<run>/t<t>/report.md`.
 2. **Propose.** A few candidates are drafted, each in its own git worktree. wren edits its source

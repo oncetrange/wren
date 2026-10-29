@@ -19,8 +19,9 @@ reference: read them first.
 
 1. Read the analysis of the incumbent's trials (named under "This round"), and
    the traces it points at where you need more: the failure modes, ranked by
-   impact, the capability gaps, and the success habits your change must not
-   break.
+   impact, the capability gaps, the success habits your change must not
+   break, and the mechanisms of earlier candidates that helped or hurt on a
+   task.
 2. Read the edit history and the scoreboard under "This round".
 3. Pick the highest-impact failure modes you can move and implement the
    mechanisms in the source, within this round's edit budget.
