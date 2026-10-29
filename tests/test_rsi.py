@@ -264,9 +264,10 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-@pytest.mark.parametrize("cut_off,broken", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("cut_off,broken,wren_down", [(False, False, False), (True, False, False),
+                                                      (False, True, False), (False, False, True)])
 def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut_off: bool,
-                            broken: bool):
+                            broken: bool, wren_down: bool):
     sha = sh("git", "rev-parse", "HEAD", cwd=repo)
     trial_dir = tmp_path / "trial-b"
     (trial_dir / "agent" / "wren" / "sessions").mkdir(parents=True)
@@ -276,9 +277,14 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     evolve.save_json(evolve.FRONTIER, {"incumbent": "base", "S_star": 0.5, "metric": "reward"})
 
     prompts: list[tuple[str, bool]] = []
+    down = [wren_down]
 
     def fake_wren(rc, text, cwd, *, model, yolo, time_limit, log):
         prompts.append((text, yolo))
+        if yolo and down[0] and "candidate 1" in text:   # v1's proposer can't reach its model, once
+            down[0] = False
+            (cwd / "src" / "wren" / "agent" / "prompt.py").write_text("PROMPT = 'half'\n")
+            return {"status": "error", "result": "the model request failed"}
         if not yolo and "batch analyst" in text:
             return {"status": "done", "result": '{"failure_modes": [{"mode": "turn_exhaustion", "n_tasks": 1}]}'}
         if not yolo and "digesting" in text:
@@ -304,7 +310,8 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(rsi, "run_wren", fake_wren)
     monkeypatch.setattr(rsi, "run_checks", lambda wt, checks: None)
     monkeypatch.setattr(evolve, "run_eval", fake_eval)
-    cfg = {**CFG, "rsi": {"T": 2, "candidates": 2, "repair_rounds": 1}}
+    monkeypatch.setattr(rsi.time, "sleep", lambda s: None)
+    cfg = {**CFG, "rsi": {"T": 2, "candidates": 2, "repair_rounds": 1, "retry_wait": 0}}
     rsi.cmd_start(type("A", (), {"run": "r1", "T": None})(), cfg)
     args = type("A", (), {"run": "r1", "rounds": 1, "no_eval": False})()
     if cut_off:   # the round dies after its winner reached the frontier; `run` finishes it
@@ -332,8 +339,11 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
             (1, False, "dropped in the container (smoke)", None), (2, True, "accepted", 0.5)]
         assert "crashed the harness" in history[0]["detail"]
         return
+    # A proposer that couldn't run left no trace in the history: the round was run again,
+    # and v1 started over from the base.
     assert [(r["variant"], r["accepted"], r["outcome"]) for r in history] == [
         (1, False, "admissible"), (2, True, "accepted")]
+    assert "half" not in sh("git", "show", history[0]["sha"], cwd=repo)
     # Both predicted b, and both moved it.
     assert [(r["predicted_hit"], r["hit_rate"], r["unpredicted_regressions"]) for r in history] == [
         (["b"], 1.0, []), (["b"], 1.0, [])]
@@ -352,6 +362,33 @@ def test_a_round_end_to_end(repo: Path, tmp_path: Path, monkeypatch: pytest.Monk
     ledger = [json.loads(line) for line in evolve.LEDGER.read_text().splitlines()]
     assert [r["verdict"] for r in ledger] == ["REJECTED", "ACCEPTED"]
     assert not (tmp_path / "wt" / "r1" / "t0-v1").exists()
+
+
+def test_call_wren_tries_a_failed_wren_again(monkeypatch: pytest.MonkeyPatch):
+    waits: list[float] = []
+    monkeypatch.setattr(rsi.time, "sleep", waits.append)
+    replies = [{"status": "error", "result": "quota"}, {"status": "done", "result": "ok"}]
+    monkeypatch.setattr(rsi, "run_wren", lambda rc, text, cwd, **kw: replies.pop(0))
+    rc = rsi.rsi_config({})
+    assert rsi.call_wren(rc, "x", Path("."), retries=2)["result"] == "ok" and waits == [60]
+    # A finished run that says little is still an answer; only a wren that couldn't run is retried.
+    replies[:] = [{"status": "max_turns", "result": ""}]
+    assert rsi.call_wren(rc, "x", Path("."), retries=2)["status"] == "max_turns"
+    replies[:] = [{"status": "error", "result": "quota"}] * 3
+    with pytest.raises(rsi.WrenUnavailable, match="3 time"):
+        rsi.call_wren(rc, "x", Path("."), retries=2)
+    assert waits == [60, 60, 120]
+
+
+def test_analyze_saves_nothing_a_failed_wren_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rsi, "RSI", tmp_path / "rsi")
+    monkeypatch.setattr(rsi.time, "sleep", lambda s: None)
+    inc = {"name": "base", "k": 2, "per_task": {"never": trials(0, 0, dirs=[str(tmp_path / "n0")] * 2)}}
+    monkeypatch.setattr(rsi, "run_wren", lambda rc, text, cwd, **kw: {"status": "error", "result": "quota"})
+    with pytest.raises(rsi.WrenUnavailable):
+        rsi.analyze("r1", 0, inc, CFG, rsi.rsi_config({}))
+    rdir = tmp_path / "rsi" / "r1" / "t0"
+    assert not list((rdir / "digests").iterdir()) and not (rdir / "report.md").exists()
 
 
 def test_git_says_what_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -403,13 +440,13 @@ def test_run_goes_on_after_a_round_is_cut_off(tmp_path: Path, monkeypatch: pytes
     # With one, each cut-off round is run again and the run finishes; the count starts
     # over after a round that finishes.
     outcomes[:] = [evolve.MeasurementIncomplete("cut off"), True,
-                   evolve.GitError(128, ["git", "push"], "", "x"), True]
+                   rsi.WrenUnavailable("quota"), True]
     rsi.cmd_run(args, {"rsi": {"round_retries": 1}})
     assert rsi.load_state("r1")["t"] == 2 and outcomes == []
     # Two in a row are one too many.
     rsi.save_state({"run": "r1", "T": 3, "t": 2, "trajectory": [0.5]})
-    outcomes[:] = [evolve.GitError(128, ["git", "push"], "", "x")] * 2
-    with pytest.raises(evolve.GitError):
+    outcomes[:] = [evolve.GitError(128, ["git", "push"], "", "x"), rsi.WrenUnavailable("quota")]
+    with pytest.raises(rsi.WrenUnavailable):
         rsi.cmd_run(args, {"rsi": {"round_retries": 1}})
     # Anything else stops the run at once.
     rsi.save_state({"run": "r1", "T": 3, "t": 2, "trajectory": [0.5]})

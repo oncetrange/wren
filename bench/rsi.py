@@ -112,6 +112,8 @@ DEFAULTS = {
     "checks": [["uv", "run", "ruff", "check"], ["uv", "run", "pyright"],
                ["uv", "run", "pytest", "-q", "-x", "-p", "no:cacheprovider"]],
     "remote": "origin",
+    "wren_retries": 2,         # a read-only wren that failed is tried again, after 60s, then 120s
+    "wren_retry_wait": 60,
     "push_retries": 3,         # a failed git push is tried again after 30s
     "round_retries": 3,        # a round cut off by git or the infrastructure is run again,
     "retry_wait": 600,         # after this many seconds, up to round_retries times in a row
@@ -358,6 +360,23 @@ def run_wren(rc: dict, text: str, cwd: Path, *, model: str | None, yolo: bool,
         return {"status": "error", "result": f"wren exited {proc.returncode}; see {log}"}
 
 
+class WrenUnavailable(Exception):
+    """The installed wren couldn't do its part: a model request that failed for good, a
+    crash, a hang. That says nothing about a candidate or a trace, so nothing is saved
+    from it: the round is cut off, and running it again does that part again."""
+
+
+def call_wren(rc: dict, text: str, cwd: Path, *, retries: int, **kw) -> dict:
+    """run_wren, tried again after a growing pause while it fails, up to `retries` times."""
+    for attempt in range(retries + 1):
+        reply = run_wren(rc, text, cwd, **kw)
+        if reply.get("status") != "error":
+            return reply
+        if attempt < retries:
+            time.sleep(rc["wren_retry_wait"] * (attempt + 1))
+    raise WrenUnavailable(f"wren failed {retries + 1} time(s): {str(reply.get('result'))[:300]}")
+
+
 def parse_json_reply(text: str) -> dict | None:
     """The JSON object in a model's reply: the whole reply, a fenced block, or
     the outermost braces."""
@@ -416,10 +435,10 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
             trace.write_text(render_trace(inc["per_task"][task][j], task))
         questions = req.get("questions") or []
         asked = "".join(f"- {q}\n" for q in questions)
-        reply = run_wren(rc, prompt("digest", trace=trace.name, task=task, lens=lens,
-                                    questions=f"\nQuestions to answer:\n{asked}" if asked else ""),
-                         traces, model=rc["digest_model"], yolo=False,
-                         time_limit=rc["digest_time_limit"], log=rdir / "logs" / "digest.log")
+        reply = call_wren(rc, prompt("digest", trace=trace.name, task=task, lens=lens,
+                                     questions=f"\nQuestions to answer:\n{asked}" if asked else ""),
+                          traces, retries=rc["wren_retries"], model=rc["digest_model"], yolo=False,
+                          time_limit=rc["digest_time_limit"], log=rdir / "logs" / "digest.log")
         d = parse_json_reply(reply.get("result") or "") or {"unparsed": reply.get("result")}
         d = {"task": task, "trial": j, "lens": lens, "trace": f"traces/{trace.name}",
              **({"questions": questions} if questions else {}), **d}
@@ -454,8 +473,9 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
                                  ensure_ascii=False, indent=1),
                 digests="\n\n".join(f"```json\n{json.dumps(d, indent=1, ensure_ascii=False)}\n```"
                                       for d in done))
-            result = run_wren(rc, text, rdir, model=rc["analyst_model"], yolo=False,
-                              time_limit=rc["analyst_time_limit"], log=rdir / "logs" / "analyst.log")
+            result = call_wren(rc, text, rdir, retries=rc["wren_retries"], model=rc["analyst_model"],
+                               yolo=False, time_limit=rc["analyst_time_limit"],
+                               log=rdir / "logs" / "analyst.log")
             reply = parse_json_reply(result.get("result") or "") or {}
             if reply:   # a failed turn is tried again when the round is resumed
                 save_json(cached, reply)
@@ -628,7 +648,8 @@ def critic(rc: dict, wt: Path, edits: list, diff: str, log: Path) -> dict:
     a better harness. {"verdict": "accept" | "reject", "reasons": [...]}."""
     text = prompt("critic", edits=json.dumps(edits, indent=1, ensure_ascii=False), diff=_clip(diff, 120_000))
     for _ in range(3):
-        reply = run_wren(rc, text, wt, model=rc["critic_model"], yolo=False, time_limit=10, log=log)
+        reply = call_wren(rc, text, wt, retries=rc["wren_retries"], model=rc["critic_model"], yolo=False,
+                          time_limit=10, log=log)
         v = parse_json_reply(reply.get("result") or "")
         if v and v.get("verdict") in ("accept", "reject"):
             return v
@@ -663,8 +684,10 @@ def propose(run: str, t: int, variant: int, base: str, context: str, cfg: dict, 
                       editable=", ".join(EDITABLE), feedback=feedback, n_tasks=len(tasks), k=cfg["k"],
                       constitution=(PROMPTS / "constitution.md").read_text().strip(),
                       patterns=(PROMPTS / "patterns.md").read_text().strip())
-        result = run_wren(rc, text, wt, model=rc["proposer_model"], yolo=True,
-                          time_limit=rc["proposer_time_limit"], log=log)
+        # Not tried again in place: the failed run may have left half an edit in the worktree,
+        # which a rerun of the round starts over from the base.
+        result = call_wren(rc, text, wt, retries=0, model=rc["proposer_model"], yolo=True,
+                           time_limit=rc["proposer_time_limit"], log=log)
         out["summary"] = result.get("result")
         try:
             edits = json.loads((wt / EDITS_FILE).read_text())
@@ -946,11 +969,12 @@ def cmd_run(args, cfg: dict) -> None:
         if (RSI / args.run / "STOP").exists():
             print(f"stopped: remove {RSI / args.run / 'STOP'} to go on")
             return
-        # A round cut off by git or by trials the infrastructure failed resumes where it
-        # stopped, so it is run again after a pause, unattended; anything else stops the run.
+        # A round cut off by git, by trials the infrastructure failed or by a wren that
+        # couldn't run resumes where it stopped, so it is run again after a pause, unattended;
+        # too many in a row, or anything else, stops the run.
         try:
             finished = run_round(state, cfg, rc, evaluate=not args.no_eval)
-        except (evolve.GitError, evolve.MeasurementIncomplete) as e:
+        except (evolve.GitError, evolve.MeasurementIncomplete, WrenUnavailable) as e:
             failures += 1
             if failures > rc["round_retries"]:
                 raise
