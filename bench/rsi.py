@@ -475,6 +475,25 @@ def task_table(ev: dict, metric: str, digests: list[dict]) -> str:
     return "\n".join(r for _, r in sorted(rows))
 
 
+def rank_modes(modes: list, ev: dict, metric: str) -> list:
+    """Failure modes by impact, highest first: the score their affected tasks lose,
+    each task's share of failing trials summed, so a task that never passes counts
+    more than one that passes sometimes. A mode's impact is recorded on it; one
+    without known affected tasks has none and goes last, by its number of tasks."""
+    def impact(m: dict) -> float:
+        tasks = {str(t) for t in m.get("affected_tasks") or []} & set(ev["per_task"])
+        lost = 0.0
+        for task in tasks:
+            values = evolve.task_values(ev["per_task"][task], ev["k"], metric)
+            lost += 1 - sum(values) / len(values)
+        return round(lost, 2)
+
+    modes = [m for m in modes if isinstance(m, dict)]
+    for m in modes:
+        m["impact"] = impact(m)
+    return sorted(modes, key=lambda m: (-m["impact"], -(m.get("n_tasks") or 0)))
+
+
 def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
     """Digest the incumbent's trials and its contrasts with earlier candidates, have
     the analyst aggregate the digests into a report (asking for follow-up digests if
@@ -582,7 +601,7 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
         if "failure_modes" in reply:
             report = {k: reply.get(k) or [] for k in ("failure_modes", "capability_gaps", "success_habits",
                                                       "candidate_mechanisms")}
-            report["failure_modes"].sort(key=lambda m: -(m.get("n_tasks") or 0))
+            report["failure_modes"] = rank_modes(report["failure_modes"], inc, metric)
             break
         taken = {(d["task"], d["trial"], d["lens"]) for d in done}
         reqs = []
@@ -608,7 +627,8 @@ def analyze(run: str, t: int, inc: dict, cfg: dict, rc: dict) -> Path:
     if report:
         save_json(rdir / "analysis.json", report)
         save_json(prior_path, {k: report[k] for k in ("failure_modes", "success_habits")})
-        lines += ["The analyst's report: failure modes ranked by impact, capability gaps (these often "
+        lines += ["The analyst's report: failure modes ranked by impact (the score their tasks lose: "
+                  "each task's share of failing trials, summed), capability gaps (these often "
                   "need a tool or plumbing fix rather than an instruction), success habits, which your "
                   "change must not break, and the mechanisms of earlier candidates that visibly helped "
                   "or hurt on a task.", "",

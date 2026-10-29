@@ -79,7 +79,9 @@ python bench/rsi.py start r1           # from the incumbent; needs `baseline` an
 python bench/rsi.py run r1             # rounds until T; resumable; touch bench/runs/rsi/r1/STOP to stop
 python bench/rsi.py run r1 --rounds 1 --no-eval   # analyze and propose only, to look at the candidates
 python bench/rsi.py status r1          # the incumbent's score per round and every edit tried
-python bench/evolve.py eval evolve/r1 --set heldout   # when it ends: the result on unseen tasks
+git fetch origin evolve/r1                             # when it ends, measure the start and the result
+python bench/evolve.py eval <start> --set heldout      # on unseen tasks: their difference is the
+python bench/evolve.py eval origin/evolve/r1 --set heldout   # run's result
 ```
 
 `run` can be left alone: it resumes where it stopped, and runs again a round cut off by git, by

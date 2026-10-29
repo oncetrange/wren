@@ -103,6 +103,21 @@ def test_choose_trials_keeps_room_for_the_longest_stable_passes():
     assert picked[4:] == [("long", "success", "long0"), ("mid", "success", "mid0")]
 
 
+def test_rank_modes_weighs_tasks_by_the_score_they_lose():
+    ev = {"k": 2, "per_task": {"never": trials(0, 0), "never2": trials(0, None), "sometimes": trials(1, 0),
+                               "a": trials(1, 0), "b": trials(0, 1)}}
+    modes = [{"mode": "two_flaky", "n_tasks": 2, "affected_tasks": ["a", "b"]},             # 0.5 + 0.5
+             {"mode": "two_hard", "n_tasks": 2, "affected_tasks": ["never", "never2"]},      # 1 + 1
+             {"mode": "one_hard", "n_tasks": 1, "affected_tasks": ["never", "unknown"]},     # 1
+             {"mode": "three_flaky", "n_tasks": 3, "affected_tasks": ["sometimes", "a", "b"]},
+             {"mode": "unnamed", "n_tasks": 5}, "not a mode"]
+    ranked = rsi.rank_modes(modes, ev, "reward")
+    # Two tasks that never pass outweigh three that pass half the time; a tie goes to the
+    # mode with more tasks; one without known tasks goes last, whatever its count.
+    assert [(m["mode"], m["impact"]) for m in ranked] == [
+        ("two_hard", 2.0), ("three_flaky", 1.5), ("two_flaky", 1.0), ("one_hard", 1.0), ("unnamed", 0.0)]
+
+
 def test_analyze_asks_for_follow_ups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(rsi, "RSI", tmp_path / "rsi")
     inc = {"name": "base", "k": 2, "per_task": {

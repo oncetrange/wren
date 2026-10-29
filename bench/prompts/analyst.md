@@ -53,9 +53,9 @@ Reply with only one JSON object, one of:
 
 1. Merge digests that describe the same underlying mechanism even when worded
    differently; split a label that covers two distinct mechanisms.
-2. Rank failure_modes by total impact: the number of tasks, weighted by how
-   much score the mode costs on each (a task that never passes costs more than
-   one that passes sometimes).
+2. List every task a failure mode affects in affected_tasks, by its name in
+   the table: the modes are ranked by the score those tasks lose (a task that
+   never passes costs more than one that passes sometimes).
 3. Descriptions are entity-free and task-agnostic: no task names, no
    subject-matter facts, no task-specific values. Evidence quotes may contain
    them.
