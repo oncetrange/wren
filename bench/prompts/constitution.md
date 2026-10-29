@@ -52,7 +52,10 @@ Two regularizers shape what you may propose:
   its component, hypothesis, the measured change in score and tokens, and its
   verdict. The scoreboard shows, per measured edit, which of its predicted
   tasks actually improved and which tasks it broke that it didn't predict. A
-  rejected mechanism is negative evidence: don't redraw it unchanged. When the
+  rejected mechanism is negative evidence: don't redraw it unchanged. The
+  analysis compares runs of earlier candidates with the incumbent's where a
+  task came out the other way, and lists the edits that visibly helped or hurt
+  (candidate_mechanisms), whatever their candidate's verdict. When the
   incumbent hasn't moved by more than delta for a few rounds, one candidate
   must try a component no measured edit has touched (memory and skill are never
   required: no trial can reward them today). Components whose accepted
@@ -214,7 +217,9 @@ adding anything that consumes more.
 - Read the history and the scoreboard first. An accepted edit carries the
   gain it produced: refine what has known credit, not what merely preceded a
   rise. Don't re-propose a rejected mechanism unless you change the approach
-  materially and say how.
+  materially and say how, or candidate_mechanisms shows it helped on its own
+  where its candidate was dragged down by other edits: then isolate or refine
+  it, and say so.
 - You may refine, extend or remove mechanisms from earlier rounds; the
   harness is cumulative, and removing one the history says is hurting is a
   valid edit.

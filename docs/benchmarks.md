@@ -43,10 +43,12 @@ python bench/evolve.py eval <ref> --set heldout   # the other 83 tasks: reported
 
 A candidate is accepted only if it doesn't fall below the best score so far minus delta, and pays
 for any extra tokens with a gain larger than delta; inside the band only a token saving gets in,
-and it must also pay for any score lost.
-Every verdict goes into a ledger in `bench/runs/`. Settings are in `bench/config.json`, including
-the frozen policy model the benchmark runs (`deepseek-v4.1-flash-1017`). How the noise band and
-the rule work is in [rsi.md](rsi.md#measuring-a-harness).
+and it must also pay for any score lost. A trial without a grade counts as a failure, but a
+measurement with more than a fifth of its trials ungraded had an infrastructure problem, and isn't
+used until it is resumed. Every verdict goes into a ledger in `bench/runs/`. Settings are in
+`bench/config.json`, including the frozen policy model the benchmark runs
+(`deepseek-v4.1-flash-1017`). How the noise band and the rule work is in
+[rsi.md](rsi.md#measuring-a-harness).
 
 A measurement runs as the Pier job `jobs/bench-<name>`. If it is cut off (a dropped connection, a
 closed laptop), the same `eval` command resumes that job, running only the trials without a result.
