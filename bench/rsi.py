@@ -127,11 +127,14 @@ def rsi_config(cfg: dict) -> dict:
 # --- schedule and history: what the proposer is told ---
 
 def edit_budget(t: int, T: int, b_min: int, b_max: int) -> int:
-    """b_t: many edits per candidate early on, few late, on a cosine."""
-    if T <= 0:
+    """b_t: many edits per candidate early on, few late, on a cosine from b_max at
+    t = 0 to b_min at the last round, t = T - 1. RRSI divides by T, which the rounds
+    never reach: rounded up, its last budget is b_min + 1, and a run never gets the
+    single-edit rounds whose measurement is attributable."""
+    if T <= 1:
         return b_max
-    t = max(0, min(t, T))
-    v = b_min + (b_max - b_min) * 0.5 * (1 + math.cos(math.pi * t / T))
+    t = max(0, min(t, T - 1))
+    v = b_min + (b_max - b_min) * 0.5 * (1 + math.cos(math.pi * t / (T - 1)))
     return math.ceil(round(v, 9))
 
 
