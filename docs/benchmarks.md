@@ -132,5 +132,9 @@ Each round:
 The proposer, digesters, analyst and critic are the installed `wren`, not the one being changed.
 They run with `proposer_model`, `digest_model`, `analyst_model` and `critic_model` from the `rsi`
 settings in `bench/config.json`. Keep these models apart from the frozen policy model the benchmark runs.
+A role whose wren can't run (its model request fails for good, it crashes or hangs) says nothing
+about the candidate or the trace: a read-only one is tried again after a pause, and if it still
+fails, or the proposer fails, the round is cut off with nothing of that step saved, and `run`
+runs it again like a round cut off by git or the infrastructure.
 When the run ends, `evolve.py eval evolve/<run> --set heldout` gives the result on tasks the
 loop never saw.
