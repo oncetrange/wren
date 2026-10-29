@@ -42,7 +42,8 @@ python bench/evolve.py eval <ref> --set heldout   # the other 83 tasks: reported
 ```
 
 A candidate is accepted only if it doesn't fall below the best score so far minus delta, and pays
-for any extra tokens with a gain larger than delta; inside the band only a token saving gets in.
+for any extra tokens with a gain larger than delta; inside the band only a token saving gets in,
+and it must also pay for any score lost.
 Every verdict goes into a ledger in `bench/runs/`. Settings are in `bench/config.json`, including
 the frozen policy model the benchmark runs (`deepseek-v4.1-flash-1017`). How the noise band and
 the rule work is in [rsi.md](rsi.md#measuring-a-harness).
