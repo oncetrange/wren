@@ -62,3 +62,8 @@ def test_empty_response_is_not_done(ctx):
 def test_final_check_asks_for_the_projects_own_tests():
     text = " ".join(FINAL_CHECK.split())
     assert "run them again now, the existing ones too" in text and "or a copy elsewhere" in text
+
+
+def test_final_check_asks_for_a_per_clause_spec_pass():
+    text = " ".join(FINAL_CHECK.split())
+    assert "exact shape" in text and "git command" in text

@@ -34,8 +34,17 @@ tests to run, or where and in what form to deliver the work. If you changed code
 last ran the project's own tests, run them again now, the existing ones too and the way the \
 project runs them (see its CI configuration or test scripts), not only the tests you wrote or a \
 copy elsewhere; fix what broke. Also remove scratch files and build outputs you created that \
-are not part of the requested change (and make sure none of them were committed). Do whatever \
-is missing. If everything is done, reply with your final summary."""
+are not part of the requested change (and make sure none of them were committed). \
+Then do one pass over the spec itself: list each sentence of the request that describes behavior \
+(options, flags, variants, scoped or inherited contexts, multi-item and overlapping inputs, \
+combinations of features, what must NOT happen) and, for each, run one concrete check in the \
+exact shape the sentence describes, with real input, and read the output; a clause you only \
+believe in does not count, and your earlier tests that skipped a clause do not either. When a \
+sentence allows two readings, take the one that satisfies the literal wording of every related \
+sentence, and do not add behavior the request does not ask for. Check that each git command \
+you ran (commit, branch) succeeded, and say so plainly in the summary if one failed. Fix what \
+fails and commit again if you had committed. Do whatever is missing. If everything is done, \
+reply with your final summary, naming any clause you could not verify."""
 
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
