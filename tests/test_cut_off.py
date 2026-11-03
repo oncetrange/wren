@@ -62,3 +62,9 @@ def test_empty_response_is_not_done(ctx):
 def test_final_check_asks_for_the_projects_own_tests():
     text = " ".join(FINAL_CHECK.split())
     assert "run them again now, the existing ones too" in text and "or a copy elsewhere" in text
+
+
+def test_final_check_asks_for_clause_by_clause_checks():
+    text = " ".join(FINAL_CHECK.split())
+    assert "sentence by sentence" in text and "exact shape" in text
+    assert "once" in text and "actually succeeded" in text

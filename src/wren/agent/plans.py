@@ -34,8 +34,16 @@ tests to run, or where and in what form to deliver the work. If you changed code
 last ran the project's own tests, run them again now, the existing ones too and the way the \
 project runs them (see its CI configuration or test scripts), not only the tests you wrote or a \
 copy elsewhere; fix what broke. Also remove scratch files and build outputs you created that \
-are not part of the requested change (and make sure none of them were committed). Do whatever \
-is missing. If everything is done, reply with your final summary."""
+are not part of the requested change (and make sure none of them were committed). Then go through \
+the request sentence by sentence and, for each stated behavior, run one concrete check in the \
+exact shape the sentence describes and read its output: the combination of options or flags \
+with real input, several items or overlapping entries instead of one, nested, scoped or \
+inherited contexts, and the clauses saying what must not happen. Where a sentence can be read \
+two ways, take the reading that satisfies the literal wording of every related sentence, and do \
+not add behavior the request does not ask for. Do this pass once, within a few commands. Check \
+that any git step you ran (commit, branch) actually succeeded, and report a failed step as \
+failed. Do whatever is missing. If everything is done, reply with your final summary, naming \
+anything you could not verify or any ambiguity you resolved."""
 
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
