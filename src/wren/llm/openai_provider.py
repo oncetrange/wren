@@ -26,6 +26,7 @@ from typing import Any
 import httpx2
 import openai
 
+from wren import __version__
 from wren.config import ModelConfig
 from wren.llm.base import Provider
 from wren.llm.types import (
@@ -64,8 +65,14 @@ class OpenAIProvider(Provider):
         self.cfg = cfg
         # The key and base URL are always explicit, so the SDK never falls back
         # to OPENAI_API_KEY / OPENAI_BASE_URL and sends one to the other's host.
+        # wren names itself, as gateways ask of coding agents; one id per provider,
+        # which lives as long as the session, for those that route by session.
+        headers = {"User-Agent": f"wren/{__version__}"}
+        if cfg.session_header:
+            headers[cfg.session_header] = uuid.uuid4().hex
         self.client = openai.OpenAI(api_key=cfg.api_key() or "none",
-                                    base_url=cfg.base_url or OPENAI_URL, max_retries=4)
+                                    base_url=cfg.base_url or OPENAI_URL, max_retries=4,
+                                    default_headers=headers)
 
     def stream(
         self,

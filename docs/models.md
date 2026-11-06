@@ -38,6 +38,8 @@ context_window = 65536
 reasoning_effort = "medium"        # optional, sent as is
 extra_body = { enable_thinking = true }   # optional vendor-specific request fields
 replay_reasoning = true            # send reasoning back with tool calls (DeepSeek/Kimi thinking)
+session_header = "x-opencode-session"   # optional: a header with an id fixed for the session,
+                                        # for gateways that route by it (OpenCode Go requires it)
 ```
 
 With `provider = "openai"`, wren speaks Chat Completions: tool results become `tool` messages,
