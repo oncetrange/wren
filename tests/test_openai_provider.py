@@ -139,6 +139,24 @@ def test_options_reach_the_request():
     assert "tools" not in body
 
 
+def test_session_header_is_stable_within_a_provider():
+    with FakeOpenAI([text_turn("a"), text_turn("b"), text_turn("c")]) as server:
+        provider = OpenAIProvider(model(server, session_header="x-opencode-session"))
+        for _ in range(2):
+            list(provider.stream(system="s", messages=[Message("user", [TextBlock("go")])], tools=[]))
+        stream(server, [Message("user", [TextBlock("go")])], session_header="x-opencode-session")
+    ids = [{k.lower(): v for k, v in r["headers"].items()}["x-opencode-session"] for r in server.requests]
+    assert ids[0] == ids[1] != ids[2] and len(ids[0]) == 32
+    assert all({k.lower(): v for k, v in r["headers"].items()}["user-agent"].startswith("wren/")
+               for r in server.requests)
+
+
+def test_no_session_header_unless_configured():
+    with FakeOpenAI([text_turn("ok")]) as server:
+        stream(server, [Message("user", [TextBlock("go")])])
+    assert "x-opencode-session" not in {k.lower() for k in server.requests[0]["headers"]}
+
+
 def test_http_errors_become_llm_errors():
     with FakeOpenAI([{"status": 400, "error": "bad tool schema"}]) as server:
         with pytest.raises(LLMError, match="fake: HTTP 400: .*bad tool schema"):

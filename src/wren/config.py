@@ -94,6 +94,10 @@ class ModelConfig:
     # "max_tokens", or "max_completion_tokens" (OpenAI's own newer models);
     # default: the latter for api.openai.com, the former elsewhere.
     max_tokens_param: str | None = None
+    # OpenAI provider only. A request header carrying an id that stays the same
+    # for the whole session, for gateways that route and cache by it
+    # (OpenCode Go requires "x-opencode-session").
+    session_header: str | None = None
 
     def ignored_options(self) -> list[str]:
         """Options set for this model that its provider doesn't use."""
@@ -103,7 +107,8 @@ class ModelConfig:
             unused = {"reasoning_effort": self.reasoning_effort is not None,
                       "extra_body": self.extra_body is not None,
                       "replay_reasoning": self.replay_reasoning,
-                      "max_tokens_param": self.max_tokens_param is not None}
+                      "max_tokens_param": self.max_tokens_param is not None,
+                      "session_header": self.session_header is not None}
         return [name for name, is_set in unused.items() if is_set]
 
     @property
