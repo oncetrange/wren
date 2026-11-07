@@ -906,9 +906,10 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
     lines = [f"Round {t} of {state['T']}. Edit budget b_t = {budget}: at most {budget} independent edits.",
              f"The noise band delta = {delta:.4f} is about {math.ceil(delta * n_trials - 1e-9)} of the "
              f"{n_trials} trials: a candidate wins on score only if it turns at least that many more "
-             "trials to passes than it breaks, and otherwise only by using fewer tokens. Aim the "
-             "candidate at enough of them, first the tasks that fail every trial, where one fix "
-             "flips them all; a candidate whose predicted tasks can't add up to that is wasted."]
+             "trials to passes than it breaks, and otherwise only by using fewer tokens. Look for "
+             "a mechanism that reaches that many, first on the tasks that fail every trial, where "
+             "one fix flips them all. Predict only the tasks you expect it to flip: a padded "
+             "prediction hides a candidate that can't win."]
     if explore:
         lines.append(f"The run has stalled (no gain above the noise band delta = {delta:.4f} in "
                      f"{rc['stall_window']} rounds). At least one edit must be on a component never "

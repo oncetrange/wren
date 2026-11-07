@@ -182,8 +182,8 @@ The proposer reads:
     at T = 8). Early rounds may bundle coordinated edits; late ones measure a single mechanism,
     which credits the gain to it;
   - **the bar in trials**: δ as a count of trials (δ = 0.1368 over 30 tasks × k=2 is about 9),
-    the net number of trials a candidate must turn to passes to win on score. Predicted tasks
-    that can't add up to it make a candidate that can only win by using fewer tokens;
+    the net number of trials a candidate must turn to passes to win on score, so it looks for a
+    mechanism that reaches that many; its prediction names only the tasks it expects to flip;
   - **exploration**: after `stall_window` = 2 rounds in which the incumbent's score rose by no
     more than δ, the first candidate must include an edit on a component no measured edit has
     touched. Memory and skill are never required: each trial starts with an empty `~/.wren`,
