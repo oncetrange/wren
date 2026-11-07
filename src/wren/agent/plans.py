@@ -37,6 +37,14 @@ copy elsewhere; fix what broke. Also remove scratch files and build outputs you 
 are not part of the requested change (and make sure none of them were committed). Do whatever \
 is missing. If everything is done, reply with your final summary."""
 
+UNEXERCISED_FLAGS = """
+
+The request names these command-line flags, but none of the commands or scripts you ran \
+contained them: {flags}. Run each one once, as the request describes it, on a realistic \
+populated input, and read its actual output (a crash or a missing field shows up only there). \
+Fix what breaks. If a flag is not something to run (for example an instruction about how to \
+work), skip it."""
+
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
 take the next step now with a tool call; if you were writing your final answer, finish it more \

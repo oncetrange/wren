@@ -56,3 +56,18 @@ def test_turn_budget_warning(ctx):
     warnings = [i for i, r in enumerate(agent.provider.requests) if "model calls left" in last_text(r)]
     assert warnings == [7] and "3 model calls left" in last_text(agent.provider.requests[7])
     assert agent.status == "max_turns"
+
+
+def test_final_check_lists_request_flags_never_run(ctx):
+    agent = make(ctx, [call("write_file", path="a.txt", content="x"),
+                       call("bash", id="t2", command="echo --alpha"), reply("done"), reply("ok")])
+    agent.run("add --alpha and --beta-gamma options")
+    text = last_text(agent.provider.requests[3])
+    assert "`--beta-gamma`" in text and "`--alpha`" not in text
+
+
+def test_final_check_has_no_flag_note_when_all_were_run(ctx):
+    agent = make(ctx, [call("write_file", path="a.txt", content="x"),
+                       call("bash", id="t2", command="tool --alpha"), reply("done"), reply("ok")])
+    agent.run("add --alpha")
+    assert "command-line flags" not in last_text(agent.provider.requests[3])

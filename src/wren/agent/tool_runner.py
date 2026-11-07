@@ -175,6 +175,10 @@ class ToolRunner:
             self.agent.log.record("todos", items=[t.to_dict() for t in output.todos])
         if not tool.read_only and not output.is_error:
             self.agent.changed = True
+        if call.name in ("bash", "write_file"):
+            text = call.input.get("command") or call.input.get("content")
+            if isinstance(text, str):
+                self.agent.exercised.append(text)
         for v in self.agent.hooks.run("post_tool", PostToolUse(self.agent, tool, call, output)):
             if v.context:
                 output.content = f"{output.content}\n\n{v.context}"

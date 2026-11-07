@@ -189,6 +189,10 @@ class Agent:
         self.tool_runner = ToolRunner(self)
         # Whether a tool that can modify files ran successfully in this request.
         self.changed = False
+        # The request being run and the shell commands / written file contents it produced,
+        # so a final check can tell which named CLI flags were never exercised.
+        self.request_text = ""
+        self.exercised: list[str] = []
         # Failed calls in this request (by call and result) and the current run of
         # failures, for noticing when the model is going in circles.
         self.failure_counts: dict[str, int] = {}
@@ -226,6 +230,7 @@ class Agent:
         final_text = ""
         self.status = "done"
         self.changed = warned = False
+        self.request_text, self.exercised = prompt, []
         self.failure_counts, self.failure_streak = {}, 0
         stopped_by: set[str] = set()
         stop_blocks = cut_offs = 0

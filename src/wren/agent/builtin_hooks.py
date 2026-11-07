@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from typing import TYPE_CHECKING
 
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
 from wren.agent.plans import (
@@ -12,10 +14,14 @@ from wren.agent.plans import (
     PLAN_MODE_OFF,
     PLAN_MODE_ON,
     REPEATED_FAILURE,
+    UNEXERCISED_FLAGS,
     UNFINISHED_TODOS,
     reminder,
 )
 from wren.agent.todos import format_todos
+
+if TYPE_CHECKING:
+    from wren.agent.loop import Agent
 
 
 def plan_guard(e: PreToolUse) -> Verdict | None:
@@ -80,10 +86,28 @@ def unfinished_todos(e: Stop) -> Verdict | None:
     return Verdict("block", UNFINISHED_TODOS.format(items=open_items)) if open_items else None
 
 
+_FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+
+
+def unexercised_flags(agent: Agent, limit: int = 8) -> list[str]:
+    """Command-line flags the request names that no command or script of this request contains."""
+    try:
+        ran = "\n".join(agent.exercised)
+        flags = list(dict.fromkeys(_FLAG.findall(agent.request_text)))
+        return [f for f in flags if f not in ran][:limit]
+    except Exception:  # advisory only; never block finishing on a bug here
+        return []
+
+
 def final_check(e: Stop) -> Verdict | None:
     """Once per request that changed files: re-check the request's explicit instructions."""
     if "final_check" in e.blocked_by or not (e.agent.final_check and e.agent.changed):
         return None
+    flags = unexercised_flags(e.agent)
+    if flags:
+        e.agent.log.record("reminder", reason="unexercised_flags", flags=flags)
+        return Verdict("block", FINAL_CHECK + UNEXERCISED_FLAGS.format(
+            flags=", ".join(f"`{f}`" for f in flags)))
     return Verdict("block", FINAL_CHECK)
 
 
