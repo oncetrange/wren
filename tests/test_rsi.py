@@ -73,7 +73,7 @@ def test_render_trace(tmp_path: Path):
     assert "FAILED test_x" in text and '"reward": 0' in text
 
 
-def test_choose_trials_puts_contrasts_first():
+def test_choose_trials_puts_tasks_that_never_pass_first():
     ev = {"k": 2, "per_task": {
         "always": trials(1, 1, dirs=["a1", "a2"]),
         "never": trials(0, 0, dirs=["n1", "n2"]),
@@ -81,9 +81,15 @@ def test_choose_trials_puts_contrasts_first():
         "unlogged": trials(0, 0),
     }}
     picked = [(c["task"], c["lens"], c["trial"]["dir"]) for c in rsi.choose_trials(ev, "reward", 10, 0)]
-    assert picked == [("sometimes", "failure", "s1"), ("sometimes", "success", "s2"),
-                      ("never", "failure", "n1"), ("never", "failure", "n2")]
+    assert picked == [("never", "failure", "n1"), ("sometimes", "failure", "s1"),
+                      ("sometimes", "success", "s2"), ("never", "failure", "n2")]
     assert len(rsi.choose_trials(ev, "reward", 2, 0)) == 2
+
+
+def test_context_states_the_noise_band_in_trials():
+    state = {"T": 8, "trajectory": [0.7]}
+    text, _, _ = rsi.context_for(state, 0, [], 0.1368, rsi.DEFAULTS, 60)
+    assert "about 9 of the 60 trials" in text
 
 
 def test_choose_trials_keeps_room_for_the_longest_stable_passes():
@@ -141,8 +147,9 @@ def test_analyze_asks_for_follow_ups(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(rsi, "run_wren", fake_wren)
     report = rsi.analyze("r1", 0, inc, CFG, rc).read_text()
     digests = sorted(p.name for p in (tmp_path / "rsi" / "r1" / "t0" / "digests").iterdir())
-    # The contrast pair first, then the follow-up the analyst asked for (an unknown task is skipped).
-    assert digests == ["never-0-capability_gap.json", "sometimes-0-failure.json", "sometimes-1-success.json"]
+    # The task that never passes first, then the contrast pair cut to fit, then the follow-up
+    # the analyst asked for (an unknown task is skipped).
+    assert digests == ["never-0-capability_gap.json", "never-0-failure.json", "sometimes-0-failure.json"]
     assert any("Questions to answer:\n- was grep cut off?" in c for c in calls)
     assert "capability_gap of trial 0" in calls[-1]
     # Failure modes ranked by impact; the names carry over to the next round.
