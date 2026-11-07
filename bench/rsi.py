@@ -310,9 +310,10 @@ LENSES = ("failure", "capability_gap", "success")
 
 
 def choose_trials(ev: dict, metric: str, max_n: int, n_stable: int) -> list[dict]:
-    """Which trials to digest: on tasks that pass only sometimes a failure and a
-    success (the contrast says most), then one failure of each task that never
-    passes, then further failures, up to max_n. Of those, n_stable go to the
+    """Which trials to digest: one failure of each task that never passes (its
+    failure repeats, so a fix flips every trial: where a gain above the noise band
+    is), then on tasks that pass only sometimes a failure and a success (the
+    contrast says most), then further failures, up to max_n. Of those, n_stable go to the
     longest run of the tasks that always pass: what they depend on is what a
     change must not break, and a long run leans on the harness (compaction,
     recovery, long commands) where a short one barely touches it. Trials without
@@ -335,7 +336,7 @@ def choose_trials(ev: dict, metric: str, max_n: int, n_stable: int) -> list[dict
         more += [{"task": task, "trial": t, "lens": "failure"} for t in failed[1:]]
     stable = sorted(stable, key=lambda c: -(c["trial"].get("tokens") or 0))[:min(n_stable, max_n)]
     room = max_n - len(stable)
-    first = (mixed + failing)[:room]
+    first = (failing + mixed)[:room]
     return first + stable + more[:room - len(first)]
 
 
@@ -893,7 +894,8 @@ def save_state(state: dict) -> None:
     save_json(RSI / state["run"] / "state.json", state)
 
 
-def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict) -> tuple[str, int, list[str]]:
+def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict,
+                n_trials: int) -> tuple[str, int, list[str]]:
     """The round's directives for the proposer, its edit budget and the
     components a candidate must explore (none unless the run has stalled)."""
     budget = edit_budget(t, state["T"], rc["b_min"], rc["b_max"])
@@ -901,7 +903,12 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
     stall = stalled(state["trajectory"], t, rc["stall_window"], delta)
     explore = fresh if stall and fresh else []
     prune = prune_set(history, t, rc["n_prune"])
-    lines = [f"Round {t} of {state['T']}. Edit budget b_t = {budget}: at most {budget} independent edits."]
+    lines = [f"Round {t} of {state['T']}. Edit budget b_t = {budget}: at most {budget} independent edits.",
+             f"The noise band delta = {delta:.4f} is about {math.ceil(delta * n_trials - 1e-9)} of the "
+             f"{n_trials} trials: a candidate wins on score only if it turns at least that many more "
+             "trials to passes than it breaks, and otherwise only by using fewer tokens. Aim the "
+             "candidate at enough of them, first the tasks that fail every trial, where one fix "
+             "flips them all; a candidate whose predicted tasks can't add up to that is wasted."]
     if explore:
         lines.append(f"The run has stalled (no gain above the noise band delta = {delta:.4f} in "
                      f"{rc['stall_window']} rounds). At least one edit must be on a component never "
@@ -947,7 +954,8 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
     print(f"round {t}: incumbent {fr['incumbent']} ({base[:7]}), S* = {fr['S_star']:.4f}, delta = {delta:.4f}")
 
     report = analyze(run, t, inc, cfg, rc)
-    directives, budget, explore = context_for(state, t, history, delta, rc)
+    directives, budget, explore = context_for(state, t, history, delta, rc,
+                                              len(inc["per_task"]) * inc["k"])
     context = (f"{directives}\n\nThe analysis of the incumbent's trials is in {report} "
                f"(read it first; it points at the rendered traces).")
     (rdir / "context.md").write_text(context + "\n")
