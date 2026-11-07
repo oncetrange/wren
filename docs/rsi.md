@@ -114,8 +114,9 @@ before any compaction or masking, the tail of wren's stderr and of the verifier'
 
 **Which trials.** Up to `max_digests` = 12 per round, of the trials whose logs were kept:
 
-1. on tasks that pass only sometimes, a failure and a success, since the contrast says most;
-2. one failure of each task that never passes;
+1. one failure of each task that never passes. Its failure repeats, so one fix flips every
+   trial of it: that is where a gain above δ is;
+2. on tasks that pass only sometimes, a failure and a success, since the contrast says most;
 3. the longest run (by tokens) of up to `stable_digests` = 3 tasks that always pass. A long run
    leans on the harness (compaction, recovery, long commands), and what it leans on is what a
    change must not break;
@@ -180,6 +181,9 @@ The proposer reads:
     cosine from `b_max` = 3 in the first round to `b_min` = 1 in the last (3, 3, 3, 3, 2, 2, 2, 1
     at T = 8). Early rounds may bundle coordinated edits; late ones measure a single mechanism,
     which credits the gain to it;
+  - **the bar in trials**: δ as a count of trials (δ = 0.1368 over 30 tasks × k=2 is about 9),
+    the net number of trials a candidate must turn to passes to win on score, so it looks for a
+    mechanism that reaches that many; its prediction names only the tasks it expects to flip;
   - **exploration**: after `stall_window` = 2 rounds in which the incumbent's score rose by no
     more than δ, the first candidate must include an edit on a component no measured edit has
     touched. Memory and skill are never required: each trial starts with an empty `~/.wren`,
