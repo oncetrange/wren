@@ -56,3 +56,30 @@ def test_turn_budget_warning(ctx):
     warnings = [i for i, r in enumerate(agent.provider.requests) if "model calls left" in last_text(r)]
     assert warnings == [7] and "3 model calls left" in last_text(agent.provider.requests[7])
     assert agent.status == "max_turns"
+
+
+def make_with_reviewer(ctx, turns):
+    from wren.agent.subagents import builtin_agent_types
+    return Agent(ScriptedProvider(turns), ModelConfig(name="fake", model="f"), ctx, RecordingUI(),
+                 Permissions(mode="auto"), final_check=True, max_turns=100,
+                 agent_types=builtin_agent_types())
+
+
+def test_spec_review_reports_gaps_after_final_check(ctx):
+    agent = make_with_reviewer(ctx, [
+        call("write_file", path="a.txt", content="x"), reply("done"),  # -> final_check
+        reply("rechecked"),                                            # -> reviewer runs
+        reply("a.txt:1 loader(42) raises TypeError, not the specified error"),  # reviewer report
+        reply("fixed the gap"),
+    ])
+    assert agent.run("write a.txt") == "fixed the gap"
+    text = last_text(agent.provider.requests[-1])
+    assert is_reminder(text) and "loader(42)" in text and "fresh reviewer" in text
+
+
+def test_spec_review_silent_when_no_gaps(ctx):
+    agent = make_with_reviewer(ctx, [
+        call("write_file", path="a.txt", content="x"), reply("done"), reply("rechecked"),
+        reply("no gaps found"),
+    ])
+    assert agent.run("write a.txt") == "rechecked"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
 from wren.agent.plans import (
@@ -12,6 +13,7 @@ from wren.agent.plans import (
     PLAN_MODE_OFF,
     PLAN_MODE_ON,
     REPEATED_FAILURE,
+    SPEC_REVIEW,
     UNFINISHED_TODOS,
     reminder,
 )
@@ -87,6 +89,40 @@ def final_check(e: Stop) -> Verdict | None:
     return Verdict("block", FINAL_CHECK)
 
 
+# Skip the review when this little time is left: finishing matters more.
+REVIEW_MIN_SECONDS = 300
+REVIEW_MAX_REPORT = 4000
+
+
+def spec_review(e: Stop) -> Verdict | None:
+    """Once per request that changed files, after final_check: a fresh read-only reviewer
+    traces each behavior the request states through the change and reports concrete gaps.
+    Its report goes back as evidence to act on; no gaps, or any failure, means no block."""
+    agent = e.agent
+    if ("spec_review" in e.blocked_by or "final_check" not in e.blocked_by
+            or not (agent.final_check and agent.changed) or not agent.request):
+        return None
+    task = agent.tools.get("task")
+    types = getattr(task, "types", None)
+    if not types or "reviewer" not in types or agent.permissions.mode == "plan":
+        return None
+    if agent.deadline is not None and agent.deadline - time.monotonic() < REVIEW_MIN_SECONDS:
+        return None
+    try:
+        from wren.agent.subagents import run_subagent
+        out = run_subagent(agent, types["reviewer"], "review change against request",
+                           "The user's request, verbatim:\n\n<request>\n" + agent.request[:12000]
+                           + "\n</request>\n\nReview the current change against it.")
+    except Exception:  # never let the review end the run
+        return None
+    report = (out.content or "").strip()
+    if out.is_error or not report or "no gaps found" in report.lower()[:200]:
+        agent.log.record("reminder", reason="spec_review", gaps=False)
+        return None
+    agent.log.record("reminder", reason="spec_review", gaps=True)
+    return Verdict("block", SPEC_REVIEW.format(report=report[:REVIEW_MAX_REPORT]))
+
+
 def register_builtins(hooks: Hooks) -> None:
     hooks.on("pre_tool", "plan_guard", plan_guard)
     hooks.on("post_tool", "finished_jobs", finished_jobs)
@@ -95,3 +131,4 @@ def register_builtins(hooks: Hooks) -> None:
     hooks.on("prompt", "finished_jobs", finished_jobs)
     hooks.on("stop", "unfinished_todos", unfinished_todos)
     hooks.on("stop", "final_check", final_check)
+    hooks.on("stop", "spec_review", spec_review)

@@ -88,6 +88,26 @@ verified it, and anything left unfinished or uncertain.
 """
 
 
+REVIEW_PROMPT = """\
+# Your role: spec reviewer
+You get a user's request and must judge whether the finished change (in the working tree and/or \
+the latest commits) handles every behavior the request states. You did not write the change: \
+read it with fresh eyes. You can't modify anything; bash only runs read-only commands.
+
+Procedure (be efficient, at most about 15 tool calls):
+1. See what changed: git status, git diff, git log -3 --stat, git show for the latest commit.
+2. List each behavior the request states or clearly implies, one line each. Include: invalid or \
+wrong-typed input and the error that must result, unsupported variants or backends, every named \
+option or CLI flag end to end, nested or overlapping inputs, callbacks and side effects, \
+output shapes, what must NOT happen, and anything that must stay backward compatible.
+3. For each, read the code path that implements it and trace one concrete input through it. \
+Look at the error and edge paths, not only the happy path.
+4. Report ONLY concrete gaps: the clause, the input that would go wrong, and the file:line. \
+If a clause is ambiguous, name the most literal reading. If you find no gap, say \
+"no gaps found" in one line. Don't pad the report and don't repeat what works.
+"""
+
+
 @dataclass
 class AgentType:
     name: str
@@ -118,6 +138,15 @@ def builtin_agent_types() -> dict[str, AgentType]:
             "Can read, edit files and run commands: a self-contained piece of work you can "
             "describe completely (e.g. a change in one module, a failing test to investigate).",
             GENERAL_PROMPT,
+        ),
+        "reviewer": AgentType(
+            "reviewer",
+            "Read-only: checks a finished change against the request, clause by clause, "
+            "reading the diff with fresh eyes. Reports only concrete gaps.",
+            REVIEW_PROMPT,
+            tools=frozenset({"read_file", "grep", "glob", "bash"}),
+            read_only=True,
+            max_turns=20,
         ),
     }
 

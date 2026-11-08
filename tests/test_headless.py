@@ -39,7 +39,8 @@ def run_wren(tmp_path):
 def test_json_result(run_wren):
     turns = [tool_turn("write_file", {"path": "hello.txt", "content": "hi\n"}),
              text_turn("Created hello.txt."),
-             text_turn("Checked: done. Created hello.txt.")]     # answers the final check
+             text_turn("Checked: done. Created hello.txt."),     # answers the final check
+                 text_turn("no gaps found")]                       # the spec reviewer
     with FakeAnthropic(turns) as server:
         proc = run_wren(server, "-p", "make hello.txt", "--yolo", "-m", "provider/fake-model-1",
                         "--output-format", "json", "--no-checkpoints")
@@ -47,7 +48,7 @@ def test_json_result(run_wren):
     out = json.loads(proc.stdout)            # stdout holds only the JSON object
     assert out["status"] == "done" and out["result"] == "Checked: done. Created hello.txt."
     assert (out["model"], out["turns"], out["tool_calls"], out["tool_errors"]) == ("fake", 3, 1, 0)
-    assert out["usage"]["input_tokens"] == 3000 and out["cost_usd"] == pytest.approx(0.0033)
+    assert out["usage"]["input_tokens"] == 4000 and out["cost_usd"] == pytest.approx(0.0044)
     assert "re-read the user's request" in server.requests[2]["body"]["messages"][-1]["content"][-1]["text"]
     assert (run_wren.project / "hello.txt").read_text() == "hi\n"
     assert out["todos"] == []

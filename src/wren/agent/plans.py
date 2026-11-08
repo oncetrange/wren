@@ -37,6 +37,16 @@ copy elsewhere; fix what broke. Also remove scratch files and build outputs you 
 are not part of the requested change (and make sure none of them were committed). Do whatever \
 is missing. If everything is done, reply with your final summary."""
 
+SPEC_REVIEW = """A fresh reviewer, who sees only the request and your changes, read them against \
+each behavior the request states. Its report:
+
+{report}
+
+Treat each reported gap as a lead, not a verdict: check it against the request's wording \
+(reproduce it with a short command if you can). Fix the ones that are real, keeping to the \
+literal reading of the request, and rerun the project's tests. Ignore the ones that are not. \
+Then reply with your final summary, saying plainly what you did not verify."""
+
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
 take the next step now with a tool call; if you were writing your final answer, finish it more \

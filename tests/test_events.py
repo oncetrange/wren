@@ -14,7 +14,7 @@ def make(ctx, model, turns, mode="ask"):
 def test_builtins_are_registered_first(ctx, model):
     agent = make(ctx, model, [])
     assert agent.hooks.names("pre_tool") == ["plan_guard"]
-    assert agent.hooks.names("stop") == ["unfinished_todos", "final_check"]
+    assert agent.hooks.names("stop") == ["unfinished_todos", "final_check", "spec_review"]
 
 
 def test_allow_skips_the_permission_prompt(ctx, model):

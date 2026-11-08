@@ -189,6 +189,7 @@ class Agent:
         self.tool_runner = ToolRunner(self)
         # Whether a tool that can modify files ran successfully in this request.
         self.changed = False
+        self.request = ""  # the current request's text
         # Failed calls in this request (by call and result) and the current run of
         # failures, for noticing when the model is going in circles.
         self.failure_counts: dict[str, int] = {}
@@ -226,6 +227,7 @@ class Agent:
         final_text = ""
         self.status = "done"
         self.changed = warned = False
+        self.request = prompt
         self.failure_counts, self.failure_streak = {}, 0
         stopped_by: set[str] = set()
         stop_blocks = cut_offs = 0
