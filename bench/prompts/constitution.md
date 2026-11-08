@@ -164,9 +164,14 @@ pattern. The component to declare is in brackets.
    wrong place, a misleading error, a missing capability.
 6. **Subagents** [subagent]: `src/wren/agent/subagents.py`, the task tool and
    its explore and general types. A subagent costs its own context and turns,
-   runs on the same frozen policy, and is only as good as its brief. Prior:
-   delegation tends to hurt weak policies (lost context, early exits), so build
-   or widen it only against clear evidence; narrowing or fixing it is cheaper.
+   runs on the same frozen policy, and is only as good as its brief. What it
+   has that the main run lacks is a fresh context: it doesn't share the main
+   run's assumptions, so it can find what the main run's own checks miss (a
+   reviewer that reads only the request and the diff, say). With a weak policy
+   the risks are a thin brief, an early exit and the tokens it spends: bound
+   it, and hand its findings back as evidence to act on, not as a verdict.
+   Choose this when the main run can't see a failure from inside: told to
+   check, it checks what it already believed.
 7. **Defaults that are really settings** [config]: constants in the code (see
    rule 6 for which of them take effect). Cheap and easy to attribute.
 8. **Skills** [skill]: `src/wren/skills.py`. No skill reaches a benchmark trial

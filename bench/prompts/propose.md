@@ -23,8 +23,12 @@ reference: read them first.
    break, and the mechanisms of earlier candidates that helped or hurt on a
    task.
 2. Read the edit history and the scoreboard under "This round".
-3. Pick the highest-impact failure modes you can move and implement the
-   mechanisms in the source, within this round's edit budget.
+3. For the highest-impact failure modes, list two or three mechanisms that
+   pull different levers (the prompt, a hook in the loop, a tool, a subagent)
+   before you choose. A mode that an earlier candidate's prompt or reminder
+   didn't move needs a different lever, not other words. Implement the ones
+   you chose in the source, within this round's edit budget, and say in your
+   summary why you chose them over the others.
 4. Add or update tests for what you changed, and run `uv run ruff check`,
    `uv run pyright` and `uv run pytest -q -x`; all must pass.
 5. Write $edits_file at the top of this directory: a JSON list with one object
@@ -43,7 +47,9 @@ reference: read them first.
 Only $editable may change, and nothing under src/wren/integrations/. There is
 no way to abort: ship a candidate. If your best idea breaks a hard rule, it is
 not your best idea; build a different one. If the evidence is thin, ship the
-smallest change you believe in.
+mechanism most likely to raise the score by more than the noise band, and say
+in its hypothesis how unsure you are: a safe change too small to clear the band
+wastes the measurement.
 
 When you are done, reply with a short summary of what you changed and why.
 
