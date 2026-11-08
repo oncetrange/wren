@@ -955,8 +955,10 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
     print(f"round {t}: incumbent {fr['incumbent']} ({base[:7]}), S* = {fr['S_star']:.4f}, delta = {delta:.4f}")
 
     report = analyze(run, t, inc, cfg, rc)
+    # The bar in trials is of a candidate's measurement, k per task, even when
+    # the incumbent pools several measurements.
     directives, budget, explore = context_for(state, t, history, delta, rc,
-                                              len(inc["per_task"]) * inc["k"])
+                                              len(inc["per_task"]) * cfg["k"])
     context = (f"{directives}\n\nThe analysis of the incumbent's trials is in {report} "
                f"(read it first; it points at the rendered traces).")
     (rdir / "context.md").write_text(context + "\n")
