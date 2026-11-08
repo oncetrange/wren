@@ -37,6 +37,18 @@ copy elsewhere; fix what broke. Also remove scratch files and build outputs you 
 are not part of the requested change (and make sure none of them were committed). Do whatever \
 is missing. If everything is done, reply with your final summary."""
 
+TEST_EDITED_WHILE_RED = """You just edited a test file right after a test run that showed failures, \
+without changing any non-test code in between. If that test encodes behavior the request states, \
+the test is right and the code is wrong: revert the test change, find why the code path doesn't \
+behave that way (with the default options the request implies) and fix the code. Change a test \
+only if it is truly wrong about the request, and say so in your final summary."""
+
+NO_TESTS_WRITTEN = """You changed code but added or edited no test file. Before finishing, write \
+tests (in the project's own test layout) that call the new behavior the way a user of it would, one \
+per behavior the request lists: each option and combination, error and edge cases, and the cases \
+it says must NOT happen. Run them, fix the code where they fail, and in your final summary list \
+only what you actually ran."""
+
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
 take the next step now with a tool call; if you were writing your final answer, finish it more \

@@ -56,3 +56,37 @@ def test_turn_budget_warning(ctx):
     warnings = [i for i, r in enumerate(agent.provider.requests) if "model calls left" in last_text(r)]
     assert warnings == [7] and "3 model calls left" in last_text(agent.provider.requests[7])
     assert agent.status == "max_turns"
+
+
+def test_test_edit_after_red_run_gets_reminder(ctx):
+    agent = make(ctx, [call("write_file", "t0", path="src_a.py", content="x"),
+                       call("bash", "t1", command="echo 'FAILED tests/test_a.py::test_x - AssertionError'"),
+                       call("write_file", "t2", path="tests/test_a.py", content="y"),
+                       reply("done"), reply("ok")], final_check=False)
+    agent.run("fix it")
+    assert "edited a test file right after a test run" in str(agent.provider.requests[3][-1].content)
+    assert agent.test_nudges == 1
+
+
+def test_source_edit_between_clears_red(ctx):
+    agent = make(ctx, [call("bash", "t1", command="echo FAILED"),
+                       call("write_file", "t2", path="src_a.py", content="y"),
+                       call("write_file", "t3", path="tests/test_a.py", content="y"),
+                       reply("done")], final_check=False)
+    agent.run("fix it")
+    assert agent.test_nudges == 0
+
+
+def test_untested_change_blocks_once(ctx):
+    agent = make(ctx, [call("write_file", "t1", path="src_a.py", content="x"),
+                       reply("done"), reply("wrote tests"), reply("x")])
+    assert agent.run("add feature") == "wrote tests"
+    assert "added or edited no test file" in last_text(agent.provider.requests[2])
+
+
+def test_tested_change_not_blocked(ctx):
+    agent = make(ctx, [call("write_file", "t1", path="src_a.py", content="x"),
+                       call("write_file", "t2", path="tests/test_a.py", content="x"),
+                       reply("done"), reply("checked")])
+    agent.run("add feature")
+    assert "added or edited no test file" not in str(agent.provider.requests[-1])

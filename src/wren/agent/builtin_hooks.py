@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
 from wren.agent.plans import (
     FAILURE_STREAK,
     FINAL_CHECK,
+    NO_TESTS_WRITTEN,
     PLAN_MODE_OFF,
     PLAN_MODE_ON,
     REPEATED_FAILURE,
+    TEST_EDITED_WHILE_RED,
     UNFINISHED_TODOS,
     reminder,
 )
@@ -72,6 +75,60 @@ def repeated_failures(e: PostToolUse) -> Verdict | None:
     return None
 
 
+RED_RE = re.compile(r"\bFAIL(ED|URE)?\b|\bfailed\b|Traceback \(most recent|AssertionError|\u2715|--- FAIL|"
+                    r"\d+ failing|panic:", re.I)
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec|specs)/|(_test|\.test|\.spec|_spec)\.\w+$|"
+                          r"(^|/)test_[^/]*$")
+MAX_TEST_NUDGES = 2
+
+
+def is_test_path(path: str) -> bool:
+    return bool(TEST_PATH_RE.search(path.replace("\\", "/")))
+
+
+def test_integrity(e: PostToolUse) -> Verdict | None:
+    """Catch a failing test being edited away instead of the code being fixed.
+
+    After a shell run that shows failures, the next edit that targets a test file with no
+    source edit in between gets a reminder (at most twice per request)."""
+    agent = e.agent
+    try:
+        if e.tool.name == "bash":
+            agent.tests_red = bool(RED_RE.search(e.output.content[-4000:]))
+            return None
+        if e.output.is_error or e.tool.read_only or e.tool.name not in ("edit_file", "write_file"):
+            return None
+        path = str(e.call.input.get("path") or e.call.input.get("file_path") or "")
+        if not path:
+            return None
+        agent.edited_paths.append(path)
+        if not is_test_path(path):
+            agent.tests_red = False
+            return None
+        if agent.tests_red and agent.test_nudges < MAX_TEST_NUDGES:
+            agent.tests_red = False
+            agent.test_nudges += 1
+            agent.log.record("reminder", reason="test_edited_while_red", path=path)
+            return Verdict(context=reminder(TEST_EDITED_WHILE_RED))
+    except Exception:  # a heuristic must never break the run
+        return None
+    return None
+
+
+def untested_change(e: Stop) -> Verdict | None:
+    """Once per request: code was changed but no test file was added or edited."""
+    agent = e.agent
+    if "untested_change" in e.blocked_by or agent.permissions.mode == "plan" or not (
+            agent.final_check and agent.changed):
+        return None
+    paths = agent.edited_paths
+    if not paths or any(is_test_path(p) for p in paths):
+        return None
+    if not any(re.search(r"\.(py|js|ts|tsx|jsx|go|rs|java|rb|c|cc|cpp|cs|kt|php)$", p) for p in paths):
+        return None
+    return Verdict("block", NO_TESTS_WRITTEN)
+
+
 def unfinished_todos(e: Stop) -> Verdict | None:
     """Once per request: finishing with open task-list items is often a slip."""
     if "unfinished_todos" in e.blocked_by or e.agent.permissions.mode == "plan":
@@ -91,7 +148,9 @@ def register_builtins(hooks: Hooks) -> None:
     hooks.on("pre_tool", "plan_guard", plan_guard)
     hooks.on("post_tool", "finished_jobs", finished_jobs)
     hooks.on("post_tool", "repeated_failures", repeated_failures)
+    hooks.on("post_tool", "test_integrity", test_integrity)
     hooks.on("prompt", "plan_reminder", plan_reminder)
     hooks.on("prompt", "finished_jobs", finished_jobs)
     hooks.on("stop", "unfinished_todos", unfinished_todos)
+    hooks.on("stop", "untested_change", untested_change)
     hooks.on("stop", "final_check", final_check)

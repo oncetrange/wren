@@ -193,6 +193,12 @@ class Agent:
         # failures, for noticing when the model is going in circles.
         self.failure_counts: dict[str, int] = {}
         self.failure_streak = 0
+        # Test-integrity tracking (builtin_hooks.test_integrity): whether the last shell
+        # run showed failing tests that no source edit has answered yet, how often we
+        # said something about it, and the files edited in this request.
+        self.tests_red = False
+        self.test_nudges = 0
+        self.edited_paths: list[str] = []
         # Given hooks (a subagent's) come ready-made; otherwise start with wren's own.
         if hooks is None:
             hooks = Hooks()
@@ -227,6 +233,7 @@ class Agent:
         self.status = "done"
         self.changed = warned = False
         self.failure_counts, self.failure_streak = {}, 0
+        self.tests_red, self.test_nudges, self.edited_paths = False, 0, []
         stopped_by: set[str] = set()
         stop_blocks = cut_offs = 0
         try:
