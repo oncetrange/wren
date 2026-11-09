@@ -56,3 +56,25 @@ def test_turn_budget_warning(ctx):
     warnings = [i for i, r in enumerate(agent.provider.requests) if "model calls left" in last_text(r)]
     assert warnings == [7] and "3 model calls left" in last_text(agent.provider.requests[7])
     assert agent.status == "max_turns"
+
+
+def test_final_check_lists_named_flags_never_run(ctx):
+    agent = make(ctx, [call("write_file", path="a.txt", content="x"), reply("done"), reply("ok")])
+    agent.run("add --cache-stats and raise ValueError on bad input")
+    text = last_text(agent.provider.requests[2])
+    assert "`--cache-stats`" in text and "`ValueError`" in text
+
+
+def test_final_check_skips_flags_already_run(ctx):
+    agent = make(ctx, [call("write_file", path="a.txt", content="x"),
+                       call("bash", "b1", command="echo --cache-stats"), reply("done"), reply("ok")])
+    agent.run("add --cache-stats")
+    text = last_text(agent.provider.requests[3])
+    assert "re-read the user's request" in text and "--cache-stats" not in text
+
+
+def test_compaction_note_pins_request():
+    from wren.agent.compact import summary_note
+    note = summary_note("sum", None, "", "do X with --flag")
+    assert "do X with --flag" in note.content[0].text
+    assert "<request>" not in summary_note("sum", None).content[0].text

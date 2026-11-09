@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
 from wren.agent.plans import (
@@ -12,10 +13,12 @@ from wren.agent.plans import (
     PLAN_MODE_OFF,
     PLAN_MODE_ON,
     REPEATED_FAILURE,
+    UNEXERCISED,
     UNFINISHED_TODOS,
     reminder,
 )
 from wren.agent.todos import format_todos
+from wren.llm.types import ToolUseBlock
 
 
 def plan_guard(e: PreToolUse) -> Verdict | None:
@@ -80,11 +83,48 @@ def unfinished_todos(e: Stop) -> Verdict | None:
     return Verdict("block", UNFINISHED_TODOS.format(items=open_items)) if open_items else None
 
 
+# Things a request names that a run can exercise: `--flags` and `SomethingError` classes.
+_NAMED = re.compile(r"(?<![\w-])(--[a-z][a-z0-9]*(?:-[a-z0-9]+)*)|\b([A-Z]\w*(?:Error|Exception))\b")
+MAX_UNEXERCISED = 6
+
+
+def unexercised(agent) -> list[str]:  # noqa: ANN001
+    """Flags and error classes in the current request that no bash command ran and no
+    test file written in this run mentions. Best effort: any failure means no opinion."""
+    try:
+        request = next((p.label for p in reversed(agent.conv.timeline) if p.kind == "turn"), "")
+        named: list[str] = []
+        for m in _NAMED.finditer(request):
+            name = m.group(1) or m.group(2)
+            if name not in named:
+                named.append(name)
+        if not named:
+            return []
+        seen = []
+        for msg in agent.conv.messages:
+            for b in msg.content:
+                if not isinstance(b, ToolUseBlock):
+                    continue
+                if b.name == "bash":
+                    seen.append(str(b.input.get("command", "")))
+                elif "test" in str(b.input.get("path", "")).lower():
+                    seen.append(json.dumps(b.input, default=str))
+        text = "\n".join(seen)
+        return [n for n in named if n not in text][:MAX_UNEXERCISED]
+    except Exception:  # noqa: BLE001 - a reminder must never end the run
+        return []
+
+
 def final_check(e: Stop) -> Verdict | None:
     """Once per request that changed files: re-check the request's explicit instructions."""
     if "final_check" in e.blocked_by or not (e.agent.final_check and e.agent.changed):
         return None
-    return Verdict("block", FINAL_CHECK)
+    missing = unexercised(e.agent)
+    if not missing:
+        return Verdict("block", FINAL_CHECK)
+    e.agent.log.record("reminder", reason="unexercised", count=len(missing))
+    items = ", ".join(f"`{n}`" for n in missing)
+    return Verdict("block", FINAL_CHECK + "\n\n" + UNEXERCISED.format(items=items))
 
 
 def register_builtins(hooks: Hooks) -> None:

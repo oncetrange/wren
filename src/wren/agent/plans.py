@@ -37,6 +37,11 @@ copy elsewhere; fix what broke. Also remove scratch files and build outputs you 
 are not part of the requested change (and make sure none of them were committed). Do whatever \
 is missing. If everything is done, reply with your final summary."""
 
+UNEXERCISED = """\
+The request names these, and nothing you ran or wrote as a test mentions them: {items}. \
+Run each one once the way a user would (the flag end to end, the error case with a bad input) \
+and read the output. If one cannot be run, say so in your summary instead of calling it verified."""
+
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \
 take the next step now with a tool call; if you were writing your final answer, finish it more \

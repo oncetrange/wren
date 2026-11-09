@@ -80,7 +80,7 @@ Earlier parts of this session were compacted to save context. Summary:
 {summary}
 </summary>
 {archive}{todos}
-The most recent messages follow verbatim. File contents seen earlier may be \
+{request}The most recent messages follow verbatim. File contents seen earlier may be \
 out of date: re-read files before editing them."""
 
 ARCHIVE_NOTE = """
@@ -169,11 +169,26 @@ def summarize(provider: Provider, system: str, span: list[Message],
     return summary, response.usage
 
 
-def summary_note(summary: str, archive: Path | None, todos: str = "") -> Message:
+REQUEST_NOTE = """
+The user's current request, verbatim (the summary above is a paraphrase; this is the \
+original wording, so check clauses against it, not against the summary):
+
+<request>
+{request}
+</request>
+
+"""
+# A longer request is cut: the archive file keeps it whole.
+MAX_PINNED_REQUEST = 8000
+
+
+def summary_note(summary: str, archive: Path | None, todos: str = "", request: str = "") -> Message:
     archive_text = ARCHIVE_NOTE.format(path=archive) if archive else ""
     todos_text = f"\nYour task list (keep maintaining it with todo_write):\n{todos}\n" if todos else ""
+    request = request.strip()
+    request_text = REQUEST_NOTE.format(request=request[:MAX_PINNED_REQUEST]) if request else ""
     return Message("user", [TextBlock(RESUME_NOTE.format(summary=summary, archive=archive_text,
-                                                         todos=todos_text))])
+                                                         todos=todos_text, request=request_text))])
 
 
 def append_archive(path: Path, span: list[Message], heading: str) -> None:
