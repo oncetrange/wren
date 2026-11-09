@@ -52,6 +52,18 @@ def test_history_keeps_few_unmeasured_edits():
     assert json.loads(lines[0])["edit_id"] == "E2"
 
 
+def test_diff_leaves_out_the_declaration_even_when_staged(tmp_path: Path):
+    sh("git", "init", "-q", str(tmp_path), cwd=tmp_path)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base",
+       cwd=tmp_path)
+    base = sh("git", "rev-parse", "HEAD", cwd=tmp_path).strip()
+    (tmp_path / "code.py").write_text("x = 1\n")
+    (tmp_path / rsi.EDITS_FILE).write_text('[{"predicted_affected": ["some-task"]}]\n')
+    sh("git", "add", "-A", cwd=tmp_path)   # the proposer staged everything itself
+    diff = rsi.diff_text(tmp_path, base)
+    assert "code.py" in diff and rsi.EDITS_FILE not in diff and "some-task" not in diff
+
+
 def test_render_trace(tmp_path: Path):
     d = tmp_path / "trial"
     (d / "agent" / "wren" / "sessions").mkdir(parents=True)
