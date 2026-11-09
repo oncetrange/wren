@@ -657,9 +657,11 @@ def changed_files(wt: Path, base: str) -> list[str]:
 
 
 def diff_text(wt: Path, base: str) -> str:
+    """The candidate's change, without its declaration: the proposer may have staged
+    that itself, and the predictions it must name are task names screening rejects."""
     git("-C", str(wt), "add", "-A", "--", ".", f":!{EDITS_FILE}")
-    return subprocess.run(["git", "-C", str(wt), "diff", "--cached", base], check=True,
-                          capture_output=True, text=True).stdout
+    return subprocess.run(["git", "-C", str(wt), "diff", "--cached", base, "--", ".", f":!{EDITS_FILE}"],
+                          check=True, capture_output=True, text=True).stdout
 
 
 def check_declaration(edits: object, files: list[str], budget: int, explore: list[str],
