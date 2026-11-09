@@ -73,6 +73,22 @@ def test_activity_counts_what_the_machinery_did_per_trial(tmp_path: Path):
     assert shown["activity"] == {"x": "1/3 trials"}
 
 
+def test_context_names_a_subagent_that_never_reported():
+    stuck = {"subagent reviewer max_turns": "56/60 trials, 57 times (incumbent 0/120)",
+             "subagent reviewer done": "2/60 trials, 2 times (incumbent 0/120)",
+             "subagent general done": "1/60 trials, 1 times (incumbent 3/120)"}   # not new: ignored
+    history = [{"t": 2, "variant": 1, "edit_id": e, "component": "subagent", "delta_S": -0.09,
+                "activity": stuck} for e in ("E1", "E2")]   # one candidate, two edits
+    assert rsi.untested(history) == [
+        "round 2 v1 (subagent): its reviewer subagent returned a result in 2 of 59 runs "
+        "(done 2, max_turns 57)"]
+    text, _, _ = rsi.context_for({"T": 8, "trajectory": [0.7]}, 3, history, 0.07, rsi.DEFAULTS, 60)
+    assert "Measured but not tested: round 2 v1" in text
+    fine = [{"t": 1, "variant": 1, "edit_id": "E1", "delta_S": 0.0,
+             "activity": {"subagent reviewer done": "50/60 trials, 50 times (incumbent 0/120)"}}]
+    assert rsi.untested(fine) == []
+
+
 def test_render_trace(tmp_path: Path):
     d = tmp_path / "trial"
     (d / "agent" / "wren" / "sessions").mkdir(parents=True)

@@ -200,7 +200,9 @@ The proposer reads:
     the trials' session logs: in how many trials each reminder (by reason) fired and each subagent
     type ended which way (done, out of turns), next to the incumbent. A mechanism that rarely fired,
     or whose subagent ran out of turns before reporting, wasn't tested, and its ΔS is noise; one
-    that fired far more often than its trigger condition says was a different mechanism.
+    that fired far more often than its trigger condition says was a different mechanism. A
+    candidate whose new subagent returned a result in fewer than half its runs is also named in
+    the directives as measured but not tested, so the next proposer can fix it or drop it.
 
 It declares each edit in `RSI_EDITS.json`:
 

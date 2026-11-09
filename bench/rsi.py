@@ -281,6 +281,30 @@ def activity_against(cand: dict, inc: dict) -> dict[str, str]:
     return {k: f"{a.get(k, [0, 0])[0]}/{nc} trials, {a.get(k, [0, 0])[1]} times "
                f"(incumbent {b.get(k, [0, 0])[0]}/{ni})" for k in sorted(set(a) | set(b))}
 
+ACTIVITY = re.compile(r"(\d+)/(\d+) trials, (\d+) times \(incumbent (\d+)/(\d+)\)")
+
+
+def untested(history: list[dict]) -> list[str]:
+    """Measured candidates whose new subagent mostly ended without a result (out
+    of turns, an error): their delta_S says little about the mechanism."""
+    out, seen = [], set()
+    for r in history:
+        if (r["t"], r["variant"]) in seen or not r.get("activity"):
+            continue
+        seen.add((r["t"], r["variant"]))
+        runs: dict[str, dict[str, int]] = {}
+        for key, value in r["activity"].items():
+            parts, m = key.split(), ACTIVITY.fullmatch(str(value))
+            if parts[0] == "subagent" and len(parts) == 3 and m and m.group(4) == "0":
+                runs.setdefault(parts[1], {})[parts[2]] = int(m.group(3))
+        for kind, ends in sorted(runs.items()):
+            done, total = ends.get("done", 0), sum(ends.values())
+            if total >= 3 and total - done > done:
+                how = ", ".join(f"{s} {n}" for s, n in sorted(ends.items()))
+                out.append(f"round {r['t']} v{r['variant']} ({r.get('component')}): its {kind} "
+                           f"subagent returned a result in {done} of {total} runs ({how})")
+    return out
+
 
 # --- analysis: traces and digests ---
 
@@ -957,6 +981,12 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
                      f"tried yet: {', '.join(explore)}.")
     elif fresh:
         lines.append(f"Components never tried yet: {', '.join(fresh)}.")
+    if gaps := untested(history):
+        lines.append("Measured but not tested: " + "; ".join(gaps) + ". Their delta_S is mostly "
+                     "the subagent's cost and noise, not the mechanism's effect. Fixing what stopped "
+                     "it (its budget, its brief, a result it must return before running out) and "
+                     "measuring it again is a legitimate edit; so is dropping the idea, if the "
+                     "analysis gives a reason to expect it wouldn't help.")
     if prune:
         lines.append("Components whose accepted machinery stopped paying; consider removing it "
                      "(a removal edit's hypothesis starts with \"prune: \"): "
