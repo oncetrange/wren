@@ -195,7 +195,14 @@ The proposer reads:
     out measurements. A rejected mechanism is not to be redrawn unchanged, unless the candidate
     mechanisms show it helped on its own; then it may come back isolated or refined;
   - **the scoreboard**: for each of the latest 20 measured edits, which of its predicted tasks
-    improved, every task its candidate improved, and the tasks it fell on without predicting them.
+    improved, every task its candidate improved, and the tasks it fell on without predicting them;
+  - **activity**: with each measured edit, what its candidate's reminders and subagents did, from
+    the trials' session logs: in how many trials each reminder (by reason) fired and each subagent
+    type ended which way (done, out of turns), next to the incumbent. A mechanism that rarely fired,
+    or whose subagent ran out of turns before reporting, wasn't tested, and its ΔS is noise; one
+    that fired far more often than its trigger condition says was a different mechanism. A
+    candidate whose new subagent returned a result in fewer than half its runs is also named in
+    the directives as measured but not tested, so the next proposer can fix it or drop it.
 
 It declares each edit in `RSI_EDITS.json`:
 

@@ -193,7 +193,7 @@ def render_history(history: list[dict], n: int = 40) -> str:
     """The newest n edits for the proposer, oldest first; of the edits never
     measured (dropped in screening) only the latest few are kept."""
     keys = ("t", "variant", "edit_id", "component", "hypothesis", "delta_S", "delta_C",
-            "accepted", "outcome", "detail")
+            "accepted", "outcome", "detail", "activity")
     kept, unmeasured = [], 0
     for r in reversed(history):
         if r.get("delta_S") is None:
@@ -239,6 +239,71 @@ def render_scoreboard(history: list[dict], n: int = 20) -> str:
     if not rows:
         return "(nothing measured yet)"
     return "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+
+
+def activity(ev: dict) -> dict[str, list[int]]:
+    """What a measurement's machinery did, from its trials' session logs: per
+    reminder (by reason and its true/false flags) and per subagent run (by type and how it
+    ended), [trials it happened in, times in all]. A mechanism measured without
+    firing, or firing everywhere, wasn't tested as its hypothesis said."""
+    out: dict[str, list[int]] = {}
+    for trials in ev["per_task"].values():
+        for trial in trials:
+            seen: set[str] = set()
+            for log in sorted(Path(trial.get("dir") or "/nonexistent").glob("agent/wren/sessions/*.jsonl")):
+                for line in log.read_text(errors="replace").splitlines():
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if e.get("kind") == "reminder":
+                        flags = "".join(f" {k}={json.dumps(v)}" for k, v in sorted(e.items())
+                                        if k not in ("ts", "kind", "reason") and isinstance(v, bool))
+                        key = f"reminder {e.get('reason')}{flags}"
+                    elif e.get("kind") == "subagent_end":
+                        key = f"subagent {e.get('agent')} {e.get('status')}"
+                    else:
+                        continue
+                    n = out.setdefault(key, [0, 0])
+                    n[1] += 1
+                    if key not in seen:
+                        n[0] += 1
+                        seen.add(key)
+    return dict(sorted(out.items()))
+
+
+def activity_against(cand: dict, inc: dict) -> dict[str, str]:
+    """The candidate's activity next to the incumbent's, per trial."""
+    def n_trials(ev: dict) -> int:
+        return sum(len(t) for t in ev["per_task"].values())
+    a, b = activity(cand), activity(inc)
+    nc, ni = n_trials(cand), n_trials(inc)
+    return {k: f"{a.get(k, [0, 0])[0]}/{nc} trials, {a.get(k, [0, 0])[1]} times "
+               f"(incumbent {b.get(k, [0, 0])[0]}/{ni})" for k in sorted(set(a) | set(b))}
+
+ACTIVITY = re.compile(r"(\d+)/(\d+) trials, (\d+) times \(incumbent (\d+)/(\d+)\)")
+
+
+def untested(history: list[dict]) -> list[str]:
+    """Measured candidates whose new subagent mostly ended without a result (out
+    of turns, an error): their delta_S says little about the mechanism."""
+    out, seen = [], set()
+    for r in history:
+        if (r["t"], r["variant"]) in seen or not r.get("activity"):
+            continue
+        seen.add((r["t"], r["variant"]))
+        runs: dict[str, dict[str, int]] = {}
+        for key, value in r["activity"].items():
+            parts, m = key.split(), ACTIVITY.fullmatch(str(value))
+            if parts[0] == "subagent" and len(parts) == 3 and m and m.group(4) == "0":
+                runs.setdefault(parts[1], {})[parts[2]] = int(m.group(3))
+        for kind, ends in sorted(runs.items()):
+            done, total = ends.get("done", 0), sum(ends.values())
+            if total >= 3 and total - done > done:
+                how = ", ".join(f"{s} {n}" for s, n in sorted(ends.items()))
+                out.append(f"round {r['t']} v{r['variant']} ({r.get('component')}): its {kind} "
+                           f"subagent returned a result in {done} of {total} runs ({how})")
+    return out
 
 
 # --- analysis: traces and digests ---
@@ -916,6 +981,12 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
                      f"tried yet: {', '.join(explore)}.")
     elif fresh:
         lines.append(f"Components never tried yet: {', '.join(fresh)}.")
+    if gaps := untested(history):
+        lines.append("Measured but not tested: " + "; ".join(gaps) + ". Their delta_S is mostly "
+                     "the subagent's cost and noise, not the mechanism's effect. Fixing what stopped "
+                     "it (its budget, its brief, a result it must return before running out) and "
+                     "measuring it again is a legitimate edit; so is dropping the idea, if the "
+                     "analysis gives a reason to expect it wouldn't help.")
     if prune:
         lines.append("Components whose accepted machinery stopped paying; consider removing it "
                      "(a removal edit's hypothesis starts with \"prune: \"): "
@@ -925,7 +996,12 @@ def context_for(state: dict, t: int, history: list[dict], delta: float, rc: dict
               "mechanism is negative evidence: don't redraw it unchanged, unless the analysis's "
               "candidate_mechanisms shows it helped on its own; then isolate or refine it, and say "
               "so in the hypothesis. An accepted one carries the "
-              "gain it produced: refine what has known credit, not what merely preceded a rise.",
+              "gain it produced: refine what has known credit, not what merely preceded a rise. "
+              "activity is what the candidate's reminders and subagents did in its trials, next to "
+              "the incumbent: check it before reading delta_S as the mechanism's effect. One that "
+              "rarely fired, or ended without a result (a subagent out of turns), wasn't tested and "
+              "may be worth fixing and measuring again; one that fired far beyond its trigger "
+              "condition was a different mechanism from the one hypothesized.",
               render_history(history),
               "", "Attribution scoreboard, oldest first: per measured edit, which of its predicted tasks "
               "improved over the incumbent (hit_rate), every task its candidate improved, and the tasks "
@@ -1002,6 +1078,7 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
         # An invalid measurement says nothing about which tasks moved.
         attribution = (attribute(edits, inc, measured_by[c["variant"]], cfg["metric"])
                        if v and v["outcome"] != "invalid" else [{}] * len(edits))
+        fired = activity_against(measured_by[c["variant"]], inc) if c["variant"] in measured_by else {}
         for e, attr in zip(edits, attribution, strict=True):
             records.append({
                 "t": t, "variant": c["variant"], "edit_id": e.get("id"), "component": e.get("component"),
@@ -1012,6 +1089,7 @@ def run_round(state: dict, cfg: dict, rc: dict, evaluate: bool = True) -> bool:
                 "S": v["S"] if v else None, "accepted": bool(v and v["winner"]),
                 "outcome": v["outcome"] if v else c.get("outcome"),
                 "detail": (v["reason"] if v else c.get("detail") or "")[:600],
+                **({"activity": fired} if fired else {}),
                 **attr,
             })
     # Recorded once: a rerun of a round cut off below doesn't record it twice.
