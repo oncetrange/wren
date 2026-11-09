@@ -1,0 +1,31 @@
+[
+ {
+  "id": "E1",
+  "component": "tools",
+  "hypothesis": "Output truncation keeps a smaller head, a larger tail (test summaries, last traceback) and error-like lines from the omitted middle, with the cap lowered 30k to 20k chars; the same signal in fewer tokens per long output. Mainly a token saver; unsure it moves the score. Prediction is a low-confidence guess: a task with long Go test logs where the failing line may sit in the omitted middle.",
+  "targets_mode": "spec_clause_not_exercised_in_own_checks (failing lines of long test runs must not be lost); token cost",
+  "why_not_lower_lever": "A cut in the wrong place is a tool behavior; no instruction can restore text the tool dropped.",
+  "trigger_condition": "A tool output longer than 20000 characters.",
+  "predicted_affected": [
+   "go-git-worktree-merge-conflicts"
+  ],
+  "retroactive_check": "corrective: none predicted by task; preservative: short outputs are untouched and the tail (where summaries sit) gets more room than before; transfer: any repo with long build or test logs.",
+  "regression_risk": "Outputs between 20k and 30k chars now lose some middle text that was shown before."
+ },
+ {
+  "id": "E2",
+  "component": "prompt",
+  "hypothesis": "The base prompt, written for interactive use, now says what to do headless when the spec is open (literal narrower reading, raise rather than guess), to run each stated behavior (error inputs, each flag through the real entry point, unset parent) as the piece is finished, not to bend a test that expects a required error, and to call something verified only if run. Acts during the work, unlike earlier end-of-run reminders; unsure, effect may be inside noise.",
+  "targets_mode": "spec_clause_not_exercised_in_own_checks, final_report_overclaims_verification, spec_silent_point_resolved_by_unflagged_guess, test_expectation_bent_to_match_implementation",
+  "why_not_lower_lever": "No checkable moment exists for a hook: which clauses matter and where is semantic; guidance has to be present while the pieces are built, so the system prompt is the place.",
+  "trigger_condition": "Always present in the system prompt; applies when the request states error behavior, flags or ambiguous points.",
+  "predicted_affected": [
+   "bandit-incremental-cache-control",
+   "adaptix-name-mapping-aliases",
+   "gql-incremental-graphql-delivery",
+   "anko-typed-variable-bindings"
+  ],
+  "retroactive_check": "corrective: bandit cache-stats flag would be run through the CLI and hit the closed-file crash; adaptix non-mapping input and gql unsupported transport are stated-behavior probes; anko's red self-test would no longer be edited to match; preservative: the existing read, probe, CI-runner habits are kept and only extended; transfer: any feature request with error paths and flags.",
+  "regression_risk": "More probing costs tokens and turns; the raise-on-open-case rule could occasionally contradict a hidden test."
+ }
+]

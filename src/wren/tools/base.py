@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from wren.sandbox import Sandbox
     from wren.tools.jobs import Jobs
 
-MAX_OUTPUT_CHARS = 30_000
+MAX_OUTPUT_CHARS = 20_000
 
 
 @dataclass
@@ -177,12 +177,31 @@ def validate_args(schema: dict[str, Any], args: Any) -> str | None:
     return None
 
 
+_SIGNAL = re.compile(r"(?i)\b(error|exception|traceback|fail(?:ed|ure|ures)?|panic|assert\w*|fatal)\b")
+
+
 def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """Cut a long output to about `limit` characters, keeping its ends and its failure lines.
+
+    The tail holds most of the budget (test summaries and the last traceback are at the end);
+    lines from the middle that look like errors or failures fill a share of what is left."""
     if len(text) <= limit:
         return text
-    head, tail = text[: limit // 2], text[-limit // 2 :]
-    omitted = len(text) - len(head) - len(tail)
-    return f"{head}\n\n... [{omitted} characters truncated] ...\n\n{tail}"
+    head_n, tail_n, mid_n = limit // 5, limit * 11 // 20, limit // 4
+    head, tail = text[:head_n], text[-tail_n:]
+    middle = text[head_n : len(text) - tail_n]
+    kept: list[str] = []
+    used = 0
+    for line in middle.splitlines():
+        line = line[:300]
+        if _SIGNAL.search(line) and used + len(line) + 1 <= mid_n:
+            kept.append(line)
+            used += len(line) + 1
+    omitted = len(middle) - used
+    if not kept:
+        return f"{head}\n\n... [{omitted} characters truncated] ...\n\n{tail}"
+    return (f"{head}\n\n... [{omitted} characters truncated; error-like lines from the omitted "
+            f"part follow] ...\n" + "\n".join(kept) + f"\n... [end of selected lines] ...\n\n{tail}")
 
 
 def read_text(path: Path) -> str:
