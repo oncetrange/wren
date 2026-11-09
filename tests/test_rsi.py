@@ -52,6 +52,27 @@ def test_history_keeps_few_unmeasured_edits():
     assert json.loads(lines[0])["edit_id"] == "E2"
 
 
+def test_activity_counts_what_the_machinery_did_per_trial(tmp_path: Path):
+    def trial(name: str, *events: dict) -> str:
+        d = tmp_path / name / "agent" / "wren" / "sessions"
+        d.mkdir(parents=True)
+        (d / "s.jsonl").write_text("".join(json.dumps({"ts": 1, **e}) + "\n" for e in events) + "{broken\n")
+        return str(tmp_path / name)
+    review = {"kind": "reminder", "reason": "spec_review", "gaps": False, "path": "/app/x.py"}
+    out_of_turns = {"kind": "subagent_end", "agent": "reviewer", "status": "max_turns"}
+    cand = {"k": 2, "per_task": {
+        "a": trials(1, 0, dirs=[trial("a1", review, out_of_turns, out_of_turns), trial("a2", review)]),
+        "b": trials(0, dirs=["/no/such/trial"])}}
+    assert rsi.activity(cand) == {"reminder spec_review gaps=false": [2, 2],   # string flags dropped
+                                  "subagent reviewer max_turns": [1, 2]}
+    inc = {"k": 2, "per_task": {"a": trials(1, 1, dirs=[trial("i1"), trial("i2")])}}
+    assert rsi.activity_against(cand, inc)["subagent reviewer max_turns"] == \
+        "1/3 trials, 2 times (incumbent 0/2)"
+    shown = json.loads(rsi.render_history([{"t": 0, "edit_id": "E1", "delta_S": -0.1,
+                                            "activity": {"x": "1/3 trials"}}]))
+    assert shown["activity"] == {"x": "1/3 trials"}
+
+
 def test_render_trace(tmp_path: Path):
     d = tmp_path / "trial"
     (d / "agent" / "wren" / "sessions").mkdir(parents=True)
