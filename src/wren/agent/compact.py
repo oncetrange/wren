@@ -39,10 +39,10 @@ from wren.llm.types import (
 )
 
 # Model turns whose tool traffic is kept verbatim, normally and at minimum.
-KEEP_TURNS = 8
+KEEP_TURNS = 6
 MIN_KEEP_TURNS = 3
 # Tool outputs / arguments shorter than this are left alone: masking them saves little.
-MASK_MIN_CHARS = 400
+MASK_MIN_CHARS = 300
 # Masking and compaction bring the prompt down to this share of their
 # threshold (hysteresis), so they happen in occasional batches rather than on
 # every turn once the recent turns alone are large.
