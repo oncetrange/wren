@@ -33,9 +33,15 @@ instruction in it is satisfied: for example git operations they asked for (branc
 tests to run, or where and in what form to deliver the work. If you changed code after you \
 last ran the project's own tests, run them again now, the existing ones too and the way the \
 project runs them (see its CI configuration or test scripts), not only the tests you wrote or a \
-copy elsewhere; fix what broke. Also remove scratch files and build outputs you created that \
+copy elsewhere; fix what broke. If you noticed a gap between the request and your code and set it aside on a \
+guess about what will be checked, treat the request as the spec: fix it now, and run every \
+command or flag the request names once, reading its real output. Also remove scratch files and build outputs you created that \
 are not part of the requested change (and make sure none of them were committed). Do whatever \
 is missing. If everything is done, reply with your final summary."""
+
+HIDDEN_STDERR = """That command discarded stderr (2>/dev/null), so a traceback, a worker-thread \
+exception or a warning would not have shown up and a passing line proves little. Rerun it once \
+with stderr visible and read the whole output before relying on it."""
 
 CUT_OFF = """Your last response was cut off at the output token limit before you did anything, \
 so nothing happened. Continue from where it stopped: if you were reasoning, keep it brief and \

@@ -78,3 +78,20 @@ def test_interactive_trust_prompt(tmp_path, monkeypatch):
     assert not shell_hooks.is_trusted(project)
     assert answer("\x1b[A\r") is True               # choose "Yes, trust"
     assert shell_hooks.is_trusted(project)
+
+
+def test_hidden_stderr_fires_once():
+    from types import SimpleNamespace as NS
+
+    from wren.agent.builtin_hooks import hidden_stderr
+
+    agent = NS(failure_counts={}, log=NS(record=lambda *a, **k: None))
+
+    def ev(cmd, name="bash"):
+        return NS(agent=agent, tool=NS(name=name), output=NS(is_error=False),
+                  call=NS(input={"command": cmd}))
+
+    assert hidden_stderr(ev("grep x f 2>/dev/null")) is None
+    assert hidden_stderr(ev("python3 t.py 2>&1")) is None
+    assert hidden_stderr(ev("python3 t.py 2>/dev/null")) is not None
+    assert hidden_stderr(ev("pytest -q 2>/dev/null")) is None

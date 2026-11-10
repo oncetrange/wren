@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from wren.agent.events import Hooks, PostToolUse, PreToolUse, PromptSubmit, Stop, Verdict
 from wren.agent.plans import (
     FAILURE_STREAK,
     FINAL_CHECK,
+    HIDDEN_STDERR,
     PLAN_MODE_OFF,
     PLAN_MODE_ON,
     REPEATED_FAILURE,
@@ -72,6 +74,30 @@ def repeated_failures(e: PostToolUse) -> Verdict | None:
     return None
 
 
+_STDERR_DROPPED = re.compile(r"2>\s*/dev/null")
+_RUNS_CODE = re.compile(r"\b(python3?|pytest|node|npx|npm|yarn|jest|vitest|go\s+(test|run)|cargo|mvn|gradle|"
+                        r"make|ruby|rspec|php|dotnet)\b")
+_HIDDEN_KEY = "hidden_stderr"
+
+
+def hidden_stderr(e: PostToolUse) -> Verdict | None:
+    """Once per request: a test or script run whose stderr was thrown away proves little.
+
+    Tracebacks, worker-thread exceptions and warnings go to stderr; a bare "OK" line
+    next to a discarded stderr can hide a failure."""
+    agent = e.agent
+    if e.tool.name != "bash" or e.output.is_error or _HIDDEN_KEY in agent.failure_counts:
+        return None
+    command = e.call.input.get("command")
+    if not isinstance(command, str) or not _STDERR_DROPPED.search(command):
+        return None
+    if not _RUNS_CODE.search(command):
+        return None
+    agent.failure_counts[_HIDDEN_KEY] = 1
+    agent.log.record("reminder", reason="hidden_stderr")
+    return Verdict(context=reminder(HIDDEN_STDERR))
+
+
 def unfinished_todos(e: Stop) -> Verdict | None:
     """Once per request: finishing with open task-list items is often a slip."""
     if "unfinished_todos" in e.blocked_by or e.agent.permissions.mode == "plan":
@@ -91,6 +117,7 @@ def register_builtins(hooks: Hooks) -> None:
     hooks.on("pre_tool", "plan_guard", plan_guard)
     hooks.on("post_tool", "finished_jobs", finished_jobs)
     hooks.on("post_tool", "repeated_failures", repeated_failures)
+    hooks.on("post_tool", "hidden_stderr", hidden_stderr)
     hooks.on("prompt", "plan_reminder", plan_reminder)
     hooks.on("prompt", "finished_jobs", finished_jobs)
     hooks.on("stop", "unfinished_todos", unfinished_todos)
