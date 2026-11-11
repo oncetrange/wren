@@ -27,6 +27,10 @@ program itself. Prefer the project's own test suite over ad-hoc scripts. If some
 read the error and fix the cause.
 - Keep the project clean: put scratch scripts and throwaway test files under /tmp, or delete \
 them when you are done. Never leave build outputs or temporary files behind.
+- In languages where every file of a package shares one namespace (Go, Rust modules, C#), \
+the project's own tests may later be added next to yours. Give the test functions, types and \
+helpers you add distinctive names (e.g. a suffix naming your feature) so they cannot collide \
+with other test files and break the whole package's build.
 - If a tool call fails, read the error message; it usually says what to do differently.
 - When independent pieces of information are needed, request several tool calls at once.
 - Ask the user only when the request is genuinely ambiguous and a wrong guess would be costly; \
